@@ -1,0 +1,371 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Flow",
+  "description": "A declarative flow: id/title/description, map of node-configs, and connections",
+  "type": "object",
+  "required": [
+    "connections",
+    "description",
+    "id",
+    "nodes",
+    "title"
+  ],
+  "properties": {
+    "connections": {
+      "description": "adjacency: from node_id → list of to node_ids",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "description": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "nodes": {
+      "description": "node_id → node configuration",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/NodeConfig"
+      }
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "AgentNodeConfig": {
+      "description": "Internal agent-node config",
+      "type": "object",
+      "required": [
+        "agent",
+        "task"
+      ],
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        }
+      }
+    },
+    "ChannelNodeConfig": {
+      "description": "Internal channel-node config",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "CopyKey": {
+      "description": "Describes a key to copy from a source, with an optional default if missing.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true
+        }
+      ]
+    },
+    "NodeConfig": {
+      "description": "A single node’s config in the flow",
+      "type": "object",
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "channel"
+          ],
+          "properties": {
+            "channel": {
+              "$ref": "#/definitions/ChannelNodeConfig"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "$ref": "#/definitions/ToolNodeConfig"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "agent"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/definitions/AgentNodeConfig"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "process"
+          ],
+          "properties": {
+            "process": {
+              "$ref": "#/definitions/ProcessNodeConfig"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "config": true,
+        "max_retries": {
+          "default": 3,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "retry_delay_secs": {
+          "default": 1,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "ProcessNodeConfig": {
+      "description": "Internal process-node config",
+      "type": "object",
+      "required": [
+        "args",
+        "name"
+      ],
+      "properties": {
+        "args": true,
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "ToolNodeConfig": {
+      "description": "Internal tool-node config",
+      "type": "object",
+      "required": [
+        "action",
+        "name"
+      ],
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "err_map": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/map"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "in_map": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/map"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "out_map": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/map"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parameters": {
+          "description": "literal parameters to the operation"
+        },
+        "secrets": {
+          "description": "secret *names* whose values we must fetch at runtime",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "map": {
+      "oneOf": [
+        {
+          "description": "A mapper that copies selected fields from payload, config, and state, with an optional default value in case the field is not found.\n\nConfig and state only accept strings as keys. Payload also accepts JSON pointers so you can look up a value inside the payload, e.g. /parameters/days\n\n# Example ```json { \"type\": \"copy\", \"payload\": [\"a\", \"b\", { \"c\": 4 }], \"config\": [\"env\", { \"region\": \"eu-west-1\" }], \"state\": [\"done\", { \"tries\": 0 }] } ```",
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "config": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/definitions/CopyKey"
+              }
+            },
+            "payload": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/definitions/CopyKey"
+              }
+            },
+            "state": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/definitions/CopyKey"
+              }
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "copy"
+              ]
+            }
+          }
+        },
+        {
+          "description": "A mapper that renames fields and optionally provides defaults.\n\n# Example ```json { \"type\": \"rename\", \"x\": { \"from\": \"payload\", \"key\": \"user_id\" }, \"y\": { \"from\": \"config\", \"key\": \"region\", \"default\": \"us-west\" }, \"z\": { \"from\": \"state\", \"key\": \"stage\", \"default\": \"init\" } } ```",
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "rename"
+              ]
+            }
+          }
+        },
+        {
+          "description": "A mapper using Handlebars templating to build structured outputs.\n\n# Example ```json { \"type\": \"script\", \"template\": \"{ \\\"payload\\\": { \\\"temperature\\\": \\\"{{weather.temp_c}}\\\" } }\" } ``` Variables from `payload`, `config`, and `state` are flattened and available to the template context.\n\nIf the payload variable is an array coming from a tool, then automatically it will be converted into an object with key root: { ... the array ... }. You can then get information out in the following way: ```json {\"payload\": { \"temperature\": {{root.[0].current.temp_c}} }} ```",
+          "type": "object",
+          "required": [
+            "template",
+            "type"
+          ],
+          "properties": {
+            "template": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "script"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "from",
+            "key"
+          ],
+          "properties": {
+            "default": {
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "enum": [
+                "payload"
+              ]
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "from",
+            "key"
+          ],
+          "properties": {
+            "default": {
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "enum": [
+                "config"
+              ]
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "from",
+            "key"
+          ],
+          "properties": {
+            "default": {
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "enum": [
+                "state"
+              ]
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

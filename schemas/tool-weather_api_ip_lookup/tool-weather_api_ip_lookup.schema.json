@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "IP Lookup API",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`ip_lookup`]",
+      "properties": {
+        "q": {
+          "description": "Pass IP address.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "q"
+      ],
+      "title": "IpLookupParams",
+      "type": "object"
+    },
+    "secrets": {
+      "properties": {
+        "WEATHERAPI_KEY": {
+          "description": "API key (query parameter)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "WEATHERAPI_KEY"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "WEATHERAPI_KEY",
+    "secrets"
+  ],
+  "title": "weather_api_ip_lookup",
+  "type": "object"
+}

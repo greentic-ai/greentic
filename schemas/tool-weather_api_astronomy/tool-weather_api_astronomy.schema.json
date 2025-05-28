@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Astronomy API",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`astronomy`]",
+      "properties": {
+        "dt": {
+          "description": "Date on or after 1st Jan, 2015 in yyyy-MM-dd format",
+          "type": "string"
+        },
+        "q": {
+          "description": "Pass US Zipcode, UK Postcode, Canada Postalcode, IP address, Latitude/Longitude (decimal degree) or city name. Visit [request parameter section](https://www.weatherapi.com/docs/#intro-request) to learn more.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dt",
+        "q"
+      ],
+      "title": "AstronomyParams",
+      "type": "object"
+    },
+    "secrets": {
+      "properties": {
+        "WEATHERAPI_KEY": {
+          "description": "API key (query parameter)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "WEATHERAPI_KEY"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "WEATHERAPI_KEY",
+    "secrets"
+  ],
+  "title": "weather_api_astronomy",
+  "type": "object"
+}
