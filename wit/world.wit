@@ -1,0 +1,264 @@
+package wasix:mcp@0.0.5;
+
+interface router {
+
+  record value {
+    json: string,
+  }
+
+  record tool {
+    name: string,
+    description: string,
+    input-schema: value,
+    output-schema: option<value>, 
+  }
+
+  // Prompts capability (list_changed field)
+  record prompts-capability {
+    list-changed: option<bool>,
+  }
+
+  // Resources capability (subscribe and list_changed fields)
+  record resources-capability {
+    subscribe: option<bool>,
+    list-changed: option<bool>,
+  }
+
+  // Tools capability (list_changed field)
+  record tools-capability {
+    list-changed: option<bool>,
+  }
+
+  record server-capabilities {
+    prompts: option<prompts-capability>,
+    resources: option<resources-capability>,
+    tools: option<tools-capability>,
+  }
+
+  record call-tool-result {
+    content: list<content>,
+    is-error: option<bool>
+  }
+
+  variant content {
+    text(text-content),
+    image(image-content),
+    embedded(embedded-resource)
+  }
+
+  record text-content {
+    text: string,
+    annotations: option<annotations>
+  }
+
+  record image-content {
+    data: string,
+    mime-type: string,
+    annotations: option<annotations>
+  }
+
+  record embedded-resource {
+    resource-contents: resource-contents,
+    annotations: option<annotations>
+  }
+
+  record mcp-resource {
+    uri: string,
+    name: string,
+    description: option<string>,
+    mime-type: string,
+    annotations: option<annotations>
+  }
+
+  record text-resource-contents {
+    uri: string,
+    mime-type: option<string>,
+    text: string
+  }
+
+  record blob-resource-contents {
+    uri: string,
+    mime-type: option<string>,
+    blob: string
+  }
+
+  variant resource-contents {
+    text(text-resource-contents),
+    blob(blob-resource-contents)
+  }
+
+
+  record read-resource-result {
+    contents: list<resource-contents>
+  }
+
+  record annotations {
+    audience: option<list<role>>,
+    priority: option<f32>,
+    timestamp: option<datetime>
+  }
+
+  enum role {
+    user,
+    assistant
+  }
+
+  type datetime = string;  // Define as string for UTC datetime
+
+  // Errors
+  variant tool-error {
+    invalid-parameters(string),
+    execution-error(string),
+    schema-error(string),
+    not-found(string)
+  }
+
+  variant resource-error {
+    execution-error(string),
+    not-found(string)
+  }
+
+
+  variant prompt-error {
+    invalid-parameters(string),
+    internal-error(string),
+    not-found(string)
+  }
+
+
+  record prompt {
+    name: string,
+    description: option<string>,
+    arguments: option<list<prompt-argument>>
+  }
+
+  record prompt-argument {
+    name: string,
+    description: option<string>,
+    required: option<bool>
+  }
+
+  record get-prompt-result {
+    description: option<string>,
+    messages: list<prompt-message>
+  }
+
+  record prompt-message {
+    role: prompt-message-role,
+    content: prompt-message-content
+  }
+
+  enum prompt-message-role {
+    user,
+    assistant
+  }
+
+  variant prompt-message-content {
+    text(text-content),
+    image(image-content),
+    mcp-resource(embedded-resource)
+  }
+
+
+  name: func() -> string;
+  instructions: func() -> string;
+  capabilities: func() -> server-capabilities;
+  list-tools: func() -> list<tool>;
+  call-tool: func(tool-name: string, arguments: value) -> result<call-tool-result, tool-error>;
+  list-resources: func() -> list<mcp-resource>;
+  read-resource: func(uri: string) -> result<read-resource-result, resource-error>;
+  list-prompts: func() -> list<prompt>;
+  get-prompt: func(prompt-name: string) -> result<get-prompt-result, prompt-error>;
+}
+
+interface secrets-list {
+  record secrets-description {
+    name: string,
+    description: string,
+    required: bool
+  }
+  list-secrets: func() -> list<secrets-description>;
+}
+
+interface secrets-store {
+    // An error type that encapsulates the different errors that can occur fetching secrets
+    variant secrets-error {
+        // This indicates an error from an "upstream" secrets source.
+        // As this could be almost _anything_ (such as Vault, Kubernetes Secrets, KeyValue buckets, etc),
+        // the error message is a string.
+        upstream(string),
+        // This indicates an error from an I/O operation.
+        // As this could be almost _anything_ (such as a file read, network connection, etc),
+        // the error message is a string.
+        // Depending on how this ends up being consumed,
+        // we may consider moving this to use the `wasi:io/error` type instead.
+        // For simplicity right now in supporting multiple implementations, it is being left as a string.
+        io(string),
+        // This indicates that the secret was not found. Generally "not found" errors will
+        // be handled by the upstream secrets backend, but there are cases where the host
+        // may need to return this error.
+        not-found,
+    }
+
+    // A secret value.
+    record secret-value {
+        // A string value
+        secret: string,
+    }
+
+    // A secret is a resource that can only be borrowed. This allows you to
+    // pass around handles to secrets and not reveal the values until a
+    // component needs them.
+    // You need to use the reveal interface to get the value.
+    resource secret;
+
+    // Gets a single opaque secrets value set at the given key if it exists
+    get: func(
+        // A string key to fetch
+        key: string,
+    ) -> result<secret, secrets-error>;
+    reveal: func(s: borrow<secret>) -> secret-value;
+}
+
+
+//world mcp {
+  // Exporting the router interface as part of the world
+//  export router;
+//}
+
+//world secrets {
+//  import secrets-store;
+//  export secrets-list;
+//}
+
+world mcp-secrets {
+  import secrets-store;
+  import wasi:http/outgoing-handler@0.2.2;
+  import wasi:logging/logging@0.1.0-draft;
+  // Exporting the router interface as part of the world
+  export router;
+  export secrets-list;
+}
+
+interface request-handler {
+  record value {
+    json: string,
+  }
+  variant request-error {
+    invalid-parameters(string),
+    internal-error(string),
+    not-found(string)
+  }
+  record request-result {
+    response: value,
+    is-error: option<bool>
+  }
+
+  run: func(tool-name: string, task: value) -> result<request-result, request-error>;
+}
+
+world agentic {
+  import router;
+  import secrets-store;
+  export request-handler;
+}

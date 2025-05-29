@@ -1,0 +1,6 @@
+/target
+.env
+.env-secrets
+Cargo.lock
+/logs
+/greentic/logs

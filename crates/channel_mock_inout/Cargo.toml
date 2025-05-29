@@ -1,0 +1,13 @@
+[package]
+name = "channel_mock_inout"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib","cdylib"]
+
+[dependencies]
+channel_plugin = { path = "../channel_plugin" }
+anyhow = "1.0.98"
+serde_json = "1.0.140"
+tracing = "0.1.41"
