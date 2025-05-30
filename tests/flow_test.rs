@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
-use channel_plugin::message::{ChannelCapabilities, ChannelMessage};
+use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
 use channel_plugin::plugin::{ChannelState, PluginLogger};
 use channel_plugin::PluginHandle;
 use greentic::channel::manager::{ChannelManager, HostLogger, IncomingHandler};
@@ -12,16 +12,16 @@ use greentic::channel::plugin::Plugin;
 use greentic::channel::PluginWrapper;
 use greentic::config::{ConfigManager, MapConfigManager};
 use greentic::mapper::{CopyKey, CopyMapper, Mapper};
-use greentic::state::InMemoryState;
+use greentic::state::{InMemoryState, StateValue};
 use petgraph::visit::Topo;
 use schemars::schema_for;
 use serde_json::json;
 
 use greentic::executor::Executor;
-use greentic::flow::{ChannelNodeConfig, ExecutionReport, Flow, FlowManager, NodeConfig, NodeKind, ToolNodeConfig};
+use greentic::flow::{ChannelNodeConfig, ExecutionReport, Flow, FlowManager, NodeConfig, NodeKind, ResolveError, TemplateContext, ToolNodeConfig, ValueOrTemplate};
 use greentic::logger::{Logger, OpenTelemetryLogger};
 use greentic::message::Message;
-use greentic::node::NodeContext;
+use greentic::node::{ChannelOrigin, NodeContext};
 use greentic::secret::{EmptySecretsManager, SecretsManager};
 
 /// Helper to build a dummy `Executor` for NodeContext
@@ -84,6 +84,134 @@ pub fn make_noop_plugin() -> Arc<Plugin> {
         path: PathBuf::new(),
     })
 }
+
+
+/// A dummy context that simply returns the template string unchanged,
+/// so JSON values must be provided verbatim.
+struct DummyCtx;
+impl TemplateContext for DummyCtx {
+    fn render_template(&self, template: &str) -> Result<String, String> {
+        Ok(template.to_string())
+    }
+}
+
+#[test]
+fn value_or_template_resolves_value_directly() {
+    let v: ValueOrTemplate<i32> = ValueOrTemplate::Value(100);
+    let ctx = DummyCtx;
+    assert_eq!(v.resolve(&ctx).unwrap(), 100);
+}
+
+#[test]
+fn value_or_template_resolves_from_template() {
+    // Template must be valid JSON for T
+    let tmpl: ValueOrTemplate<String> = ValueOrTemplate::Template("\"hello world\"".into());
+    let ctx = DummyCtx;
+    assert_eq!(tmpl.resolve(&ctx).unwrap(), "hello world");
+}
+
+#[test]
+fn value_or_template_parse_error() {
+    let bad: ValueOrTemplate<i32> = ValueOrTemplate::Template("not a number".into());
+    let ctx = DummyCtx;
+    match bad.resolve(&ctx) {
+        Err(ResolveError::Parse(_)) => {},
+        other => panic!("Expected Parse error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn create_out_msg_error_on_missing_to_and_no_origin() {
+    // Build a minimal NodeContext with no channel_origin
+    let executor = make_executor();
+    let secrets = SecretsManager(EmptySecretsManager::new());
+    let cfg_mgr = ConfigManager(MapConfigManager::new());
+    let host_logger = HostLogger::new();
+    let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), host_logger)
+        .await
+        .expect("channel manager");
+    let ctx = NodeContext::new(
+        HashMap::new(),
+        HashMap::new(),
+        executor.clone(),
+        channel_mgr.clone(),
+        secrets.clone(),
+        None,
+    );
+
+    let cfg = ChannelNodeConfig {
+        channel_name: "test".into(),
+        channel_in: false,
+        channel_out: true,
+        from: None,
+        to: None,
+        content: None,
+        thread_id: None,
+        reply_to_id: None,
+    };
+
+    let result = cfg.create_out_msg(
+        &ctx,
+        "id1".into(),
+        None,
+        json!("payload"),
+        MessageDirection::Outgoing,
+    );
+
+    assert!(result.is_err(), "Expected error, got {:?}", result);
+}
+
+#[tokio::test]
+async fn create_out_msg_uses_template_for_to_and_content() {
+    // Prepare context and variables
+    let executor = make_executor();
+    let secrets = SecretsManager(EmptySecretsManager::new());
+    let cfg_mgr = ConfigManager(MapConfigManager::new());
+    let host_logger = HostLogger::new();
+    let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), host_logger)
+        .await
+        .expect("channel manager");
+    let mut state: HashMap<String, StateValue> = HashMap::new();
+    // Provide participant JSON in state
+    let part_json = json!({ "id": "p1", "display_name": "Alice", "channel_specific_id": "a1" });
+    let part_val: StateValue = serde_json::from_value(part_json.clone()).unwrap();
+    state.insert("recipient".into(), part_val);
+
+    let ctx = NodeContext::new(
+        state,
+        HashMap::new(),
+        executor.clone(),
+        channel_mgr.clone(),
+        secrets.clone(),
+        None,
+    );
+
+    let cfg = ChannelNodeConfig {
+        channel_name: "ch".into(),
+        channel_in: false,
+        channel_out: true,
+        from: None,
+        to: Some(vec![ValueOrTemplate::Template("{{recipient}}".into())]),
+        content: Some(ValueOrTemplate::Value(MessageContent::Text("fixed".into()))),
+        thread_id: None,
+        reply_to_id: None,
+    };
+
+    let msg = cfg.create_out_msg(
+        &ctx,
+        "id2".into(),
+        None,
+        json!("ignored"),
+        MessageDirection::Outgoing,
+    ).expect("message can be produced");
+
+    // Check 'to'
+    assert_eq!(msg.to.len(), 1);
+    let rcpt = &msg.to[0];
+    assert_eq!(rcpt.id, "p1");
+    assert_eq!(msg.content.unwrap(), MessageContent::Text("fixed".into()));
+}
+
 
 #[test]
 fn complex_flow_serializes_and_validates_against_schema() {
@@ -445,7 +573,9 @@ async fn run_two_channel_nodes() {
     //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.
     fm.register_flow(built.id().as_str(), built.clone());
 
-    let mut ctx = NodeContext::new(HashMap::new(), HashMap::new(), executor, channel_manager, secrets, None);
+    let participant = Participant{ id: "id".to_string(), display_name:None, channel_specific_id: None };
+    let co = ChannelOrigin::new("channel".to_string(), participant);
+    let mut ctx = NodeContext::new(HashMap::new(), HashMap::new(), executor, channel_manager, secrets, Some(co));
 
 
     // run

@@ -125,16 +125,17 @@ impl App {
 pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
     // 1) create all the directories we need
     let dirs = [
-        "config",
-        "secrets",
-        "logs",
-        "flows/running",
-        "flows/stopped",
-        "plugins/tools",
-        "plugins/channels/running",
-        "plugins/channels/stopped",
-        "plugins/agents",
-        "plugins/processes",
+        "greentic",
+        "greentic/config",
+        "greentic/secrets",
+        "greentic/logs",
+        "greentic/flows/running",
+        "greentic/flows/stopped",
+        "greentic/plugins/tools",
+        "greentic/plugins/channels/running",
+        "greentic/plugins/channels/stopped",
+        "greentic/plugins/agents",
+        "greentic/plugins/processes",
     ];
     for d in &dirs {
         let path = root.join(d);
@@ -143,7 +144,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
     }
 
     // 2) write config/.env
-    let conf_path = root.join("config/.env");
+    let conf_path = root.join("greentic/config/.env");
     if !conf_path.exists() {
         let default_cfg = r#""#;
         fs::write(&conf_path, default_cfg)
@@ -154,7 +155,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
     }
 
     // 3) write a sample flow stub in flows/
-    let sample = root.join("flows/running/sample.greentic");
+    let sample = root.join("greentic/flows/running/sample.greentic");
     if !sample.exists() {
         let template = r#"
 

@@ -1,6 +1,6 @@
 [package]
 name = "channel_telegram"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -9,7 +9,7 @@ teloxide = { version = "0.15.0", features = ["macros"] }
 tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread"] }
 once_cell = "1.21.3"
 libc = "0.2.172"
-channel_plugin = { version = "0.1.0", path = "../channel_plugin" }
+channel_plugin = { version = "0.1.1", path = "../channel_plugin" }
 anyhow = "1.0.98"
 chrono = { version = "0.4", features = ["serde"] }
 schemars = { version = "0.8.22", features = ["chrono"] } 

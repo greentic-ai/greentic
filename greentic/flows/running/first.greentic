@@ -43,10 +43,7 @@
     "telegram_out": {
       "channel": "telegram",
       "in": false,
-      "out": true,
-      "to": [
-        "{{ json from.id }}"
-      ]
+      "out": true
     }
   },
   "connections": {

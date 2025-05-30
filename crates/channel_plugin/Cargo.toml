@@ -1,6 +1,6 @@
 [package]
 name = "channel_plugin"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["maarten <maarten@greentic.com>"]
 description = "The fastest, most secure and extendable agentic platform"
 license = "MIT"

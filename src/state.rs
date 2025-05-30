@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use tokio::sync::{broadcast, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
 pub enum StateValue {
     String(String),
     Number(f64),

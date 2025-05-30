@@ -1,23 +1,21 @@
 // src/flow.rs
 
 use std::{
-    collections::{HashMap, HashSet},
-    fmt, fs,
-    path::{Path, PathBuf},
-    sync::Arc, time::Duration,
+    collections::{HashMap, HashSet},fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
 };
 use crate::{
     agent::AgentNode, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeError, NodeType}, process::ProcessNode, secret::SecretsManager, state::StateStore, watcher::{watch_dir, WatchedType}
 };
 use anyhow::Error;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
+use thiserror::Error;
 use std::fmt::Debug;
 use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
 use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{Topo, Walker}, Directed, Direction::Incoming};
 use schemars::{schema::{InstanceType, Metadata, Schema, SchemaObject}, JsonSchema, SchemaGenerator};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json,Value};
 use tokio::{sync::Mutex, task::JoinHandle, time::sleep};
 use tracing::{error, info};
@@ -345,19 +343,28 @@ impl Flow {
                 let res = match &cfg.kind {
                     NodeKind::Channel { cfg } => {
                         if cfg.channel_out {
-                            //let cm = get_message(cfg,&input);
-                            let cm = ChannelMessage {
-                                id:        input.id().to_string(),
-                                session_id: input.session_id(),
-                                channel:   cfg.channel_name.clone(),
-                                direction: MessageDirection::Outgoing,
-                                content:   Some(json_to_message_content(input.payload().clone())),
-                                ..Default::default()
-                            };
-                            ctx.channel_manager()
-                                .send_to_channel(&cfg.channel_name, cm)
-                                .map(|_| input.clone())
-                                .map_err(|e| NodeError::ConnectionFailed(format!("{:?}", e)))
+                            let cm = cfg.create_out_msg(
+                                ctx,
+                                input.id().to_string(),
+                                input.session_id(),
+                                input.payload(),
+                                MessageDirection::Outgoing,
+                            );
+                            
+                            match cm {
+                                Ok(msg) => {
+                                    ctx.channel_manager()
+                                    .send_to_channel(&cfg.channel_name, msg)
+                                    .map(|_| input.clone())
+                                    .map_err(|e| NodeError::ConnectionFailed(format!("{:?}", e)))
+                                },
+                                Err(err) => {
+                                    let error = format!("Could not create a channel message because of {:?}",err);
+                                    error!(error);
+                                    Err(NodeError::ExecutionFailed(error))
+                                },
+                            }
+                            
                         } else {
                             Ok(input.clone())
                         }
@@ -483,104 +490,7 @@ impl Flow {
         self.graph.clone()
     }
 }
-/* 
-fn get_message(cfg: &ChannelNodeConfig,input: &Message) -> ChannelMessage {
 
-
-    
-    let mut cm = ChannelMessage {
-        id:        input.id().to_string(),
-        channel:   cfg.channel_name.clone(),
-        direction: MessageDirection::Outgoing,
-        content:   Some(json_to_message_content(input.payload().clone())),
-        ..Default::default()
-    };
-
-    // Prepare Handlebars + context once
-    let mut hb = Handlebars::new();
-    hb.register_helper(
-        "json",
-        Box::new(
-            move |h: &Helper<'_>,
-                _: &Handlebars<'_>,
-                _: &Context,
-                _: &mut RenderContext<'_,'_>,
-                out: &mut dyn Output| -> HelperResult
-            {
-                // Grab the first positional parameter
-                let param = h
-                    .param(0)
-                    .ok_or_else(|| RenderErrorReason::MissingVariable(Some("Helper `json` got no argument".to_string())))?;
-                // Serialize it
-                let s = serde_json::to_string(param.value())
-                    .map_err(|err| RenderErrorReason::SerdeError(err))?;
-                // Write it into the output buffer
-                out.write(&s)?;
-                Ok(())
-            }
-        ) as Box<dyn HelperDef + Send + Sync>
-    );
-
-
-    let ctx: Value = serde_json::to_value(&input.payload()).unwrap();
-
-    println!("payload {:?}",to_string_pretty(&input.payload()));
-
-    // 2) from
-    if let Some(ref entry) = cfg.from {
-        cm.from = match entry {
-            ValueOrTemplate::Value(p)    => p.clone(),
-            ValueOrTemplate::Template(t) => {
-                let rendered = hb.render_template(t, &ctx).unwrap();
-                serde_json::from_str(&rendered).unwrap()
-            }
-        };
-    }
-
-    // 3) to
-    if let Some(ref list) = cfg.to {
-        cm.to = list.iter().map(|entry| {
-            match entry {
-                ValueOrTemplate::Value(p)    => p.clone(),
-                ValueOrTemplate::Template(t) => {
-                    let rendered = hb.render_template(t, &ctx).unwrap();
-                    Participant{id:serde_json::from_str(&rendered).unwrap(), display_name: None, channel_specific_id: None}
-                }
-            }
-        }).collect();
-    }
-
-    // 4) content
-    if let Some(ref entry) = cfg.content {
-        cm.content = Some(match entry {
-            ValueOrTemplate::Value(c)    => c.clone(),
-            ValueOrTemplate::Template(t) => {
-                // render to a JSON string like `"Hello"` or `{...}` then parse
-                let rendered = hb.render_template(t, &ctx).unwrap();
-                serde_json::from_str(&rendered).unwrap()
-            }
-        });
-    }
-
-    // 5) thread_id
-    if let Some(ref entry) = cfg.thread_id {
-        cm.thread_id = Some(match entry {
-            ValueOrTemplate::Value(s)    => s.clone(),
-            ValueOrTemplate::Template(t) => hb.render_template(t, &ctx).unwrap()
-        });
-    }
-
-    // 6) reply_to_id
-    if let Some(ref entry) = cfg.reply_to_id {
-        cm.reply_to_id = Some(match entry {
-            ValueOrTemplate::Value(s)    => s.clone(),
-            ValueOrTemplate::Template(t) => hb.render_template(t, &ctx).unwrap()
-        });
-    }
-
-    cm
-}
-*/
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ValueOrTemplate<T> {
@@ -613,6 +523,77 @@ pub struct ChannelNodeConfig {
     pub thread_id: Option<ValueOrTemplate<String>>,       // For threading support
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to_id: Option<ValueOrTemplate<String>>, 
+}
+
+impl ChannelNodeConfig {
+    /// Build a ChannelMessage using this node’s config, a NodeContext, and
+    /// the incoming payload/id/session_id/direction.
+    pub fn create_out_msg(
+        &self,
+        ctx: &NodeContext,
+        id: String,
+        session_id: Option<String>,
+        payload: Value,
+        direction: MessageDirection,
+    ) -> Result<ChannelMessage, ResolveError> {
+        // 1) `from`: prefer config, else fallback to channel_origin if you want:
+        let from = if let Some(inner) = &self.from {
+            inner.resolve(ctx)?
+        } else {
+            let co = ctx.channel_origin();
+            if co.is_none() {
+                // no from set, make it the platform
+                Participant { 
+                    id: id.clone(), 
+                    display_name: Some("greentic".to_string()), 
+                    channel_specific_id: Some("greentic".to_string()), 
+                }
+            } else {
+                // Optional: fall back to channel_origin for `from` as well
+                ctx.channel_origin().map(|co| co.participant()).unwrap()
+            }
+
+        };
+
+        // 2) `to`: first try config, else channel_origin, else error:
+        let to = if let Some(list) = &self.to {
+            list.iter().map(|tpl| tpl.resolve(ctx)).collect::<Result<Vec<_>, _>>()?
+        } else if let Some(co) = ctx.channel_origin() {
+            vec![co.participant()]
+        } else {
+            let error = format!("no `to` configured and no channel_origin for session_id {:?}", session_id);
+            error!(error);
+            return Err(ResolveError::Template(
+               error.into(),
+            ));
+        };
+
+        // 3) `content`: prefer config, else convert the raw payload:
+        let content = if let Some(inner) = &self.content {
+            Some(inner.resolve(ctx)?)
+        } else {
+            Some(json_to_message_content(payload))
+        };
+
+        // 4) `thread_id` and `reply_to_id` are both simple Option<…>:
+        let thread_id = self.thread_id.as_ref().map(|tpl| tpl.resolve(ctx)).transpose()?;
+        let reply_to_id = self.reply_to_id.as_ref().map(|tpl| tpl.resolve(ctx)).transpose()?;
+
+
+        // 5) Build the ChannelMessage, pulling channel from the config:
+        Ok(ChannelMessage {
+            id,
+            session_id,
+            channel: self.channel_name.clone(),
+            from,
+            to,
+            direction,
+            content,
+            thread_id,
+            reply_to_id,
+            ..Default::default()
+        })
+    }
 }
 
 /// Node kinds, flattened by top-level key
@@ -883,3 +864,49 @@ impl fmt::Display for FlowError {
 }
 
 impl std::error::Error for FlowError {}
+
+
+
+/// Possible errors when resolving a `ValueOrTemplate`.
+#[derive(Debug, Error)]
+pub enum ResolveError {
+    #[error("template rendering failed: {0}")]
+    Template(String),
+
+    #[error("failed to parse rendered value into target type: {0}")]
+    Parse(#[from] serde_json::Error),
+}
+
+
+impl<T> ValueOrTemplate<T>
+where
+    T: DeserializeOwned + Clone,
+{
+    /// Resolve this into a concrete `T`:
+    /// - If `self` is `Value(v)`, just clone and return it.
+    /// - If `self` is `Template(s)`, render `s` via `ctx`, then `serde_json::from_str` into `T`.
+    pub fn resolve<C>(&self, ctx: &C) -> Result<T, ResolveError>
+    where
+        C: TemplateContext,
+    {
+        match self {
+            ValueOrTemplate::Value(v) => Ok(v.clone()),
+            ValueOrTemplate::Template(tmpl) => {
+                // 1) Render the template to a raw JSON string
+                let rendered = ctx
+                    .render_template(tmpl)
+                    .map_err(ResolveError::Template)?;
+
+                // 2) Parse into the target type T
+                let parsed: T = serde_json::from_str(&rendered)?;
+                Ok(parsed)
+            }
+        }
+    }
+}
+
+/// An example trait your `NodeContext` should implement (or adapt to whatever you have).
+pub trait TemplateContext {
+    /// Render the template with the context’s data, producing a JSON string.
+    fn render_template(&self, template: &str) -> Result<String, String>;
+}

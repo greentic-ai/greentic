@@ -1,12 +1,13 @@
 use std::{collections::HashMap, fmt, sync::Arc};
 use channel_plugin::message::Participant;
+use handlebars::Handlebars;
 use serde::{Deserialize,  Serialize};
 use tempfile::TempDir;
 use std::fs;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, mapper::Mapper, message::Message, secret::SecretsManager, state::StateValue, util::extension_from_mime};
+use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::TemplateContext, mapper::Mapper, message::Message, secret::SecretsManager, state::StateValue, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
 #[typetag::serde] 
 pub trait NodeType: Send + Sync + Debug {
@@ -125,12 +126,14 @@ pub struct NodeContext {
     channel_manager: Arc<ChannelManager>,
     secrets: SecretsManager,
     channel_origin: Option<ChannelOrigin>,
+    pub hb: Arc<Handlebars<'static>>,
 }
 
 impl NodeContext
 {
     pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
-        Self { state, config, executor, channel_manager, secrets, channel_origin }
+        let hb = make_handlebars();
+        Self { state, config, executor, channel_manager, secrets, channel_origin, hb}
     }
 
     pub fn channel_origin(&self) -> Option<ChannelOrigin> {
@@ -174,6 +177,41 @@ impl NodeContext
 
 }
 
+
+
+/// A shared registry you build once at startup:
+fn make_handlebars() -> Arc<Handlebars<'static>> {
+    let hb = Handlebars::new();
+
+    // If you have partials:
+    // hb.register_partial("foo", "{{bar}} world").unwrap();
+
+    // Or helpers:
+    // hb.register_helper("upper", Box::new(|h, _, _| {
+    //     let v = h.param(0).unwrap().value().as_str().unwrap();
+    //     Ok(v.to_uppercase().into())
+    // }));
+
+    Arc::new(hb)
+}
+
+impl TemplateContext for NodeContext {
+    fn render_template(&self, template: &str) -> Result<String, String> {
+        let tmpl = template.trim();
+        if let Some(inner) = tmpl.strip_prefix("{{").and_then(|s| s.strip_suffix("}}")) {
+            let key = inner.trim();
+            match self.state.get(key) {
+                Some(val) => {
+                    let json_val = serde_json::to_value(val).map_err(|e| e.to_string())?;
+                    serde_json::to_string(&json_val).map_err(|e| e.to_string())
+                }
+                None => Err(format!("template key not found: {}", key)),
+            }
+        } else {
+            Err(format!("invalid template syntax: {}", template))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum NodeError {

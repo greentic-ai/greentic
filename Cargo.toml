@@ -1,6 +1,6 @@
 [package]
 name = "greentic"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["maarten <maarten@greentic.com>"]
 description = "The fastest, most secure and extendable agentic platform"
 license = "MIT"
@@ -18,7 +18,7 @@ members = [
 
 
 [dependencies]
-channel_plugin = { version="0.1.0", path = "crates/channel_plugin"}
+channel_plugin = { version="0.1.1", path = "crates/channel_plugin"}
 async-trait = "0.1.88"
 schemars = { version = "0.8.22", features = ["chrono"] } 
 serde = { version = "1.0.219", features = ["derive"] }
@@ -60,4 +60,5 @@ petgraph = { version = "0.8.1", features = ["serde"] }
 atomic_refcell = "0.1.13"
 crossbeam-utils = "0.8.21"
 opentelemetry-appender-tracing = "0.30.0"
+thiserror = "2.0.12"
 
