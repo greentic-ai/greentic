@@ -2,7 +2,7 @@
 
 use crate::flow::{Flow, FlowManager, NodeKind};
 use crate::message::Message;
-use crate::node::{NodeContext, NodeType, NodeError};
+use crate::node::{ChannelOrigin, NodeContext, NodeError, NodeType};
 use async_trait::async_trait;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection};
 use channel_plugin::plugin::ChannelPlugin;
@@ -50,9 +50,10 @@ impl ChannelNode {
     /// When an actual plugin yields an incoming ChannelMessage,
     /// this helper will route it into one or more flows.
     pub async fn handle_message(&self, msg: &ChannelMessage, fm: &FlowManager) {
-        let input = Message::new(&msg.channel, serde_json::to_value(msg).unwrap(),msg.session_id.clone());
+        let input = Message::new_uuid(&msg.channel, serde_json::to_value(msg).unwrap());
+        let channel_origin = ChannelOrigin::new(msg.channel.clone(), msg.from.clone());
         if let Some(report) = fm
-            .process_message(&self.flow_name, &self.node_id, input)
+            .process_message(&self.flow_name, &self.node_id, input, Some(channel_origin))
             .await
         {
             let payload_json = serde_json::to_string(&report)
@@ -175,11 +176,31 @@ impl NodeType for ChannelNode {
             // it was already a ChannelMessage
             cm.channel   = self.channel_name.clone();
             cm.direction = MessageDirection::Outgoing;
+            if cm.to.is_empty() {
+                // assuming we are returning to the channel the message came from
+                if let Some(channel_origin) = ctx.channel_origin() {
+                    cm.to = vec![channel_origin.participant()];
+                } else {
+                    let error = format!("No to field was specified so don't know where to send the message to in channel {} with session id {:?}",cm.channel, input.session_id());
+                    error!(error);
+                    return Err(NodeError::InvalidInput(error));
+                }
+                
+            }
             plugin.send(cm)
         } else {
             // fallback: wrap raw JSON as text
             let text = input.payload().to_string();
+            // assuming we are returning to the channel the message came from
+            let to = if let Some(channel_origin) = ctx.channel_origin() {
+                vec![channel_origin.participant()]
+            } else {
+                let error = format!("No to field was specified so don't know where to send the message to in channel {} with session id {:?}",plugin.name(), input.session_id());
+                error!(error);
+                return Err(NodeError::InvalidInput(error));
+            };
             let cm = ChannelMessage {
+                to: to.clone(),
                 channel:   self.channel_name.clone(),
                 session_id: input.session_id().clone(),
                 direction: MessageDirection::Outgoing,

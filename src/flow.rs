@@ -7,7 +7,7 @@ use std::{
     sync::Arc, time::Duration,
 };
 use crate::{
-    agent::AgentNode, channel::{manager::ChannelManager}, executor::Executor, mapper::Mapper, message::Message, node::{NodeContext, NodeError, NodeType}, process::ProcessNode, secret::SecretsManager, state::StateStore, watcher::{watch_dir, WatchedType}
+    agent::AgentNode, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeError, NodeType}, process::ProcessNode, secret::SecretsManager, state::StateStore, watcher::{watch_dir, WatchedType}
 };
 use anyhow::Error;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
@@ -823,8 +823,10 @@ impl FlowManager {
         flow_name: &str,
         node_id: &str,
         message: Message,
+        channel_origin: Option<ChannelOrigin>,
     ) -> Option<ExecutionReport> {
         let flow = self.flows.get(flow_name)?;
+
 
         let mut ctx = NodeContext::new(
             self.store.load().await,
@@ -832,6 +834,7 @@ impl FlowManager {
             self.executor.clone(),
             self.channel_manager.clone(),
             self.secrets.clone(),
+            channel_origin.clone(),
         );
 
         let report = flow.run(message, node_id, &mut ctx).await;

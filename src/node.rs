@@ -1,11 +1,12 @@
 use std::{collections::HashMap, fmt, sync::Arc};
+use channel_plugin::message::Participant;
 use serde::{Deserialize,  Serialize};
 use tempfile::TempDir;
 use std::fs;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager, node::ChannelNode}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, mapper::Mapper, message::Message, secret::SecretsManager, state::StateValue, util::extension_from_mime};
+use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, mapper::Mapper, message::Message, secret::SecretsManager, state::StateValue, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
 #[typetag::serde] 
 pub trait NodeType: Send + Sync + Debug {
@@ -94,6 +95,27 @@ impl JsonSchema for Node {
     }
 }
 
+#[derive(Clone,Debug)]
+pub struct ChannelOrigin {
+    channel: String,
+    participant: Participant,
+}
+
+impl ChannelOrigin {
+    pub fn new(channel: String, participant: Participant) -> Self
+    {
+        Self {channel,participant}
+    }
+
+    pub fn channel(&self) -> String {
+        self.channel.clone()
+    }
+
+    pub fn participant(&self) -> Participant {
+        self.participant.clone()
+    }
+}
+
 #[warn(dead_code)]
 #[derive(Clone,)]
 pub struct NodeContext {
@@ -102,12 +124,17 @@ pub struct NodeContext {
     executor: Arc<Executor>,
     channel_manager: Arc<ChannelManager>,
     secrets: SecretsManager,
+    channel_origin: Option<ChannelOrigin>,
 }
 
 impl NodeContext
 {
-    pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, secrets: SecretsManager,  ) -> Self {
-        Self { state, config, executor, channel_manager, secrets,  }
+    pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
+        Self { state, config, executor, channel_manager, secrets, channel_origin }
+    }
+
+    pub fn channel_origin(&self) -> Option<ChannelOrigin> {
+        self.channel_origin.clone()
     }
 
     pub fn get(&self, key: &str) -> Option<&StateValue> {
@@ -456,7 +483,7 @@ mod tests {
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
-        let mut ctx = NodeContext::new(HashMap::new(), config, executor,channel_manager, secrets);
+        let mut ctx = NodeContext::new(HashMap::new(), config, executor,channel_manager, secrets, None);
         assert!(ctx.get("missing").is_none());
 
         ctx.set("key", StateValue::String("value".to_string()));
@@ -493,7 +520,7 @@ mod tests {
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
-        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, secrets);
+        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, secrets, None);
 
         let node = ToolNode::new("mock_tool".to_string(), "text_output".to_string(),None, None, None, None, None);
         let msg = Message::new("msg1", json!({"input": "Hello"}),None);
@@ -518,7 +545,7 @@ mod tests {
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
-        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, secrets);
+        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, secrets, None);
 
         let node = ToolNode::new("mock_tool".to_string(), "file_output".to_string(), None, None, None, None, None);
         let msg = Message::new("msg2", json!({"input": "data"}),None);

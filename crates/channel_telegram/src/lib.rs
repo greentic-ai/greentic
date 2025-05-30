@@ -330,47 +330,24 @@ impl ChannelPlugin for TelegramPlugin {
         }
         // 1) pull off the Vec<Participant> and the Option<String> by cloning them:
         let to_list = msg.to.clone();
-        let session_id_opt = msg.session_id.clone();
 
         // 2) now you can still use `msg` freely; whenever you call send_msg, clone `msg`:
         if to_list.is_empty() {
-            if let Some(session_id) = session_id_opt {
-                return send_msg(msg.clone(), session_id, self.bot.clone());
-            } else {
-                let error = "sending to empty participant or no session_id is not possible";
-                if let Some(log) = &self.logger {
-                    log.log(
-                        LogLevel::Error,
-                        "telegram",
-                        error,
-                    );
-                }
-                return Err(PluginError::Other(error.to_string()));
+            let error = "sending to empty participant is not possible";
+            if let Some(log) = &self.logger {
+                log.log(
+                    LogLevel::Error,
+                    "telegram",
+                    error,
+                );
             }
+            return Err(PluginError::Other(error.to_string()));
         } else {
             for participant in to_list {
                 // clone the chat_id string
                 let chat_id = participant.id.clone();
 
-                if chat_id.is_empty() {
-                    // fallback to session_id if participant is empty
-                    if let Some(session_id) = session_id_opt.clone() {
-                        return send_msg(msg.clone(), session_id, self.bot.clone());
-                    } else {
-                        let error = "sending to empty participant or no session_id is not possible";
-                        if let Some(log) = &self.logger {
-                            log.log(
-                                LogLevel::Error,
-                                "telegram",
-                                error,
-                            );
-                        }
-                        return Err(PluginError::Other(error.to_string()));
-                    }
-                } else {
-                    // normal case
-                    return send_msg(msg.clone(), chat_id, self.bot.clone());
-                }
+                return send_msg(msg.clone(), chat_id, self.bot.clone());
             }
         }
         Ok(())

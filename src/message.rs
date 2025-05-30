@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct Message {
@@ -16,6 +17,15 @@ impl Message {
         Self {
             id: id.to_string(),
             session_id,
+            payload,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn new_uuid(id: &str, payload: Value, ) -> Self {
+        Self {
+            id: id.to_string(),
+            session_id: Some(Uuid::new_v4().to_string()),
             payload,
             metadata: HashMap::new(),
         }

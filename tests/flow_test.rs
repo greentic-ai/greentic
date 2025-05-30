@@ -445,7 +445,7 @@ async fn run_two_channel_nodes() {
     //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.
     fm.register_flow(built.id().as_str(), built.clone());
 
-    let mut ctx = NodeContext::new(HashMap::new(), HashMap::new(), executor, channel_manager, secrets);
+    let mut ctx = NodeContext::new(HashMap::new(), HashMap::new(), executor, channel_manager, secrets, None);
 
 
     // run

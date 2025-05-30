@@ -1,6 +1,10 @@
 [package]
 name = "greentic"
 version = "0.1.0"
+authors = ["maarten <maarten@greentic.com>"]
+description = "The fastest, most secure and extendable agentic platform"
+license = "MIT"
+repository = "https://github.com/greentic-ai/greentic"
 edition = "2024"
 
 [workspace]
@@ -14,7 +18,7 @@ members = [
 
 
 [dependencies]
-channel_plugin = { path = "crates/channel_plugin"}
+channel_plugin = { version="0.1.0", path = "crates/channel_plugin"}
 async-trait = "0.1.88"
 schemars = { version = "0.8.22", features = ["chrono"] } 
 serde = { version = "1.0.219", features = ["derive"] }
