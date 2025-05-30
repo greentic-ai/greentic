@@ -1,6 +1,10 @@
 [package]
 name = "channel_plugin"
 version = "0.1.0"
+authors = ["maarten <maarten@greentic.com>"]
+description = "The fastest, most secure and extendable agentic platform"
+license = "MIT"
+repository = "https://github.com/greentic-ai/greentic"
 edition = "2021"
 
 [lib]
