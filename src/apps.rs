@@ -125,7 +125,6 @@ impl App {
 pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
     // 1) create all the directories we need
     let dirs = [
-        "greentic",
         "greentic/config",
         "greentic/secrets",
         "greentic/logs",
