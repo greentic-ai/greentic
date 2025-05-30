@@ -80,7 +80,7 @@ Greentic AI is an open-source platform designed to let you build, deploy, and ma
 
 1. **Install Greentic CLI**  
    ```bash
-   cargo install greentic (coming soon, for now do cargo run)
+   cargo install greentic
    ```
 2. **Initialize one time **  
    ```bash
