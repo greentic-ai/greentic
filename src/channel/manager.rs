@@ -1,7 +1,7 @@
 // src/channel/manager.rs
 
 use std::{
-    collections::HashMap, ffi::{c_char, c_void, CStr}, path::PathBuf, sync::{Arc, Mutex}, time::Duration
+    collections::HashMap, ffi::{c_char, c_void, CStr}, fmt, path::PathBuf, sync::{Arc, Mutex}, time::Duration
 };
 use anyhow::{bail, Error, Result};
 use async_trait::async_trait;
@@ -282,6 +282,35 @@ impl PluginEventHandler for ChannelManager {
             warn!("Tried to remove unknown channel plugin: {}", name);
         }
         Ok(())
+    }
+}
+
+impl fmt::Debug for ChannelManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Snapshot how many channels are registered
+        let channel_names: Vec<String> = self
+            .channels
+            .iter()
+            .map(|kv| kv.key().clone())
+            .collect();
+
+        // Peek at how many incoming_subscribers there are (we lock the mutex briefly)
+        let subscriber_count = {
+            // We deliberately do a non-blocking lock here to avoid deadlocks in Debug,
+            // but you could also use `block_in_place` or unwrap if you know it’s uncontested.
+            match self.incoming_subscribers.try_lock() {
+                Ok(vec) => vec.len(),
+                Err(_) => usize::MAX, // or “<locked>” if you prefer
+            }
+        };
+
+        f.debug_struct("ChannelManager")
+            .field("config", &self.config)
+            .field("secrets", &self.secrets)
+            .field("channel_names", &channel_names)
+            .field("host_logger", &"<HostLogger - no Debug>") 
+            .field("incoming_subscriber_count", &subscriber_count)
+            .finish()
     }
 }
 

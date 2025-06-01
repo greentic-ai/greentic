@@ -2,7 +2,7 @@
 
 use crate::flow::{Flow, FlowManager, NodeKind};
 use crate::message::Message;
-use crate::node::{ChannelOrigin, NodeContext, NodeError, NodeType};
+use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType};
 use async_trait::async_trait;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection};
 use channel_plugin::plugin::ChannelPlugin;
@@ -49,7 +49,7 @@ pub enum FlowRouterConfig {
 impl ChannelNode {
     /// When an actual plugin yields an incoming ChannelMessage,
     /// this helper will route it into one or more flows.
-    pub async fn handle_message(&self, msg: &ChannelMessage, fm: &FlowManager) {
+    pub async fn handle_message(&self, msg: &ChannelMessage, fm: &Arc<FlowManager>) {
         let input = Message::new_uuid(&msg.channel, serde_json::to_value(msg).unwrap());
         let channel_origin = ChannelOrigin::new(msg.channel.clone(), msg.from.clone());
         if let Some(report) = fm
@@ -151,6 +151,7 @@ impl IncomingHandler for ChannelsRegistry {
 }
 
 /// So that you can `#[typetag::serde]` your `ChannelNode` inside a flow graph:
+#[async_trait]
 #[typetag::serde]
 impl NodeType for ChannelNode {
     fn type_name(&self) -> String {
@@ -164,11 +165,12 @@ impl NodeType for ChannelNode {
     /// Invoked when *inside* a flow you explicitly `ChannelNode.process(...)`.
     /// Serializes your internal `Message` payload into a `ChannelMessage`
     /// and sends it back out on the plugin’s send‐loop via your manager.
-    fn process(&self, input: Message, ctx: &mut NodeContext) -> Result<Message, NodeError> {
+    #[tracing::instrument(name = "channel_node_process", skip(self,ctx))]
+    async fn process(&self, input: Message, ctx: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         let mut plugin = ctx
             .channel_manager()
             .channel(&self.channel_name)
-            .ok_or_else(|| NodeError::Internal(format!("no such channel: {}", self.channel_name)))?;
+            .ok_or_else(|| NodeErr::all(NodeError::Internal(format!("no such channel: {}", self.channel_name))))?;
 
         // try to deserialize a full ChannelMessage
         let send_result = if let Ok(mut cm) = serde_json::from_value::<ChannelMessage>(input.payload().clone())
@@ -183,7 +185,7 @@ impl NodeType for ChannelNode {
                 } else {
                     let error = format!("No to field was specified so don't know where to send the message to in channel {} with session id {:?}",cm.channel, input.session_id());
                     error!(error);
-                    return Err(NodeError::InvalidInput(error));
+                    return Err(NodeErr::all(NodeError::InvalidInput(error)));
                 }
                 
             }
@@ -197,7 +199,7 @@ impl NodeType for ChannelNode {
             } else {
                 let error = format!("No to field was specified so don't know where to send the message to in channel {} with session id {:?}",plugin.name(), input.session_id());
                 error!(error);
-                return Err(NodeError::InvalidInput(error));
+                return Err(NodeErr::all(NodeError::InvalidInput(error)));
             };
             let cm = ChannelMessage {
                 to: to.clone(),
@@ -213,7 +215,7 @@ impl NodeType for ChannelNode {
         if let Err(e) = send_result {
             warn!(error = ?e, "failed to send to channel {}", self.channel_name);
         }
-        Ok(input)
+        Ok(NodeOut::all(input))
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {

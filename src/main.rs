@@ -102,8 +102,7 @@ async fn main() -> anyhow::Result<()> {
             let event_file      = "logs/greentic-schema.json".to_string();
             let tools_dir    = root.join("plugins").join("tools");
             let _processes_dir= root.join("plugins").join("processes");
-            let _agents_dir   = root.join("plugins").join("agents");     
-
+            
             fs::create_dir_all(&out_dir)?;
             write_schema(
                 out_dir.clone(),
@@ -147,7 +146,6 @@ async fn run(root: PathBuf,
     let event_file    = "logs/greentic_events.log".to_string();
     let tools_dir    = root.join("plugins").join("tools");
     let _processes_dir= root.join("plugins").join("processes");
-    let _agents_dir   = root.join("plugins").join("agents");
     let channels_dir = root.join("plugins").join("channels/running");       
     // tracing / logger
     let logger = init_tracing(

@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
 };
 use crate::{
-    agent::AgentNode, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeError, NodeType}, process::ProcessNode, secret::SecretsManager, state::StateStore, watcher::{watch_dir, WatchedType}
+    agent::agent::AgentNode, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::ProcessNode, secret::SecretsManager, state::StateStore, watcher::{watch_dir, WatchedType}
 };
 use anyhow::Error;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
@@ -355,18 +355,18 @@ impl Flow {
                                 Ok(msg) => {
                                     ctx.channel_manager()
                                     .send_to_channel(&cfg.channel_name, msg)
-                                    .map(|_| input.clone())
-                                    .map_err(|e| NodeError::ConnectionFailed(format!("{:?}", e)))
+                                    .map(|_| NodeOut::all(input.clone()))
+                                    .map_err(|e| NodeErr::all(NodeError::ConnectionFailed(format!("{:?}", e))))
                                 },
                                 Err(err) => {
                                     let error = format!("Could not create a channel message because of {:?}",err);
                                     error!(error);
-                                    Err(NodeError::ExecutionFailed(error))
+                                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
                                 },
                             }
                             
                         } else {
-                            Ok(input.clone())
+                            Ok(NodeOut::all(input.clone()))
                         }
                     }
 
@@ -403,7 +403,7 @@ impl Flow {
                             tool.in_map.clone(),
                             tool.out_map.clone(),
                             tool.err_map.clone(),
-                        ).process(msg_with_params, ctx)
+                        ).process(msg_with_params, ctx).await
                     }
 
                     NodeKind::Agent { agent } => {
@@ -819,7 +819,7 @@ impl FlowManager {
         );
 
         let report = flow.run(message, node_id, &mut ctx).await;
-        self.store.save(&ctx.get_all()).await;
+        self.store.save(&ctx.get_all_state()).await;
         Some(report)
     }
 

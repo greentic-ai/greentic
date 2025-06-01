@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fmt, sync::Arc};
+use async_trait::async_trait;
 use channel_plugin::message::Participant;
 use handlebars::Handlebars;
 use serde::{Deserialize,  Serialize};
@@ -9,10 +10,78 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::TemplateContext, mapper::Mapper, message::Message, secret::SecretsManager, state::StateValue, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
+
+/// NodeOut enables to send the messages coming out of the Node
+/// to either all connections (default optin)
+/// or if Some(out_only) connections are specified only this
+/// subset of connections 
+#[derive(Clone,Debug, Serialize, Deserialize,JsonSchema)]
+pub struct NodeOut{
+    message: Message,
+    /// the list of connections you only want to send the message to
+    out_only: Option<Vec<String>>,
+}
+
+impl NodeOut {
+    pub fn new(message: Message, out_only: Option<Vec<String>>) -> Self {
+        Self { message, out_only}
+    } 
+
+    pub fn all(message: Message) -> Self {
+        Self { message, out_only:None}
+    } 
+
+    pub fn one(message: Message, out_only: String) -> Self {
+        Self { message, out_only: Some(vec![out_only])}
+    } 
+
+    pub fn message(&self) -> Message{
+        self.message.clone()
+    }
+
+    pub fn out_only(&self) -> Option<Vec<String>> {
+        self.out_only.clone()
+    }
+}
+
+/// NodeErr enables to send a NodeError to all connections (default)
+/// or only a subset of connections
+#[derive(Clone,Debug, Serialize, Deserialize,JsonSchema)]
+pub struct NodeErr{
+    pub error: NodeError,
+    /// The list of connections you only want to send the error to
+    pub err_only: Option<Vec<String>>,
+}
+
+
+impl NodeErr {
+    pub fn new(error: NodeError, err_only: Option<Vec<String>>) -> Self {
+        Self { error, err_only}
+    } 
+
+    pub fn all(error: NodeError) -> Self {
+        Self { error, err_only:None}
+    } 
+
+    pub fn one(error: NodeError, err_only: String) -> Self {
+        Self { error, err_only: Some(vec![err_only])}
+    } 
+
+    pub fn error(&self) -> NodeError{
+        self.error.clone()
+    }
+
+    pub fn err_only(&self) -> Option<Vec<String>> {
+        self.err_only.clone()
+    }
+}
+
+
 #[typetag::serde] 
+#[async_trait]
 pub trait NodeType: Send + Sync + Debug {
     fn type_name(&self) -> String;
-    fn process(&self, msg: Message, ctx: &mut NodeContext) -> Result<Message, NodeError>;
+    async fn process(&self, msg: Message, ctx: &mut NodeContext) -> Result<NodeOut, NodeErr>;
     fn clone_box(&self) -> Box<dyn NodeType>;
     /// Return this concrete type’s schema.
     fn schema(&self) -> schemars::schema::RootSchema;
@@ -118,7 +187,7 @@ impl ChannelOrigin {
 }
 
 #[warn(dead_code)]
-#[derive(Clone,)]
+#[derive(Clone,Debug)]
 pub struct NodeContext {
     state: HashMap<String, StateValue>,
     config: HashMap<String, String>,
@@ -140,20 +209,36 @@ impl NodeContext
         self.channel_origin.clone()
     }
 
-    pub fn get(&self, key: &str) -> Option<&StateValue> {
+    pub fn get_state(&self, key: &str) -> Option<&StateValue> {
         self.state.get(key)
     }
 
-    pub fn get_all(&self) -> HashMap<String, StateValue> {
+    pub fn get_all_state(&self) -> HashMap<String, StateValue> {
         self.state.clone()
     }
 
-    pub fn set(&mut self, key: &str, value: StateValue) {
+    pub fn set_state(&mut self, key: &str, value: StateValue) {
         self.state.insert(key.to_string(), value);
     }
 
-    pub fn delete(&mut self, key: &str) {
+    pub fn delete_state(&mut self, key: &str) {
         self.state.remove(key);
+    }
+
+    pub fn get_config(&self, key: &str) -> Option<&String> {
+        self.config.get(key)
+    }
+
+    pub fn get_all_config(&self) -> HashMap<String, String> {
+        self.config.clone()
+    }
+
+    pub fn set_config(&mut self, key: &str, value: String) {
+        self.config.insert(key.to_string(), value);
+    }
+
+    pub fn delete_config(&mut self, key: &str) {
+        self.config.remove(key);
     }
 
     pub fn executor(&self) -> &Executor {
@@ -318,6 +403,10 @@ impl ToolNode {
         self
     }
 
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
 }
 impl Clone for ToolNode {
     fn clone(&self) -> Self {
@@ -333,6 +422,7 @@ impl Clone for ToolNode {
     }
 }
 
+#[async_trait]
 #[typetag::serde]
 impl NodeType for ToolNode {
     fn type_name(&self) -> String {
@@ -345,7 +435,7 @@ impl NodeType for ToolNode {
     }
 
      #[tracing::instrument(name = "tool_node_process", skip(self,context))]
-    fn process(&self, input: Message, context: &mut NodeContext) -> Result<Message, NodeError> {
+    async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
 
 
         let executor = context.executor();
@@ -385,7 +475,7 @@ impl NodeType for ToolNode {
                             let storage_dir = resolve_or_create_storage_dir(&context.config)?;
                             let filename = storage_dir.join(format!("image_{}.{}", i, extension_from_mime(&image.mime_type)));
                             fs::write(&filename, &image.data)
-                                .map_err(|e| NodeError::ExecutionFailed(format!("Failed to write image: {}", e)))?;
+                                .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to write image: {}", e))))?;
                             outputs.push(serde_json::json!({ "image": filename.to_string_lossy() }));
                         }
                         Content::Embedded(embedded) => {
@@ -394,14 +484,14 @@ impl NodeType for ToolNode {
                                     let storage_dir = resolve_or_create_storage_dir(&context.config)?;
                                     let filename = storage_dir.join(format!("blob_{}.{}", i, extension_from_mime(blob.mime_type.as_deref().unwrap_or("bin"))));
                                     fs::write(&filename, &blob.blob)
-                                        .map_err(|e| NodeError::ExecutionFailed(format!("Failed to write blob: {}", e)))?;
+                                        .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to write blob: {}", e))))?;
                                     outputs.push(serde_json::json!({ "blob": filename.to_string_lossy() }));
                                 }
                                 ResourceContents::Text(text) => {
                                     let storage_dir = resolve_or_create_storage_dir(&context.config)?;
                                     let filename = storage_dir.join(format!("text_{}.txt", i));
                                     fs::write(&filename, &text.text)
-                                        .map_err(|e| NodeError::ExecutionFailed(format!("Failed to write text: {}", e)))?;
+                                        .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to write text: {}", e))))?;
                                     outputs.push(serde_json::json!({ "text_file": filename.to_string_lossy() }));
                                 }
                             }
@@ -436,12 +526,12 @@ impl NodeType for ToolNode {
                     for (k, v) in mapper_output.config_updates {
                         context.config.insert(k, v);
                     }
-                    Ok(Message::new(&input.id(), mapper_output.payload,input.session_id()))
+                    Ok(NodeOut::all(Message::new(&input.id(), mapper_output.payload,input.session_id())))
                 } else {
-                    Ok(Message::new(&input.id(), output_json,input.session_id()))
+                    Ok(NodeOut::all(Message::new(&input.id(), output_json,input.session_id())))
                 }
             }
-            Err(e) => Err(NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e))),
+            Err(e) => Err(NodeErr::all(NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e)))),
         }
     }
     fn clone_box(&self) -> Box<dyn NodeType> {
@@ -451,17 +541,17 @@ impl NodeType for ToolNode {
 
 fn resolve_or_create_storage_dir(
     config: &HashMap<String, String>,
-) -> Result<PathBuf, NodeError> {
+) -> Result<PathBuf, NodeErr> {
     if let Some(dir_str) = config.get("node_storage_dir") {
         let path = PathBuf::from(dir_str);
         if !path.exists() {
             fs::create_dir_all(&path)
-                .map_err(|e| NodeError::ExecutionFailed(format!("Failed to create node_storage_dir: {}", e)))?;
+                .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to create node_storage_dir: {}", e))))?;
         }
         Ok(path)
     } else {
         let tempdir = TempDir::new()
-            .map_err(|e| NodeError::ExecutionFailed(format!("Failed to create tempdir: {}", e)))?;
+            .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to create tempdir: {}", e))))?;
         let path = tempdir.path().to_path_buf();
         Ok(path)
     }
@@ -488,6 +578,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     #[typetag::serde]
     impl NodeType for EchoNode {
         fn type_name(&self) -> String {
@@ -499,9 +590,9 @@ mod tests {
             schema_for!(EchoNode)
         }
 
-        fn process(&self, input: Message, context: &mut NodeContext) -> Result<Message, NodeError> {
-            context.set("echoed", StateValue::String("yes".to_string()));
-            Ok(input)
+        async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
+            context.set_state("echoed", StateValue::String("yes".to_string()));
+            Ok(NodeOut::all(input))
         }
 
         fn clone_box(&self) -> Box<dyn NodeType> {
@@ -522,13 +613,13 @@ mod tests {
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
         let mut ctx = NodeContext::new(HashMap::new(), config, executor,channel_manager, secrets, None);
-        assert!(ctx.get("missing").is_none());
+        assert!(ctx.get_state("missing").is_none());
 
-        ctx.set("key", StateValue::String("value".to_string()));
-        assert_eq!(ctx.get("key"), Some(&StateValue::String("value".to_string())));
+        ctx.set_state("key", StateValue::String("value".to_string()));
+        assert_eq!(ctx.get_state("key"), Some(&StateValue::String("value".to_string())));
 
-        ctx.delete("key");
-        assert!(ctx.get("key").is_none());
+        ctx.delete_state("key");
+        assert!(ctx.get_state("key").is_none());
     }
 
     #[test]
@@ -564,7 +655,7 @@ mod tests {
         let msg = Message::new("msg1", json!({"input": "Hello"}),None);
 
         let result = node.process(msg.clone(), &mut context).unwrap();
-        let output = result.payload();
+        let output = result.message.payload();
 
         assert!(output.is_array());
         let arr = output.as_array().unwrap();
@@ -589,7 +680,7 @@ mod tests {
         let msg = Message::new("msg2", json!({"input": "data"}),None);
 
         let result = node.process(msg.clone(), &mut context).unwrap();
-        let output = result.payload();
+        let output = result.message.payload();
         assert!(output.is_array());
 
         for item in output.as_array().unwrap() {

@@ -21,7 +21,8 @@ pub struct App
 
 impl App {
     pub fn new() -> Self {
-        Self{tools_task:None,
+        Self{
+            tools_task:None,
             flow_task:None,
             channels_task:None,
             flow_manager: None,
@@ -72,7 +73,7 @@ impl App {
         let flow_mgr = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), secrets.clone());
         self.flow_manager = Some(flow_mgr.clone());
 
-        // 1) Load all existing flows, then watch for changes:
+        // Load all existing flows, then watch for changes:
         flow_mgr
             .load_all_flows_from_dir(&flows_dir)
             .await
@@ -107,9 +108,7 @@ impl App {
         Ok(())
     }
 
-    pub async fn shutdown(&self){
-        self.channel_manager.clone().unwrap().shutdown_all(true, 2000);
-        self.flow_manager.clone().unwrap().shutdown_all().await;
+    pub async fn shutdown(&self){    
         if let Some(handle) = self.flow_task.as_ref() {
             handle.abort();
         };
@@ -119,6 +118,8 @@ impl App {
         if let Some(handle) = self.channels_task.as_ref() {
             handle.abort();
         }
+        self.channel_manager.clone().unwrap().shutdown_all(true, 2000);
+        self.flow_manager.clone().unwrap().shutdown_all().await;
     }
 }
 /// Called when user runs `greentic init --root <dir>`
@@ -133,7 +134,6 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
         "greentic/plugins/tools",
         "greentic/plugins/channels/running",
         "greentic/plugins/channels/stopped",
-        "greentic/plugins/agents",
         "greentic/plugins/processes",
     ];
     for d in &dirs {
