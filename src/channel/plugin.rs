@@ -3,10 +3,9 @@ use anyhow::{Context, Error};
 use async_trait::async_trait;
 use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelState, PluginLogger}, PluginHandle};
 use libloading::{Library, Symbol};
-use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::watcher::{watch_dir, WatchedType};
+use crate::watcher::{DirectoryWatcher, WatchedType};
 
 
 // function‐pointer types matching your `export_plugin!` C API:
@@ -213,12 +212,11 @@ impl PluginWatcher {
 
     /// Start watching the plugin directory for add/modify/remove events.
     /// Returns a JoinHandle for the spawned watcher task.
-    pub async fn watch(self: Arc<Self>) -> Result<JoinHandle<()>, Error> {
+    pub async fn watch(self: Arc<Self>) -> Result<DirectoryWatcher, Error> {
         // We know `PluginWatcher` already implements `WatchedType`
         let dir = self.dir.clone();
         let watcher: Arc<dyn WatchedType> = self.clone();
-        // watch_dir returns a JoinHandle<()>
-        watch_dir(dir, watcher, &["so", "dll", "dylib"], true).await
+        DirectoryWatcher::new(dir, watcher, &["so", "dll", "dylib"], true).await
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<Plugin>> {

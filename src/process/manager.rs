@@ -1,223 +1,366 @@
-//! ProcessManager: registers built-in processes and manages dynamic processes via an ProcessWatcher.
-use crate::process::process::ProcessWatcher;
-use crate::watcher::watch_dir;
-use std::collections::HashSet;
+//! ProcessManager: holds exactly the baked-in variants and also watches a directory
+//! for any filesystem plugins (“.wasm” files).  As plugins appear, they get registered
+//! under the registry by their name; as they disappear, they get unregistered.
+
+use crate::message::Message;
+use crate::node::{NodeContext, NodeErr, NodeError, NodeOut};
+use crate::watcher::DirectoryWatcher;
+use crate::{node::NodeType, process::process::ProcessWatcher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use anyhow::Error;
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
-use tokio::task::JoinHandle;
-use super::process::ProcessExecutor;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use tracing::error;
 
-/// ProcessManager holds built-in process names and a watcher for dynamic (WASM) processes.
+// You must have these types already defined elsewhere, each implementing `ProcessWrapper + JsonSchema + Serialize/Deserialize`.
+use super::{
+    debug_process::DebugProcessNode, script_process::ScriptProcessNode, template_process::TemplateProcessNode
+};
+
+/// An enum of all built-in variants plus a “Plugin” marker for any external WASM on disk.
+///
+/// When you load a `.wasm` plugin from `/plugins/foo.wasm`, you will spawn a
+/// `BuiltInProcess::Plugin { name: "foo".into(), path: "/plugins/foo.wasm".into() }`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BuiltInProcess {
+    /// A baked-in “debug” process
+    Debug(DebugProcessNode),
+
+    /// A baked-in script process (for example, a Rhia script)
+    Script(ScriptProcessNode),
+
+    /// A baked-in Handlebars template process
+    Template(TemplateProcessNode),
+
+    /// A disk-loaded plugin (e.g. `/plugins/foo.wasm` → name = "foo").
+    Plugin {
+        /// Unique name of the plugin (used as registry key)
+        name: String,
+
+        /// On-disk path (we skip serializing this)
+        #[serde(skip)]
+        path: PathBuf,
+    },
+}
+
+impl BuiltInProcess {
+    /// Return the key under which this should be registered.
+    /// - For a baked-in variant, forward to its `process_name()`.
+    /// - For `Plugin { name, .. }`, return that `name`.
+    pub fn process_name(&self) -> String {
+        match self {
+            BuiltInProcess::Debug(inner) => inner.type_name(),
+            BuiltInProcess::Script(inner) => inner.type_name(),
+            BuiltInProcess::Template(inner) => inner.type_name(),
+            BuiltInProcess::Plugin { name, .. } => name.clone(),
+        }
+    }
+
+    pub async fn process(&self, msg: Message, ctx: &mut NodeContext) -> Result<NodeOut, NodeErr>{
+        match self {
+            BuiltInProcess::Debug(inner) => inner.process(msg,ctx).await,
+            BuiltInProcess::Script(inner) => inner.process(msg,ctx).await,
+            BuiltInProcess::Template(inner) => inner.process(msg,ctx).await,
+            BuiltInProcess::Plugin { name, .. } => {
+                let watcher = ctx.process_manager().clone().watcher;
+                if watcher.is_none() {
+                    let error = format!("ProcessWatcher should be set in process manager");
+                    error!(error);
+                    return Err(NodeErr::all(NodeError::Internal(error)));
+                }
+                let process = watcher.unwrap().get_process(name);
+                match process {
+                    Some(process) => {process.process(msg,ctx).await},
+                    None => {
+                        let error = format!("Process {} was not found",name);
+                        error!(error);
+                        return Err(NodeErr::all(NodeError::NotFound(error)));
+                    },
+                }
+            }
+        }
+    }
+
+    /// If this is a `Plugin { path, .. }`, return `Some(&path)`.  Otherwise `None`.
+    pub fn plugin_path(&self) -> Option<&PathBuf> {
+        match self {
+            BuiltInProcess::Plugin { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+}
+
+/// Manages exactly the baked-in variants plus any `.wasm` plugins under `process_dir`.
 #[derive(Debug, Clone)]
 pub struct ProcessManager {
-    /// Names of all built-in processes (strings from process_name()).
-    built_in: HashSet<String>,
-    /// Path to the plugin directory being watched.
-    process_dir: PathBuf,
-    /// The watcher that handles on-create/modify/remove.
-    watcher: Option<ProcessWatcher>,
+    /// Filesystem directory where we watch for `*.wasm` plugins.
+    pub process_dir: PathBuf,
+
+    /// If Some, this watcher will keep track of “on_create_or_modify / on_remove”
+    pub watcher: Option<ProcessWatcher>,
 }
 
 impl ProcessManager {
-    /// Create a new ProcessManager.
+    /// Construct a new `ProcessManager`.
     ///
-    /// - `built_ins`: a list of boxed ProcessExecutor implementations to register immediately.
-    /// - `process_dir`: path to watch for dynamically loaded process plugins (.wasm files).
-    ///
-    /// This will register all built-in executors into the global registry, then spawn
-    /// a watcher task that monitors `process_dir`.  When new process plugins appear or are removed,
-    /// the watcher registers/unregisters them accordingly.
-    pub async fn new(
-        built_ins: Vec<Box<dyn ProcessExecutor>>,
+    /// - `built_ins`: e.g. `vec![ BuiltInProcess::Debug(DebugProcessNode::default()), … ]`
+    /// - `process_dir`: directory to watch for external `.wasm` plugins
+    pub fn new(
         process_dir: impl Into<PathBuf>,
-    ) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
-        let mut built_set = HashSet::new();
-        // Register each built-in
-        for exec in built_ins {
-            let name = exec.process_name().to_string();
-            register_executor(exec);
-            built_set.insert(name);
+    ) -> Result<Self, anyhow::Error> {
+        let dir = process_dir.into();
+        // 1) Ensure the directory exists on disk
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir)?;
         }
 
-        let plugin_path: PathBuf = process_dir.into();
-        // Ensure plugin directory exists
-        if !plugin_path.exists() {
-            std::fs::create_dir_all(&plugin_path)?;
-        }
-
-        Ok(Arc::new(ProcessManager {
-            built_in: built_set,
-            process_dir: plugin_path,
-            watcher:None,
-        }))
+        Ok(ProcessManager {
+            process_dir: dir,
+            watcher: None,
+        })
     }
 
-    pub async fn watch_process_dir(&mut self, process_dir: PathBuf) -> Result<JoinHandle<()>,Error> {
-                // Initialize the ProcessWatcher
+    /// Start watching `self.process_dir` for new/modified/removed `.wasm` files.
+    /// Each time a `.wasm` appears, the `ProcessWatcher` should load it (e.g. via WASM components),
+    /// wrap it in a `Box<ProcessWrapper>`, and then call `register_process(...)`.
+    /// On removal, it will call `unregister_process(...)`.
+    ///
+    /// Returns the spawned task handle.  You can keep it if you want to `await` or abort later.
+    pub async fn watch_process_dir(&mut self) -> Result<DirectoryWatcher, Error> {
+        // Create a new watcher (initially empty).  It knows how to load/unload WASM Plugin executors.
         let watcher = ProcessWatcher::new();
         self.watcher = Some(watcher.clone());
-        // Start watching; true = recursive
-        let handle = watch_dir(process_dir.clone(), Arc::new(watcher.clone()), &["wasm"], true).await;
-   
-        handle
+
+        // Kick off the actual filesystem watcher:
+        // The `&["wasm"]` means “only watch files ending in `.wasm`.”
+        let watch_path = self.process_dir.clone();
+        Ok(DirectoryWatcher::new(watch_path.clone(), Arc::new(watcher.clone()), &["wasm"], true).await?)
     }
 
-    /// Return a list of all registered process names, both built‐in
-    /// and any dynamic (WASM‐loaded) executors.
-    pub fn list_processes(&self) -> Vec<String> {
-        // 1) Start with a clone of the built‐in set
-        let mut names: HashSet<String> = self.built_in.clone();
 
-        // 2) If there's a watcher, iterate over its DashMap of executors
+    /// Unregister all dynamic plugins (but leave baked-ins alone).
+    /// After this, the `PROCESS_REGISTRY` will only contain the baked-ins again.
+    pub fn shutdown_plugins(&self) {
         if let Some(watcher) = &self.watcher {
-            // `loaded_executors()` returns `Arc<DashMap<String, Box<dyn ProcessExecutor>>>`
-            let executors = watcher.loaded_executors();
-            let loaded_map: &DashMap<String, Box<dyn ProcessExecutor>> = executors.as_ref();
-
-            // For each entry, `.key()` is `&String` (the process_name)
-            for entry in loaded_map.iter() {
-                names.insert(entry.key().clone());
-            }
-        }
-
-        // 3) Collect into a Vec<String> and return
-        names.into_iter().collect()
-    }
-
-    /// Stop watching the plugin directory and unregister all dynamic processes.
-    pub fn shutdown(&self) {
-        if let Some(watcher) = &self.watcher {
-            // Same as above: get `&DashMap<PathBuf, (Library, String)>`
-            let loaded_map_arc:&Arc<DashMap<String, Box<dyn ProcessExecutor + 'static>>>   = &watcher.loaded_executors();
-            let loaded_map:&DashMap<String, Box<dyn ProcessExecutor + 'static>> = loaded_map_arc.as_ref();
-
-            // For each entry, the value’s `.1` is the process name
-            for entry in loaded_map.iter() {
-                let process_name:&'static str = entry.value().process_name();
-                unregister_executor(process_name);
+            // Walk every entry in the global registry.  If it’s not one of our baked-in names,
+            // remove it:
+            for entry in watcher.loaded_processes().iter() {
+                let key = entry.key().clone();
+                    let process = watcher.get_process(&key);
+                    if process.is_some() {
+                        watcher.unregister_process(process.unwrap());
+                    }
             }
         }
     }
-
-    /// Manually register a new built-in executor at runtime.
-    pub fn register_builtin(&mut self, exec: Box<dyn ProcessExecutor>) {
-        let name = exec.process_name().to_string();
-        register_executor(exec);
-        self.built_in.insert(name);
-    }
-
-    /// Manually unregister a built-in executor (it will remain in built_in set until restart).
-    /// Note: Unregistering built-ins at runtime may lead to flows losing their executor.
-    pub fn unregister_builtin(&mut self, name: &str) {
-        unregister_executor(name);
-        self.built_in.remove(name);
-    }
 }
-
-
-// Global, thread-safe registry mapping process names to boxed executors.
-static PROCESS_REGISTRY: Lazy<DashMap<String, Box<dyn ProcessExecutor>>> =
-    Lazy::new(|| DashMap::new());
-
-/// Registers a new executor under its `process_name()`. If an executor with the same
-/// name already exists, it will be replaced.
-///
-/// # Arguments
-///
-/// * `executor` - A boxed object implementing `ProcessExecutor`.
-pub fn register_executor(executor: Box<dyn ProcessExecutor>) {
-    let name = executor.process_name().to_string();
-    PROCESS_REGISTRY.insert(name, executor);
-}
-
-/// Unregisters (removes) an executor by its name. If no executor with that name
-/// is found, this function does nothing.
-///
-/// # Arguments
-///
-/// * `process_name` - The string name under which the executor was registered.
-pub fn unregister_executor(process_name: &str) {
-    PROCESS_REGISTRY.remove(process_name);
-}
-
-/// Looks up an executor by name. Returns `Some(Box<dyn ProcessExecutor>)` if found,
-/// or `None` otherwise. Clones the boxed executor so the caller owns a fresh instance.
-///
-/// # Arguments
-///
-/// * `process_name` - The string key used when registering the executor.
-///
-/// # Returns
-///
-/// * `Option<Box<dyn ProcessExecutor>>` - A cloned boxed executor if found.
-pub fn get_executor(process_name: &str) -> Option<Box<dyn ProcessExecutor>> {
-    PROCESS_REGISTRY
-        .get(process_name)
-        .map(|entry| entry.value().clone_box())
-}
-
 #[cfg(test)]
-mod tests {
+pub mod tests {
+    use crate::{process::process::{ProcessInstance, ProcessWrapper}, watcher::WatchedType};
+
     use super::*;
+    use std::path::PathBuf;
+    use anyhow::Result;
 
+    // ------------------------------------------------------------------------------------------------
+    // 1) We want a minimal “dummy” ProcessWrapper that satisfies the interface expected by
+    //    ProcessWatcher / ProcessManager.  In your real code, `ProcessWrapper` likely has
+    //    a constructor, `instance() -> &ProcessInstance`, and `name() -> &str`.  Here we fake one.
+    // ------------------------------------------------------------------------------------------------
 
-    /// A trivial `ProcessExecutor` implementation for testing.
-    #[derive(Clone)]
-    struct TestProcess {
-        name: &'static str,
-    }
-
-    impl TestProcess {
-        fn new(name: &'static str) -> Self {
-            TestProcess { name }
+    impl ProcessWrapper {
+        pub fn dummy<P: Into<PathBuf>, S: Into<String>>(path: P, name: S) -> Box<ProcessWrapper> {
+            let instance = ProcessInstance {
+                wasm_path: path.into(),
+                name: name.into(),
+            };
+            let wrapper = ProcessWrapper::new(
+                instance.into(),
+                "dummy".into(),
+                serde_json::Value::Null,
+            );
+            Box::new(wrapper)
         }
     }
 
-    impl ProcessExecutor for TestProcess {
-        fn process_name(&self) -> &'static str {
-            self.name
-        }
-
-        fn execute(
-            &self,
-            _task: &str,
-            input: crate::message::Message,
-            _ctx: &mut crate::node::NodeContext,
-        ) -> Result<crate::message::Message, anyhow::Error> {
-            // Just echo the input  payload back as-is:
-            Ok(input)
-        }
-
-        fn clone_box(&self) -> Box<dyn ProcessExecutor> {
-            Box::new(self.clone())
+    impl ProcessManager {
+        pub fn dummy() -> Arc<ProcessManager> {
+            Arc::new(Self {process_dir: PathBuf::new(),watcher: None })
         }
     }
 
-    #[test]
-    fn register_and_get_executor() {
-        // Ensure clean registry for the test
-        unregister_executor("testprocess");
+    // We assume that `ProcessWrapper` has these two methods:
+    //   fn instance(&self) -> &ProcessInstance
+    //   fn name(&self) -> &str
+    //
+    // (If your real `ProcessWrapper` is named slightly differently, adjust accordingly.)
 
-        let process = Box::new(TestProcess::new("testprocess"));
-        register_executor(process);
+    // ------------------------------------------------------------------------------------------------
+    // 2) Test that `ProcessManager::new(...)` creates the directory and leaves `watcher == None`.
+    // ------------------------------------------------------------------------------------------------
 
-        // Now we should be able to `get_executor("testprocess")`
-        let maybe = get_executor("testprocess");
-        assert!(maybe.is_some());
-        let retrieved = maybe.unwrap();
-        assert_eq!(retrieved.process_name(), "testprocess");
+    #[tokio::test]
+    async fn new_process_manager_creates_dir_and_has_no_watcher() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let dir_path = temp_dir.path().join("plugins");
+        // Ensure “plugins” does not yet exist
+        assert!(!dir_path.exists());
 
-        // Unregister and verify it is gone
-        unregister_executor("testprocess");
-        assert!(get_executor("testprocess").is_none());
+        // Create a new manager; it must create the directory on disk
+        let manager = ProcessManager::new(&dir_path).unwrap();
+        assert!(manager.process_dir.exists(), "Expected directory to be created");
+        assert!(manager.watcher.is_none(), "Watcher should start out as None");
+
+        Ok(())
     }
 
-    #[test]
-    fn get_executor_returns_none_for_missing() {
-        unregister_executor("nonexistent");
-        assert!(get_executor("nonexistent").is_none());
+    // ------------------------------------------------------------------------------------------------
+    // 3) Test `watch_process_dir(...)` spawns a task and sets `watcher = Some(...)`.
+    //    We cannot actually trigger a filesystem event without more infrastructure,
+    //    but we can at least ensure the return‐type is a JoinHandle and watcher is set.
+    // ------------------------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn watch_process_dir_sets_watcher() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let dir_path = temp_dir.path().join("plugins");
+        std::fs::create_dir_all(&dir_path)?;
+
+        let mut manager = ProcessManager::new(&dir_path).unwrap();
+
+        // Initially no watcher
+        assert!(manager.watcher.is_none());
+
+        // Spawn the watcher task
+        let handle = manager.watch_process_dir().await?;
+        // After calling, watcher should be Some(...)
+        assert!(manager.watcher.is_some());
+        handle.shutdown();
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // 4) Test `ProcessWatcher` on its own: insert a dummy `ProcessWrapper` into the maps, then
+    //    call `on_create_or_modify` and `on_remove` directly.  We expect the wrapper to move
+    //    into `loaded_processes()` on create, and to vanish on remove.  (All via interior mutability.)
+    // ------------------------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn process_watcher_create_and_remove() -> Result<()> {
+        let watcher = ProcessWatcher::new();
+
+        // Initially, no processes are loaded
+        assert!(watcher.loaded_processes().iter().next().is_none());
+
+        // 4a) Simulate loading a WASM plugin
+        //     We define a dummy path and manually register a Box<ProcessWrapper>.
+        let dummy_path = PathBuf::from("/tmp/fake_plugin.wasm");
+        let dummy_name = "fake_plugin";
+
+        // Step-by-step: load a “DummyProcessWrapper” and insert it
+        let wrapper = ProcessWrapper::dummy(&dummy_path, dummy_name);
+        // Normally, on_create_or_modify would do this insertion after loading WASM.
+        watcher.register_process(wrapper.clone());
+
+        // Now we should see exactly one entry in `loaded_processes()`
+        let mut found = false;
+        for entry in watcher.loaded_processes().iter() {
+            assert_eq!(entry.key(), dummy_name);
+            found = true;
+        }
+        assert!(found, "Expected the dummy wrapper to be present");
+
+        // 4b) Simulate removal of the same path
+        watcher.on_remove(&dummy_path).await?;
+
+        // After removal, there should be no entry with that name
+        assert!(
+            watcher.get_process(dummy_name).is_none(),
+            "Expected the dummy wrapper to be gone"
+        );
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // 5) Test `ProcessManager::shutdown_plugins()`: if the watcher holds a dummy, shutdown removes it
+    // ------------------------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn shutdown_plugins_removes_dynamic_entries() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let dir_path = temp_dir.path().join("plugins");
+        std::fs::create_dir_all(&dir_path)?;
+
+        // 5a) Create manager and attach a fresh watcher
+        let mut manager = ProcessManager::new(&dir_path).unwrap();
+        let watcher = ProcessWatcher::new();
+        manager.watcher = Some(watcher.clone());
+
+        // 5b) Manually register two dummy wrappers under the watcher
+        let path1 = dir_path.join("one.wasm");
+        let name1 = "one";
+        let wrapper1 = ProcessWrapper::dummy(&path1, name1);
+        watcher.register_process(wrapper1.clone());
+
+        let path2 = dir_path.join("two.wasm");
+        let name2 = "two";
+        let wrapper2 = ProcessWrapper::dummy(&path2, name2);
+        watcher.register_process(wrapper2.clone());
+
+        // Sanity‐check: both are present
+        assert!(watcher.get_process(name1).is_some());
+        assert!(watcher.get_process(name2).is_some());
+
+        // 5c) Now call `shutdown_plugins()`.  That should iterate over watcher.loaded_processes()
+        //      and remove each dynamic wrapper from the watcher itself.
+        manager.shutdown_plugins();
+
+        // After shutdown, neither “one” nor “two” remain
+        assert!(watcher.get_process(name1).is_none());
+        assert!(watcher.get_process(name2).is_none());
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // 6) Test round‐trip: when a file is modified twice in a row, the old wrapper is unloaded
+    //    and replaced by a new one under the same name.  We simulate via two calls to on_create_or_modify.
+    // ------------------------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_modify_replaces_old_wrapper() -> Result<()> {
+        let watcher = ProcessWatcher::new();
+        let path = PathBuf::from("/tmp/reload.wasm");
+        let name = "reloadable";
+
+        // First load
+        let wrapper_v1 = ProcessWrapper::dummy(&path, name);
+        watcher.register_process(wrapper_v1.clone());
+
+        // Sanity: loaded
+        assert!(watcher.get_process(name).is_some());
+
+        // Now simulate “file changed” by manually calling `on_create_or_modify`
+        // But our stub load_wasm_executor is unimplemented.  Instead, we replicate
+        // what on_create_or_modify would do if it succeeded twice:
+        //   - remove old
+        watcher.unregister_process(wrapper_v1);
+        //   - insert new
+        let wrapper_v2 = ProcessWrapper::dummy(&path, name);
+        watcher.register_process(wrapper_v2.clone());
+
+        // Final: only v2 remains (we can't inspect v1 vs v2 directly, but only one entry)
+        let mut count = 0;
+        for entry in watcher.loaded_processes().iter() {
+            assert_eq!(entry.key(), name);
+            count += 1;
+        }
+        assert_eq!(count, 1, "Expected exactly one entry under that name");
+
+        Ok(())
     }
 }

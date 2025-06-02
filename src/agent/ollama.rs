@@ -5,9 +5,10 @@ use ollama_rs::models::ModelOptions;
 use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
 use ollama_rs::Ollama;
-use schemars::{schema::RootSchema, schema_for, JsonSchema};
+use schemars::{schema::RootSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use tracing::error;
 use url::Url;
 
 use crate::{
@@ -21,7 +22,7 @@ use crate::{
 
 /// `OllamaAgent` invokes a local Ollama server via `ollama_rs`.  
 /// It supports plain generation (`Generate`), embeddings (`Embed`), chat mode (`Chat`), and tool calls (`ToolCall`).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaAgent {
     /// The Ollama model to invoke (e.g. "llama2:latest", "vicuna:v1", etc.).
     pub model: String,
@@ -31,12 +32,10 @@ pub struct OllamaAgent {
     pub ollama_port: Option<u16>,
 
     /// Set optional options for the model
-    #[schemars(default)]
     pub model_options: Option<ModelOptions>,
 
     /// Map of `tool.name -> ToolNode` for any external tool calls (`ToolCall` variant).
     /// This field is not serialized in JSON nor included in the schema.
-    #[schemars(skip)]
     #[serde(skip)]
     pub tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
 }
@@ -85,16 +84,7 @@ impl NodeType for OllamaAgent {
             ))))?;
 
         // 2) Delegate to our handler
-        let result_json = handle_request(req, self, context)
-            .await
-            .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!(
-                "OllamaRequest handling failed: {}",
-                e
-            ))))?;
-
-        // 3) Wrap into a new `Message` and return
-        let out_msg = Message::new(&input.id(), result_json, input.session_id().clone());
-        Ok(NodeOut::all(out_msg))
+        handle_request(input, req, self, context).await
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {
@@ -103,7 +93,7 @@ impl NodeType for OllamaAgent {
 }
 
 /// Each kind of Ollama request—tool call, embed, chat, or generate.
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum OllamaRequest {
     /// 1) Call an external “tool” (e.g. HTTP fetch, calculator, etc.).
@@ -138,12 +128,15 @@ pub enum OllamaRequest {
 }
 
 
+
+
 /// Given an `OllamaRequest`, perform the appropriate call via `ollama_rs` and return the JSON result.
 async fn handle_request(
+    msg: Message,
     req: OllamaRequest,
     agent: &OllamaAgent,
     context: &mut NodeContext,
-) -> Result<JsonValue, anyhow::Error> {
+) -> Result<NodeOut, NodeErr> {
     let mut client = if agent.ollama_host.is_some() && agent.ollama_port.is_some() {
         // You might want to clone or take references instead of unwrap directly:
         let host = agent.ollama_host.as_ref().unwrap().clone();
@@ -157,23 +150,24 @@ async fn handle_request(
         OllamaRequest::ToolCall { tool_node, input, msg } => {
             // Wrap `input` + `msg.session_id()` into a dummy Message and invoke the ToolNode
             let dummy = Message::new("tool_call_msg", input.clone(), msg.session_id().clone());
-            match tool_node.process(dummy, context).await {
-                Ok(node_out) => Ok(node_out.message().payload().clone()),
-                Err(err) => Err(anyhow::anyhow!(
-                    "Tool `{}` failed (session {:?}): {:?}",
-                    tool_node.name(),
-                    msg.session_id(),
-                    err
-                )),
-            }
+            tool_node.process(dummy, context).await
         }
 
         OllamaRequest::Embed { model, text } => {
             let req = GenerateEmbeddingsRequest::new(model.clone(), EmbeddingsInput::Single(text));
-            let resp = client.generate_embeddings(req).await
-                .map_err(|e| anyhow::anyhow!("Embedding error: {}", e))?;
-            // Response is something like { "embedding": Vec<f32> }
-            Ok(json!({ "embedding": resp.embeddings }))
+            let resp = client.generate_embeddings(req).await;
+            match resp {
+                Ok(resp) => {
+                    let json = json!({"embeddings":resp.embeddings});
+                    let msg = Message::new(&msg.id(), json, msg.session_id());
+                    Ok(NodeOut::all(msg))
+                },
+                Err(error) => {
+                    let error = format!("Could not generate embedding with ollama. Got error: {}",error);
+                    error!(error);
+                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
+                },
+            }
         }
 
         OllamaRequest::Chat {
@@ -196,11 +190,20 @@ async fn handle_request(
                 },
             };
             
-            let resp = client.send_chat_messages_with_history(&mut vec![], req).await
-                .map_err(|e| anyhow::anyhow!("Chat API error: {}", e))?;
-
-            let reply_text = resp.message.content.clone();
-            Ok(json!({ "reply": reply_text }))
+            let resp = client.send_chat_messages_with_history(&mut vec![], req).await;
+            match resp {
+                Ok(resp) => {
+                    let reply_text = resp.message.content.clone();
+                    let json = json!({ "reply": reply_text });
+                    let msg = Message::new(&msg.id(), json, msg.session_id());
+                    Ok(NodeOut::all(msg))
+                },
+                Err(error) => {
+                    let error = format!("Chat API error: {}",error);
+                    error!(error);
+                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
+                },
+            }
         }
 
         OllamaRequest::Generate {
@@ -216,28 +219,37 @@ async fn handle_request(
                     GenerationRequest::new(model.clone(), prompt.clone())
                 },
             };
-            let resp = client.generate(gen_req).await
-                .map_err(|e| anyhow::anyhow!("Completion error: {}", e))?;
+            let resp = client.generate(gen_req).await;
 
-            Ok(json!({ "generated_text": resp.response }))
+            match resp {
+                Ok(resp) => {
+                    let json = json!({ "generated_text": resp.response });
+                    let msg = Message::new(&msg.id(), json, msg.session_id());
+                    Ok(NodeOut::all(msg))
+                },
+                Err(error) => {
+                    let error = format!("Completion error: {}",error);
+                    error!(error);
+                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
+                },
+            }
         }
     }
 }
 
 
-// Add these tests at the bottom of your `src/agents.rs` (or in a separate `tests/` file).
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use crate::{channel::manager::ChannelManager, executor::Executor, process::manager::ProcessManager, secret::{EmptySecretsManager, SecretsManager}};
 
     use super::*;
     use ollama_rs::generation::chat::MessageRole;
-    use schemars::schema::SchemaObject;
+    use schemars::schema::{InstanceType, ObjectValidation, Schema, SingleOrVec};
     use serde_json::json;
 
     /// Helper: extract a subschema object by key from a `RootSchema`.
-    fn get_definition<'a>(root: &'a RootSchema, name: &str) -> Option<&'a SchemaObject> {
+    /*fn get_definition<'a>(root: &'a RootSchema, name: &str) -> Option<&'a SchemaObject> {
         root.definitions.get(name).and_then(|s| {
             if let schemars::schema::Schema::Object(obj) = s {
                 Some(obj)
@@ -245,20 +257,20 @@ mod tests {
                 None
             }
         })
-    }
+    }*/
 
     #[test]
     fn ollamaagent_serde_roundtrip_and_schema() {
         // 1) Create a sample OllamaAgent
-        let agent = OllamaAgent::new(
-            "llama2:latest",
-            Some(Url::parse("http://localhost").unwrap()),
-            Some(11434),
-            Some(ModelOptions::default().temperature(0.5).max_tokens(128)),
-            None,
-        );
+        let agent = OllamaAgent {
+            model: "llama2:latest".to_string(),
+            ollama_host: Some(Url::parse("http://localhost").unwrap()),
+            ollama_port: Some(11434),
+            model_options: Some(ModelOptions::default()),
+            tool_nodes: None,
+        };
 
-        // 2) Serialize to JSON and back
+        // 2) Round‐trip serialization
         let serialized = serde_json::to_string_pretty(&agent).expect("serialize failed");
         let deserialized: OllamaAgent =
             serde_json::from_str(&serialized).expect("deserialize failed");
@@ -266,25 +278,49 @@ mod tests {
         assert_eq!(deserialized.ollama_port, Some(11434));
         assert_eq!(deserialized.ollama_host.unwrap().as_str(), "http://localhost/");
 
-        // 3) Generate the JSON-Schema for OllamaAgent
-        let schema = schema_for!(OllamaAgent);
-        // There should be a definition named "OllamaAgent"
-        let def = get_definition(&schema, "OllamaAgent")
+        // 3) Generate the JSON‐Schema for `OllamaAgent`
+        let schema: RootSchema = schema_for!(OllamaAgent);
+
+        // Look up the “OllamaAgent” definition in the `definitions` map
+        let defs = &schema.definitions;
+        let def_schema = defs
+            .get("OllamaAgent")
             .expect("OllamaAgent definition missing");
-        // The "properties" map inside should contain "model", "ollama_host", "ollama_port"
-        let props = def.properties.as_ref().expect("no properties in schema");
+
+        // `def_schema` is a `&Schema`. We expect it to be an object, so match on `Schema::Object(...)`.
+        let obj = match def_schema {
+            Schema::Object(obj) => obj,
+            _ => panic!("Expected OllamaAgent definition to be an object"),
+        };
+
+        // Inside `obj`, the `object` field is `Option<Box<ObjectValidation>>`. Unwrap it:
+        let obj_validation: &ObjectValidation = obj
+            .object
+            .as_ref()
+            .expect("OllamaAgent schema should have an `object` block");
+
+        // Now `obj_validation.properties` is a map from field name → `Schema`.
+        let props = &obj_validation.properties;
+
+        // We can assert that “model”, “ollama_host”, and “ollama_port” appear:
         assert!(props.contains_key("model"));
         assert!(props.contains_key("ollama_host"));
         assert!(props.contains_key("ollama_port"));
-        // "model" must be of type string
-        if let Some(schemars::schema::Schema::Object(obj)) = props.get("model") {
-            let ty = obj
-                .instance_type
-                .as_ref()
-                .and_then(|t| t.as_ref().first().cloned());
-            assert_eq!(ty, Some(schemars::schema::InstanceType::String));
+
+        // Finally, check that “model” indeed has type = "string":
+        if let Schema::Object(model_schema_obj) = &props["model"] {
+        let ty = model_schema_obj
+            .instance_type
+            .as_ref()
+            .and_then(|single_or_vec| match single_or_vec {
+                // If it was declared as a single type, unwrap that:
+                SingleOrVec::Single(boxed) => Some(*boxed.clone()),
+                // If it was a Vec of types, pick the first one (if any):
+                SingleOrVec::Vec(vec) => vec.get(0).cloned(),
+            });
+            assert_eq!(ty, Some(InstanceType::String));
         } else {
-            panic!("`model` schema is not an object");
+            panic!("`model` schema was not a Schema::Object(...)");
         }
     }
 
@@ -304,7 +340,7 @@ mod tests {
         let req_tool: OllamaRequest =
             serde_json::from_value(json_toolcall.clone()).expect("ToolCall JSON failed");
         match req_tool {
-            OllamaRequest::ToolCall { input, msg, mut tool_node } => {
+            OllamaRequest::ToolCall { input, msg, tool_node } => {
                 assert_eq!(input, json!({ "foo": 42 }));
                 // message roundtrip
                 assert_eq!(msg.id(), "m1");
@@ -348,7 +384,7 @@ mod tests {
             OllamaRequest::Chat {
                 model,
                 history,
-                model_options,
+                model_options: _model_options,
             } => {
                 assert_eq!(model, "llama2:latest");
                 assert_eq!(history.len(), 2);
@@ -396,9 +432,10 @@ mod tests {
         // Create a dummy NodeContext (not used in this test).
         let mut ctx = NodeContext::new(/* state */ Default::default(),
                 /* config */ Default::default(),
-                /* executor */ Arc::new(crate::executor::Executor::dummy()),
-                /* channel_mgr */ Arc::new(crate::channel::manager::ChannelManager::dummy()),
-                /* secrets */ crate::secret::SecretsManager::dummy(),
+                /* executor */ Executor::dummy(),
+                /* channel_mgr */ ChannelManager::dummy(),
+                                /* process */ ProcessManager::dummy(),
+                /* secrets */ SecretsManager(EmptySecretsManager::new()),
                 /* channel_origin */ None);
 
         // Here, we call `handle_request` directly with an impossible variant. For example:
@@ -407,13 +444,14 @@ mod tests {
         // a) Chat without a reachable server. We expect an error containing "Chat API error".
         let bad_req = OllamaRequest::Chat {
             model: "nonexistent-model".to_string(),
-            history: vec![ChatMessage { role: MessageRole::User, content: "Hello".into(), tool_calls: None, images: None }],
+            history: vec![ChatMessage { role: MessageRole::User, content: "Hello".into(), tool_calls: vec![], images: None }],
             model_options: None,
         };
 
-        let result = handle_request(bad_req, &agent, &mut ctx).await;
+        let msg = Message::new("test", json!({}), Some("123".to_string()));
+        let result = handle_request(msg, bad_req, &agent, &mut ctx).await;
         assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
         // We expect the error to mention "Chat API error"
         assert!(
             err_msg.contains("Chat API error"),

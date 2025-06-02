@@ -8,7 +8,7 @@ use std::fs;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::TemplateContext, mapper::Mapper, message::Message, secret::SecretsManager, state::StateValue, util::extension_from_mime};
+use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::TemplateContext, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, state::StateValue, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
 
 /// NodeOut enables to send the messages coming out of the Node
@@ -193,6 +193,7 @@ pub struct NodeContext {
     config: HashMap<String, String>,
     executor: Arc<Executor>,
     channel_manager: Arc<ChannelManager>,
+    process_manager: Arc<ProcessManager>,
     secrets: SecretsManager,
     channel_origin: Option<ChannelOrigin>,
     pub hb: Arc<Handlebars<'static>>,
@@ -200,9 +201,9 @@ pub struct NodeContext {
 
 impl NodeContext
 {
-    pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
+    pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
         let hb = make_handlebars();
-        Self { state, config, executor, channel_manager, secrets, channel_origin, hb}
+        Self { state, config, executor, channel_manager, process_manager, secrets, channel_origin, hb}
     }
 
     pub fn channel_origin(&self) -> Option<ChannelOrigin> {
@@ -247,6 +248,10 @@ impl NodeContext
 
     pub fn channel_manager(&self) -> &ChannelManager {
         &self.channel_manager.as_ref()
+    }
+
+    pub fn process_manager(&self) -> &ProcessManager {
+        &self.process_manager.as_ref()
     }
 
     pub async fn reveal_secret(&self, key: &str) -> Option<String> {
@@ -300,7 +305,7 @@ impl TemplateContext for NodeContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum NodeError {
-    NotFound,
+    NotFound (String),
     InvalidInput(String),
     ExecutionFailed(String),
     ConnectionFailed(String),
@@ -310,7 +315,7 @@ pub enum NodeError {
 impl fmt::Display for NodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NodeError::NotFound => write!(f, "Node not found"),
+            NodeError::NotFound(msg) => write!(f, "Node {} not found.",msg),
             NodeError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             NodeError::ExecutionFailed(msg) => write!(f, "Processing error: {}",msg),
             NodeError::ConnectionFailed(msg) => write!(f, "Failed to connect to node: {}",msg),
@@ -612,7 +617,8 @@ mod tests {
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
-        let mut ctx = NodeContext::new(HashMap::new(), config, executor,channel_manager, secrets, None);
+        let process_manager = ProcessManager::dummy();
+        let mut ctx = NodeContext::new(HashMap::new(), config, executor,channel_manager, process_manager, secrets, None);
         assert!(ctx.get_state("missing").is_none());
 
         ctx.set_state("key", StateValue::String("value".to_string()));
@@ -649,12 +655,13 @@ mod tests {
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
-        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, secrets, None);
+        let process_manager = ProcessManager::dummy();
+        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, process_manager, secrets, None);
 
         let node = ToolNode::new("mock_tool".to_string(), "text_output".to_string(),None, None, None, None, None);
         let msg = Message::new("msg1", json!({"input": "Hello"}),None);
 
-        let result = node.process(msg.clone(), &mut context).unwrap();
+        let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();
 
         assert!(output.is_array());
@@ -674,12 +681,13 @@ mod tests {
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
-        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, secrets, None);
+        let process_manager = ProcessManager::dummy();
+        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, process_manager, secrets, None);
 
         let node = ToolNode::new("mock_tool".to_string(), "file_output".to_string(), None, None, None, None, None);
         let msg = Message::new("msg2", json!({"input": "data"}),None);
 
-        let result = node.process(msg.clone(), &mut context).unwrap();
+        let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();
         assert!(output.is_array());
 

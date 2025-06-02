@@ -12,6 +12,7 @@ use greentic::channel::plugin::Plugin;
 use greentic::channel::PluginWrapper;
 use greentic::config::{ConfigManager, MapConfigManager};
 use greentic::mapper::{CopyKey, CopyMapper, Mapper};
+use greentic::process::manager::ProcessManager;
 use greentic::state::{InMemoryState, StateValue};
 use petgraph::visit::Topo;
 use schemars::schema_for;
@@ -23,6 +24,7 @@ use greentic::logger::{Logger, OpenTelemetryLogger};
 use greentic::message::Message;
 use greentic::node::{ChannelOrigin, NodeContext};
 use greentic::secret::{EmptySecretsManager, SecretsManager};
+use tempfile::TempDir;
 
 /// Helper to build a dummy `Executor` for NodeContext
 fn make_executor() -> Arc<Executor> {
@@ -130,11 +132,14 @@ async fn create_out_msg_error_on_missing_to_and_no_origin() {
     let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), host_logger)
         .await
         .expect("channel manager");
+    let tempdir = TempDir::new().unwrap();
+    let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
     let ctx = NodeContext::new(
         HashMap::new(),
         HashMap::new(),
         executor.clone(),
         channel_mgr.clone(),
+        Arc::new(process_mgr.clone()),
         secrets.clone(),
         None,
     );
@@ -176,12 +181,14 @@ async fn create_out_msg_uses_template_for_to_and_content() {
     let part_json = json!({ "id": "p1", "display_name": "Alice", "channel_specific_id": "a1" });
     let part_val: StateValue = serde_json::from_value(part_json.clone()).unwrap();
     state.insert("recipient".into(), part_val);
-
+    let tempdir = TempDir::new().unwrap();
+    let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
     let ctx = NodeContext::new(
-        state,
+        HashMap::new(),
         HashMap::new(),
         executor.clone(),
         channel_mgr.clone(),
+        Arc::new(process_mgr.clone()),
         secrets.clone(),
         None,
     );
@@ -561,9 +568,11 @@ async fn run_two_channel_nodes() {
     let config_mgr = ConfigManager(MapConfigManager::new());
     let host_logger = HostLogger::new();
     let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
+    let tempdir = TempDir::new().unwrap();
+    let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
 
     // **3.** create a FlowManager and a ChannelsRegistry that auto‐registers any Channel nodes
-    let fm = FlowManager::new(InMemoryState::new(), executor.clone(), channel_manager.clone(), secrets.clone());
+    let fm = FlowManager::new(InMemoryState::new(), executor.clone(), channel_manager.clone(), Arc::new(process_mgr.clone()), secrets.clone());
     let registry = ChannelsRegistry::new(fm.clone(),channel_manager.clone()).await;
     channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
     let noop = make_noop_plugin();              // Arc<Plugin>
@@ -575,7 +584,7 @@ async fn run_two_channel_nodes() {
 
     let participant = Participant{ id: "id".to_string(), display_name:None, channel_specific_id: None };
     let co = ChannelOrigin::new("channel".to_string(), participant);
-    let mut ctx = NodeContext::new(HashMap::new(), HashMap::new(), executor, channel_manager, secrets, Some(co));
+    let mut ctx = NodeContext::new(HashMap::new(), HashMap::new(), executor, channel_manager, Arc::new(process_mgr), secrets, Some(co));
 
 
     // run

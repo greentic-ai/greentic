@@ -52,9 +52,9 @@ tempfile = "3.20.0"
 uuid = { version = "1.17.0", features = ["v4"] }
 handlebars = "6.3.2"
 chrono = { version = "0.4", features = ["serde"] }
-libloading = "0.8.7"
+libloading = "0.8.8"
 futures = "0.3.31"
-clap = { version = "4.5.38", features = ["derive"] }
+clap = { version = "4.5.39", features = ["derive"] }
 lazy_static = "1.5.0"
 petgraph = { version = "0.8.1", features = ["serde"] }
 atomic_refcell = "0.1.13"
@@ -62,5 +62,6 @@ crossbeam-utils = "0.8.21"
 opentelemetry-appender-tracing = "0.30.0"
 thiserror = "2.0.12"
 ollama-rs = "0.3.1"
-url = "2.5.4"
+url = { version="2.5.4", features = ["serde"] }
+serde_yaml = "0.9.33"
 

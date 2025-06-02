@@ -6,15 +6,17 @@ use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::FlowManager, logger::Logger, secret::SecretsManager, state::InMemoryState
+    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::FlowManager, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, state::InMemoryState, watcher::DirectoryWatcher
 };
 
 pub struct App
 {
+    watcher: Option<DirectoryWatcher>,
     tools_task: Option<JoinHandle<()>>,
     flow_task: Option<JoinHandle<()>>,
     channels_task: Option<JoinHandle<()>>,
     flow_manager: Option<Arc<FlowManager>>,
+    process_manager: Option<ProcessManager>,
     executor: Option<Arc<Executor>>,
     channel_manager: Option<Arc<ChannelManager>>,
 }
@@ -22,10 +24,12 @@ pub struct App
 impl App {
     pub fn new() -> Self {
         Self{
+            watcher: None,
             tools_task:None,
             flow_task:None,
             channels_task:None,
             flow_manager: None,
+            process_manager: None,
             executor: None,
             channel_manager: None,
         }
@@ -40,12 +44,37 @@ impl App {
         flows_dir:    PathBuf,
         channels_dir: PathBuf,
         tools_dir:    PathBuf,
+        processes_dir: PathBuf,
         config:       ConfigManager,
         logger:       Logger,
         secrets:      SecretsManager,
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
         let store = InMemoryState::new();
+
+        // Process Manager
+        match ProcessManager::new(processes_dir)
+        {
+            Ok(mut pm) => {
+                match pm.watch_process_dir().await {
+                    Ok(watcher) => {
+                        self.process_manager = Some(pm.clone());
+                        self.watcher = Some(watcher)
+                    },
+                    Err(error) => {
+                        let werror = format!("Could not start up process manager because {:?}",error);
+                        error!(werror);
+                        return Err(error);
+                    },
+                }
+            },
+            Err(err) => {
+                let perror = format!("Could not start up process manager because {:?}",err);
+                error!(perror);
+                return Err(err);
+            },
+        }
+        let process_manager = Arc::new(self.process_manager.to_owned().unwrap());
 
         // executor
         self.executor = Some(Executor::new(secrets.clone(), logger.clone()));
@@ -67,10 +96,10 @@ impl App {
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config, secrets.clone(),host_logger).await?;
         self.channel_manager = Some(channel_manager.clone());
-   
+
 
         // flow manager
-        let flow_mgr = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), secrets.clone());
+        let flow_mgr = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), process_manager.clone(), secrets.clone());
         self.flow_manager = Some(flow_mgr.clone());
 
         // Load all existing flows, then watch for changes:
@@ -109,6 +138,7 @@ impl App {
     }
 
     pub async fn shutdown(&self){    
+        
         if let Some(handle) = self.flow_task.as_ref() {
             handle.abort();
         };

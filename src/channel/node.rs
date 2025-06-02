@@ -228,6 +228,7 @@ mod tests {
     use super::*;
     use crate::channel::manager::{ChannelManager, HostLogger};
     use crate::config::{ConfigManager, MapConfigManager};
+    use crate::process::manager::ProcessManager;
     use crate::{executor::Executor, flow::FlowManager, logger::OpenTelemetryLogger,
                 secret::EmptySecretsManager, state::InMemoryState,};
     use crate::secret::SecretsManager;
@@ -243,7 +244,8 @@ mod tests {
         let config = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let cm = ChannelManager::new(config, secrets.clone(), host_logger).await.expect("could not create channel manager");
-        let fm = FlowManager::new(store, exec, cm.clone(), secrets);
+        let pm = ProcessManager::dummy();
+        let fm = FlowManager::new(store, exec, cm.clone(), pm.clone(), secrets);
         let reg = ChannelsRegistry::new(fm,cm).await;
 
         // no panic if nothing registered

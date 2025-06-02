@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
 };
 use crate::{
-    agent::agent::AgentNode, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::ProcessNode, secret::SecretsManager, state::StateStore, watcher::{watch_dir, WatchedType}
+    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, state::StateStore, watcher::{DirectoryWatcher, WatchedType}
 };
 use anyhow::Error;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
@@ -17,7 +17,7 @@ use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{
 use schemars::{schema::{InstanceType, Metadata, Schema, SchemaObject}, JsonSchema, SchemaGenerator};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json,Value};
-use tokio::{sync::Mutex, task::JoinHandle, time::sleep};
+use tokio::{sync::Mutex,time::sleep};
 use tracing::{error, info};
 use crate::node::ToolNode;
 
@@ -28,7 +28,7 @@ pub struct NodeRecord {
     pub attempt: usize,
     pub started: DateTime<Utc>,
     pub finished: DateTime<Utc>,
-    pub result: Result<Message, NodeError>,
+    pub result: Result<NodeOut, NodeErr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,13 +407,12 @@ impl Flow {
                     }
 
                     NodeKind::Agent { agent } => {
-                        AgentNode::new(agent.agent.clone(), agent.task.clone())
-                            .process(input.clone(), ctx)
+                        agent.agent.process(input.clone(), ctx).await
                     }
 
                     NodeKind::Process { process } => {
-                        ProcessNode::new(process.name.clone(), process.args.clone())
-                            .process(input.clone(), ctx)
+                        let process_node = process.process.clone();
+                        process_node.process( input.clone(),ctx).await
                     }
                 };
 
@@ -441,10 +440,10 @@ impl Flow {
 
             match result {
                 Ok(out_msg) => {
-                    outputs.insert(nx, out_msg);
+                    outputs.insert(nx, out_msg.message());
                 }
                 Err(err) => {
-                    early_err = Some((node_id.clone(), err));
+                    early_err = Some((node_id.clone(), err.error()));
                     break;
                 }
             }
@@ -642,14 +641,14 @@ pub struct ToolNodeConfig {
 /// Internal agent-node config
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgentNodeConfig {
-    pub agent: String,
+    pub agent: BuiltInAgent,
     pub task: String,
 }
 
 /// Internal process-node config
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessNodeConfig {
-    pub name: String,
+    pub process: BuiltInProcess,
     pub args: Value,
 }
 
@@ -736,14 +735,15 @@ pub struct FlowManager {
     store: Arc<dyn StateStore>,
     executor: Arc<Executor>,
     channel_manager: Arc<ChannelManager>,
+    process_manager: Arc<ProcessManager>,
     secrets: SecretsManager,
     on_added: Arc<Mutex<Vec<FlowAddedHandler>>>,
 }
 
 impl FlowManager {
-    pub fn new(store: Arc<dyn StateStore>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, secrets: SecretsManager) -> Arc<Self> {
+    pub fn new(store: Arc<dyn StateStore>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager) -> Arc<Self> {
         let on_added = Arc::new(Mutex::new(Vec::new()));
-        Arc::new(FlowManager { flows: DashMap::new(), store, executor, channel_manager, secrets, on_added})
+        Arc::new(FlowManager { flows: DashMap::new(), store, executor, channel_manager, process_manager, secrets, on_added})
     }
 
     pub async fn subscribe_flow_added(&self, h: FlowAddedHandler) {
@@ -778,23 +778,71 @@ impl FlowManager {
         info!("Removed flow: {}", name);
     }
 
-    pub async fn watch_flow_dir(self: Arc<Self>, dir: PathBuf) -> Result<JoinHandle<()>,Error> {
+    pub async fn watch_flow_dir(self: Arc<Self>, dir: PathBuf) -> Result<DirectoryWatcher,Error> {
         let watcher = FlowWatcher { manager: self.clone() };
-        watch_dir(dir, Arc::new(watcher), &["greentic"], true).await
+        DirectoryWatcher::new(dir, Arc::new(watcher), &["jgtc","ygtc"], true).await
     }
 
     pub fn load_flow_from_file(path: &str) -> Result<Flow, FlowError> {
-        let json = fs::read_to_string(path)
+        let contents = fs::read_to_string(path)
             .map_err(|e| FlowError::IoError(format!("read error: {}", e)))?;
-        let flow: Flow = serde_json::from_str(&json)
-            .map_err(|e| FlowError::SerializationError(format!("parse error: {}", e)))?;
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|os| os.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+
+        let flow: Flow = match ext.as_str() {
+            "jgtc" => {
+                // JSON‐based flow file
+                serde_json::from_str(&contents)
+                    .map_err(|e| FlowError::SerializationError(format!("JSON parse error: {}", e)))?
+            }
+            "ygtc" => {
+                // YAML‐based flow file
+                serde_yaml::from_str(&contents)
+                    .map_err(|e| FlowError::SerializationError(format!("YAML parse error: {}", e)))?
+            }
+            other => {
+                return Err(FlowError::SerializationError(format!(
+                    "unsupported extension “{}” (expected .jgtc or .ygtc)",
+                    other
+                )));
+            }
+        };
+
         Ok(flow.build())
     }
 
     pub fn save_flow_to_file(path: &str, flow: &Flow) -> Result<(), FlowError> {
-        let json = serde_json::to_string_pretty(flow)
-            .map_err(|e| FlowError::SerializationError(format!("{}", e)))?;
-        fs::write(path, json).map_err(|e| FlowError::IoError(format!("{}", e)))?;
+        let contents = {
+            let ext = Path::new(path)
+                .extension()
+                .and_then(|os| os.to_str())
+                .unwrap_or_default()
+                .to_lowercase();
+
+            match ext.as_str() {
+                "jgtc" => {
+                    // JSON output
+                    serde_json::to_string_pretty(flow)
+                        .map_err(|e| FlowError::SerializationError(format!("{}", e)))?
+                }
+                "ygtc" => {
+                    // YAML output
+                    serde_yaml::to_string(flow)
+                        .map_err(|e| FlowError::SerializationError(format!("{}", e)))?
+                }
+                other => {
+                    return Err(FlowError::SerializationError(format!(
+                        "unsupported extension “{}” (expected .jgtc or .ygtc)",
+                        other
+                    )));
+                }
+            }
+        };
+
+        fs::write(path, contents).map_err(|e| FlowError::IoError(format!("{}", e)))?;
         Ok(())
     }
 
@@ -814,6 +862,7 @@ impl FlowManager {
             HashMap::new(),
             self.executor.clone(),
             self.channel_manager.clone(),
+            self.process_manager.clone(),
             self.secrets.clone(),
             channel_origin.clone(),
         );

@@ -1,59 +1,60 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use crate::node::NodeContext;
 use crate::message::Message;
+use crate::node::{NodeContext, NodeErr, NodeError, NodeOut};
 use crate::watcher::WatchedType;
-use anyhow::Error;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use serde_json::Value;
 
-
-use super::manager::{register_executor, unregister_executor};
-
-pub type ProcessResult = Result<Message, Error>;
-/// Each concrete Process backend must register under a unique “type name” here.
-/// The `typetag::serde` macro machinery will emit a hidden “type” field in JSON,
-/// e.g. `{ "type": "chatgpt", "api_key": "XXX" }`, and choose the correct struct to deserialize.
-pub trait ProcessExecutor: Send + Sync {
-    /// Returns the unique key under which this executor is registered,
-    /// e.g. "chatgpt", "ollama", "deepseek".
-    fn process_name(&self) -> &'static str;
-
-    /// Given a `task` string (e.g. "summarize", "classify", "translate"),
-    /// an input `Message` payload, and the global `NodeContext`, produce a new
-    /// `Message` as the output. Return an `Error` on failure.
-    fn execute(
-        &self,
-        task: &str,
-        input: Message,
-        ctx: &mut NodeContext,
-    ) -> ProcessResult;
-
-
-    /// Allows cloning a boxed executor. Each implementation must provide this.
-    fn clone_box(&self) -> Box<dyn ProcessExecutor>;
+#[derive(Clone, Debug)]//, Serialize, Deserialize)]
+pub struct ProcessInstance {
+    pub name: String,
+    pub wasm_path: PathBuf,
 }
 
+#[derive(Clone, Debug,)]//, Serialize, Deserialize)]
+pub struct ProcessWrapper{
+    instance: ProcessInstance,
+    description: String,
+    parameters: Value,
+}
 
-// Required to let trait‐objects be cloned via `.clone_box()`
-impl Clone for Box<dyn ProcessExecutor> {
-    fn clone(&self) -> Box<dyn ProcessExecutor> {
-        self.clone_box()
+impl ProcessWrapper {
+    pub fn new(instance: ProcessInstance, description: String, parameters: Value) -> Self {
+        Self{instance, description, parameters}
+    }
+
+    /// Return the key under which this was registered.
+    pub fn name(&self) -> &str {
+        &self.instance.name
+    }
+    
+    pub fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    pub fn instance(&self) -> ProcessInstance {
+        self.instance.clone()
+    }
+
+    pub fn parameters(&self) -> Value {
+        self.parameters.clone()
+    }
+
+    pub async fn process(&self, _msg: Message, _ctx: &mut NodeContext) -> Result<NodeOut, NodeErr>
+    {
+        return Err(NodeErr::all(NodeError::Internal("Not yet implemented".to_string())));
     }
 }
-
-
 /// Holds loaded libraries and their process names.
 /// We keep the Library alive so symbols remain valid.
 #[derive(Clone)]
 pub struct ProcessWatcher {
     /// Map from process_name → executor instance
-    executors: Arc<DashMap<String, Box<dyn ProcessExecutor>>>,
+    processes: Arc<DashMap<String, Box<ProcessWrapper>>>,
 
-    /// (Optional) If you also need to know which file corresponds to which name,
-    /// keep a second map of PathBuf→String. But if you only need name→executor, skip this.
     path_to_name: Arc<DashMap<PathBuf, String>>,
 }
 
@@ -61,30 +62,37 @@ impl ProcessWatcher {
     /// Create a new ProcessWatcher. Typically called once on startup, with an empty map.
     pub fn new() -> Self {
         ProcessWatcher {
-            executors: Arc::new(DashMap::new()),
+            processes: Arc::new(DashMap::new()),
             path_to_name: Arc::new(DashMap::new()),
         }
     }
 
     /// Return a clone of the internal map (process_name → executor).
-    pub fn loaded_executors(&self) -> Arc<DashMap<String, Box<dyn ProcessExecutor>>> {
-        Arc::clone(&self.executors)
-    }
-
-    /// (Optional) Return the path→name map if you need it elsewhere.
-    pub fn path_to_name_map(&self) -> Arc<DashMap<PathBuf, String>> {
-        Arc::clone(&self.path_to_name)
+    pub fn loaded_processes(&self) -> Arc<DashMap<String, Box<ProcessWrapper>>> {
+        Arc::clone(&self.processes)
     }
 
     /// Retrieve a cloned executor by its name, if it exists.
-    pub fn get_executor(&self, name: &str) -> Option<Box<dyn ProcessExecutor>> {
-        self.executors.get(name).map(|entry| entry.value().clone_box())
+    pub fn get_process(&self, name: &str) -> Option<Box<ProcessWrapper>> {
+        self.processes.get(name).map(|entry| entry.value().clone())
+    }
+
+    pub fn register_process(&self, process: Box<ProcessWrapper>) {
+        self.path_to_name.insert(process.instance().wasm_path, process.name().to_string());
+    }
+
+    pub fn unregister_process(&self, process: Box<ProcessWrapper>) {
+        self.path_to_name.remove(&process.instance().wasm_path);
+    }
+
+    pub fn unregister_process_via_path(&self, path: PathBuf) {
+        self.path_to_name.remove(&path);
     }
 }
 /// Stub for loading a WASM file at `path`
 /// and returning `(boxed_executor, process_name_string)`.
 /// You must implement actual WASM instantiation here (e.g. via Wasmtime, Wasmer, etc.).
-async fn load_wasm_executor(path: &Path) -> anyhow::Result<(Box<dyn ProcessExecutor>, String)> {
+async fn load_wasm_executor(path: &Path) -> anyhow::Result<(Box<ProcessWrapper>, String)> {
     // TODO: 
     //   1) Instantiate the WASM component (e.g. `wasmtime::Instance::new(...)`).
     //   2) Wrap it in a type that implements `ProcessExecutor` (e.g. `WasmProcessExecutor`).
@@ -120,21 +128,21 @@ impl WatchedType for ProcessWatcher {
         // 1) If already loaded from this same path, unload the old one
         if let Some((_, old_name)) = self.path_to_name.remove(&pathbuf) {
             // Unregister the old executor
-            unregister_executor(&old_name);
+            self.unregister_process_via_path(path.to_path_buf());
             // Remove it from the executors map
-            self.executors.remove(&old_name);
+            self.processes.remove(&old_name);
             // Perform any WASM teardown
             unload_wasm_executor(&old_name).await?;
         }
 
         // 2) Attempt to load the WASM and get a boxed executor plus its name
         match load_wasm_executor(path).await {
-            Ok((boxed_executor, process_name)) => {
+            Ok((process, process_name)) => {
                 // 2a) Register the new executor globally
-                register_executor(boxed_executor.clone_box());
+                self.register_process(process.clone());
 
                 // 2b) Insert into our name→executor map
-                self.executors.insert(process_name.clone(), boxed_executor);
+                self.processes.insert(process_name.clone(), process);
 
                 // 2c) Remember which path corresponds to which name
                 self.path_to_name.insert(pathbuf, process_name.clone());
@@ -153,14 +161,18 @@ impl WatchedType for ProcessWatcher {
     /// We look up the name, unregister it, and drop it from our maps.
     async fn on_remove(&self, path: &Path) -> anyhow::Result<()> {
         let pathbuf = path.to_path_buf();
-
+        
         // If this path had been loaded before:
         if let Some((_, process_name)) = self.path_to_name.remove(&pathbuf) {
             // Unregister globally
-            unregister_executor(&process_name);
+            let process = self.get_process(&process_name);
+            if let Some(pw) = process {
+                self.unregister_process(pw);
+            }
+            
 
             // Remove from local name→executor map
-            self.executors.remove(&process_name);
+            self.processes.remove(&process_name);
 
             // Optionally do WASM teardown
             unload_wasm_executor(&process_name).await?;
@@ -175,7 +187,7 @@ impl fmt::Debug for ProcessWatcher {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Collect all registered process names:
         let mut names: Vec<String> = Vec::new();
-        for entry in self.executors.iter() {
+        for entry in self.processes.iter() {
             names.push(entry.key().clone());
         }
 

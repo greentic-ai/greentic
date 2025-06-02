@@ -6,16 +6,15 @@ use std::{
 use anyhow::{bail, Error, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::{task::JoinHandle, time::sleep};
+use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
 
 use channel_plugin::{message::ChannelMessage, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
 
 use crate::{
-    channel::plugin::{Plugin, PluginEventHandler},
-    channel::wrapper::PluginWrapper,
+    channel::{plugin::{Plugin, PluginEventHandler}, wrapper::PluginWrapper},
     config::ConfigManager,
-    secret::SecretsManager,
+    secret::SecretsManager, watcher::DirectoryWatcher,
 };
 
 
@@ -139,7 +138,7 @@ impl ChannelManager {
     /// and spawn the watcher task.
     ///
     /// Returns a JoinHandle so you can abort on shutdown.
-    pub async fn start_all(self: Arc<Self>, plugins_dir: PathBuf) -> Result<JoinHandle<()>, Error> {
+    pub async fn start_all(self: Arc<Self>, plugins_dir: PathBuf) -> Result<DirectoryWatcher, Error> {
         // 1) build the watcher
         let watcher = Arc::new(crate::channel::plugin::PluginWatcher::new(plugins_dir.clone()));
         // 2) subscribe us to get add/remove events
@@ -371,6 +370,18 @@ pub mod tests {
         plugin::ChannelState,
         PluginHandle,
     };
+
+    impl ChannelManager {
+        pub fn dummy() -> Arc<Self> {
+            Arc::new(ChannelManager { 
+                config: ConfigManager(MapConfigManager::new()), 
+                secrets: SecretsManager(EmptySecretsManager::new()), 
+                channels: Arc::new(DashMap::new()), 
+                host_logger: HostLogger::new(), 
+                incoming_subscribers: Arc::new(Mutex::new(Vec::new())), 
+            })
+        }
+    }
 
     /// A dummy Plugin whose FFI pointers do nothing.
     pub fn make_noop_plugin() -> Arc<Plugin> {

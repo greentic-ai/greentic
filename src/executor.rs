@@ -2,7 +2,6 @@ use std::fs;
 use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use async_trait::async_trait;
-use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView,};
@@ -20,7 +19,7 @@ use wasmtime_wasi::{ResourceTable};
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 use futures_util::FutureExt;
 use crate::secret::{EmptySecretsManager, SecretsManager};
-use crate::watcher::{watch_dir, WatchedType};
+use crate::watcher::{DirectoryWatcher, WatchedType};
 use std::fmt::Debug;
 use crate::logger::{LogLevel, Logger};
 
@@ -132,14 +131,14 @@ impl Executor {
         })
     }
 
-    pub async fn watch_tool_dir(&self, tool_dir: PathBuf) -> Result<JoinHandle<()>,Error>  {
+    pub async fn watch_tool_dir(&self, tool_dir: PathBuf) -> Result<DirectoryWatcher,Error>  {
         let handler = ToolDirHandler {
             tools: Arc::clone(&self.tools),
             secrets: self.secrets_manager.clone(),
             logging: self.logger.clone(),
         };
         // watch_dir will do exactly the same setup+loop+pattern-matching you already wrote for channels:
-        watch_dir(tool_dir, Arc::new(handler), &["wasm"], true).await
+        DirectoryWatcher::new(tool_dir, Arc::new(handler), &["wasm"], true).await
     }
 
 
@@ -423,6 +422,16 @@ mod tests {
     use crate::executor::exports::wasix::mcp::router;
     use crate::logger::OpenTelemetryLogger;
     use crate::secret::{EmptySecretsManager, EnvSecretsManager};
+
+    impl Executor {
+        pub fn dummy() -> Arc<Self>{
+            Arc::new(Executor { 
+                tools: Arc::new(DashMap::new()), 
+                secrets_manager: SecretsManager(EmptySecretsManager::new()), 
+                logger: Logger(Box::new(OpenTelemetryLogger::new())), 
+            })
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_dynamic_tool_watcher_load_and_remove() {

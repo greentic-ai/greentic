@@ -145,7 +145,7 @@ async fn run(root: PathBuf,
     let log_file      = "logs/greentic_logs.log".to_string();
     let event_file    = "logs/greentic_events.log".to_string();
     let tools_dir    = root.join("plugins").join("tools");
-    let _processes_dir= root.join("plugins").join("processes");
+    let processes_dir= root.join("plugins").join("processes");
     let channels_dir = root.join("plugins").join("channels/running");       
     // tracing / logger
     let logger = init_tracing(
@@ -182,6 +182,7 @@ async fn run(root: PathBuf,
         flows_dir.clone(),
         channels_dir.clone(),
         tools_dir.clone(),
+        processes_dir.clone(),
         config_mgr,
         logger,
         secrets_mgr,
