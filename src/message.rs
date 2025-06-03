@@ -9,6 +9,7 @@ pub struct Message {
     id: String,
     session_id: Option<String>,
     payload: Value,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     metadata: HashMap<String, String>,
 }
 

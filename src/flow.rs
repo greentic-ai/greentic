@@ -497,6 +497,28 @@ pub enum ValueOrTemplate<T> {
     Template(String),
 }
 
+impl ValueOrTemplate<Participant> {
+    /// Instead of parsing into `Participant` from JSON, just render the template
+    /// as a plain string and treat that as the `participant.id`.
+    fn resolve_as_string<C>(&self, ctx: &C) -> Result<String, ResolveError>
+    where
+        C: TemplateContext,
+    {
+        match self {
+            ValueOrTemplate::Value(part) => {
+                // if you passed a literal Participant, just grab its `id`:
+                Ok(part.id.clone())
+            }
+            ValueOrTemplate::Template(tmpl) => {
+                let rendered = ctx.render_template(tmpl)
+                    .map_err(ResolveError::Template)?;
+                // rendered is a String like "p1"; return it directly:
+                Ok(rendered)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChannelNodeConfig {
     /// The channel’s canonical name
@@ -556,7 +578,18 @@ impl ChannelNodeConfig {
 
         // 2) `to`: first try config, else channel_origin, else error:
         let to = if let Some(list) = &self.to {
-            list.iter().map(|tpl| tpl.resolve(ctx)).collect::<Result<Vec<_>, _>>()?
+                list.iter()
+                    .map(|tpl| {
+                        // 1. Render the template & produce a String:
+                        let rendered = tpl.resolve_as_string(ctx)?;
+                        // 2. Create a Participant whose only `id` is the rendered string:
+                        Ok(Participant {
+                            id: rendered,
+                            display_name: None,
+                            channel_specific_id: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ResolveError>>()?
         } else if let Some(co) = ctx.channel_origin() {
             vec![co.participant()]
         } else {

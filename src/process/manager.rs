@@ -146,12 +146,16 @@ impl ProcessManager {
         if let Some(watcher) = &self.watcher {
             // Walk every entry in the global registry.  If it’s not one of our baked-in names,
             // remove it:
-            for entry in watcher.loaded_processes().iter() {
-                let key = entry.key().clone();
-                    let process = watcher.get_process(&key);
-                    if process.is_some() {
-                        watcher.unregister_process(process.unwrap());
-                    }
+            let to_remove: Vec<String> = watcher
+                .loaded_processes()
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect();
+            for name in to_remove {
+                let process = watcher.get_process(&name);
+                if process.is_some() {
+                    watcher.unregister_process(process.unwrap());
+                }
             }
         }
     }

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt, sync::Arc};
 use async_trait::async_trait;
 use channel_plugin::message::Participant;
-use handlebars::Handlebars;
+use handlebars::{Handlebars,JsonValue};
 use serde::{Deserialize,  Serialize};
 use tempfile::TempDir;
 use std::fs;
@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::TemplateContext, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, state::StateValue, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
+
 
 /// NodeOut enables to send the messages coming out of the Node
 /// to either all connections (default optin)
@@ -285,21 +286,47 @@ fn make_handlebars() -> Arc<Handlebars<'static>> {
     Arc::new(hb)
 }
 
+fn state_value_to_json(v: &StateValue) -> JsonValue {
+    match v {
+        StateValue::String(s) => JsonValue::String(s.clone()),
+        StateValue::Number(n) => {
+            // serde_json::Number can be built from f64 via `Number::from_f64`
+            JsonValue::Number(
+                serde_json::Number::from_f64(*n).unwrap_or_else(|| serde_json::Number::from(0)),
+            )
+        }
+        StateValue::Boolean(b) => JsonValue::Bool(*b),
+        StateValue::List(list) => {
+            let arr = list.iter().map(|item| state_value_to_json(item)).collect();
+            JsonValue::Array(arr)
+        }
+        StateValue::Map(map) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in map.iter() {
+                obj.insert(k.clone(), state_value_to_json(v));
+            }
+            JsonValue::Object(obj)
+        }
+        StateValue::Null => JsonValue::Null,
+    }
+}
+
+fn state_map_to_json(state: &HashMap<String, StateValue>) -> JsonValue {
+    let mut obj = serde_json::Map::new();
+    for (k, v) in state.iter() {
+        obj.insert(k.clone(), state_value_to_json(v));
+    }
+    JsonValue::Object(obj)
+}
+
 impl TemplateContext for NodeContext {
     fn render_template(&self, template: &str) -> Result<String, String> {
-        let tmpl = template.trim();
-        if let Some(inner) = tmpl.strip_prefix("{{").and_then(|s| s.strip_suffix("}}")) {
-            let key = inner.trim();
-            match self.state.get(key) {
-                Some(val) => {
-                    let json_val = serde_json::to_value(val).map_err(|e| e.to_string())?;
-                    serde_json::to_string(&json_val).map_err(|e| e.to_string())
-                }
-                None => Err(format!("template key not found: {}", key)),
-            }
-        } else {
-            Err(format!("invalid template syntax: {}", template))
-        }
+        // 1) Convert `self.state: HashMap<String, StateValue>` into a serde_json::Value::Object
+        let json_ctx = state_map_to_json(&self.state);
+        // 2) Feed that to Handlebars
+        self.hb
+            .render_template(template, &json_ctx)
+            .map_err(|e| format!("handlebars error: {}", e))
     }
 }
 
@@ -563,7 +590,7 @@ fn resolve_or_create_storage_dir(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::channel::manager::HostLogger;
     use crate::config::{ConfigManager, MapConfigManager};
@@ -573,6 +600,22 @@ mod tests {
     use crate::state::{StateValue};
     use serde_json::json;
     use tempfile::TempDir;
+
+    impl NodeContext {
+        pub fn dummy() -> Self {
+            let hb = make_handlebars();
+            Self { 
+                state: HashMap::new(), 
+                config: HashMap::new(), 
+                executor: Executor::dummy(), 
+                channel_manager: ChannelManager::dummy(), 
+                process_manager: ProcessManager::dummy(), 
+                secrets: SecretsManager(EmptySecretsManager::new()), 
+                channel_origin: None, 
+                hb,
+            }
+        }
+    }
 
     #[derive(Debug, Serialize, Deserialize, JsonSchema)]
     struct EchoNode;

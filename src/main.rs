@@ -1,8 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 use greentic::{
-    apps::{cmd_init, App}, config::{ConfigManager, EnvConfigManager}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
+    apps::{cmd_init, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
 };
-use std::{fs, path::{Path, PathBuf}, process};
+use std::{env, fs, path::PathBuf, process};
 use tracing::{error, info};
 use anyhow::bail;
 
@@ -17,18 +17,8 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Args, Debug)]
-pub struct RootArg {
-    /// where to look for flows, plugins, etc.
-    #[arg(
-        value_name = "GREENTIC_DIR",
-        default_value = "./greentic",
-    )]
-    pub root: PathBuf,
-}
 
 #[derive(Subcommand, Debug)]
-#[command(subcommand = "run")]
 enum Commands {
     /// Run the runtime
     Run(RunArgs),
@@ -37,14 +27,20 @@ enum Commands {
     Schema(SchemaArgs),
 
     /// Initialize a fresh layout
-    Init(InitArgs),
+    Init,
+
+    /// Manage flows
+    Flow(FlowArgs),
 }
 
+#[derive(Args, Debug)]
+struct FlowArgs {
+    #[command(subcommand)]
+    command: FlowCommands,
+}
 
 #[derive(Args, Debug)]
 struct RunArgs {
-    #[command(flatten)]
-    root: RootArg,
         
     /// Optional log level override (e.g. error, warn, info, debug, trace)
     #[arg(long, default_value = "info")]
@@ -52,20 +48,17 @@ struct RunArgs {
 
     /// OpenTelemetry endpoint (e.g. http://localhost:4317)
     #[arg(long)]
-    otel_logs_endpoint: String,
+    otel_logs_endpoint: Option<String>,
 
     /// OpenTelemetry endpoint (e.g. http://localhost:4317)
     #[arg(long)]
-    otel_events_endpoint: String,
+    otel_events_endpoint: Option<String>,
 }
 
     /// Emit JSON‐Schema for flows, tools and channels into `<root>/schemas`
 
 #[derive(Args, Debug)]
 struct SchemaArgs {
-    #[command(flatten)]
-    root: RootArg,
-
     /// Optional log level override for the internal tracer
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -75,27 +68,43 @@ struct SchemaArgs {
     logs_enabled: bool,
 }
 
-#[derive(Args, Debug)]
-struct InitArgs {
-    #[command(flatten)]
-    root: RootArg,
+
+#[derive(Subcommand, Debug)]
+enum FlowCommands {
+    Validate { file: PathBuf },
+    Deploy { file: PathBuf },
+    Start { name: String },
+    Stop { name: String },
+}
+
+/// Resolve the greentic root directory from the environment or use default.
+pub fn resolve_root_dir() -> PathBuf {
+    if let Ok(path) = env::var("GREENTIC_ROOT") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("./greentic")
+    }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse(); 
-    match cli.command {
-        Some(Commands::Run(args)) => {
-            let root = args.root.root;
+    match cli.command.unwrap_or(Commands::Run(RunArgs {
+        log_level: "info".to_string(),
+        otel_logs_endpoint: None,
+        otel_events_endpoint: None,
+        }))  {
+        Commands::Run(args) => {
+            let root = resolve_root_dir();
             run(root,
                 args.log_level,
-                Some(args.otel_logs_endpoint),
-                Some(args.otel_events_endpoint),
+                args.otel_logs_endpoint,
+                args.otel_events_endpoint,
             ).await?;
             Ok(())
         }
-        Some(Commands::Schema(args)) => {
-            let root = args.root.root;
+        Commands::Schema(args) => {
+            let root = resolve_root_dir();
             let out_dir = root.join("schemas");
             let log_level     = args.log_level;
             let log_file      = "logs/greentic-schema.log".to_string();
@@ -116,19 +125,40 @@ async fn main() -> anyhow::Result<()> {
             println!("Schemas written to {}", out_dir.display());
             process::exit(0);
         }
-        Some(Commands::Init(args)) => {
-            let root = args.root.root;
+        Commands::Init => {
+            let root = resolve_root_dir();
             cmd_init(root.clone()).await?;
             println!("Initialized greentic layout at {}", root.display());
             process::exit(0);
         }
-        None => {
-            run(Path::new("./greentic").to_path_buf(), 
-                "info".to_string(),
-                None,
-                None,
-            ).await?;
-            Ok(())
+        Commands::Flow(flow_args) => match flow_args.command {
+            FlowCommands::Validate { file } => {
+                validate_flow_file(file)?;
+                println!("✅ Flow file is valid.");
+                Ok(())
+            },
+            FlowCommands::Deploy { file } => {
+                let root = resolve_root_dir();
+                validate_flow_file(file.clone())?;
+                deploy_flow_file(file, root)?;
+                Ok(())
+            },
+            FlowCommands::Start { name } => {
+                let root = resolve_root_dir();
+                let from = root.join("flows/stopped");
+                let to = root.join("flows/running");
+                move_flow_file(&name, &from, &to)?;
+                println!("✅ Flow `{}` started. Please make sure greentic is running, i.e. greentic run", name);
+                Ok(())
+            },
+            FlowCommands::Stop { name } => {
+                let root = resolve_root_dir();
+                let from = root.join("flows/running");
+                let to = root.join("flows/stopped");
+                move_flow_file(&name, &from, &to)?;
+                println!("✅ Flow `{}` stopped.", name);
+                Ok(())
+            },
         }
     }
 }

@@ -79,13 +79,18 @@ impl ProcessWatcher {
 
     pub fn register_process(&self, process: Box<ProcessWrapper>) {
         self.path_to_name.insert(process.instance().wasm_path, process.name().to_string());
+        self.processes.insert(process.name().to_string(), process);
     }
 
     pub fn unregister_process(&self, process: Box<ProcessWrapper>) {
+        self.processes.remove(process.name());
         self.path_to_name.remove(&process.instance().wasm_path);
     }
 
     pub fn unregister_process_via_path(&self, path: PathBuf) {
+        if let Some(process_name) = self.path_to_name.get(&path){
+            self.processes.remove(process_name.as_str());
+        }
         self.path_to_name.remove(&path);
     }
 }

@@ -4,6 +4,7 @@ pub mod channel;
 pub mod config;
 pub mod executor;
 pub mod flow;
+pub mod flow_commands;
 pub mod logger;
 pub mod mapper;
 pub mod message;

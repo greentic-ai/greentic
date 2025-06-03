@@ -184,7 +184,7 @@ async fn create_out_msg_uses_template_for_to_and_content() {
     let tempdir = TempDir::new().unwrap();
     let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
     let ctx = NodeContext::new(
-        HashMap::new(),
+        state,
         HashMap::new(),
         executor.clone(),
         channel_mgr.clone(),
@@ -198,7 +198,7 @@ async fn create_out_msg_uses_template_for_to_and_content() {
         channel_in: false,
         channel_out: true,
         from: None,
-        to: Some(vec![ValueOrTemplate::Template("{{recipient}}".into())]),
+        to: Some(vec![ValueOrTemplate::Template("{{recipient.id}}".into())]),
         content: Some(ValueOrTemplate::Value(MessageContent::Text("fixed".into()))),
         thread_id: None,
         reply_to_id: None,

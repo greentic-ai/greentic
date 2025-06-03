@@ -245,7 +245,7 @@ mod tests {
 
     use super::*;
     use ollama_rs::generation::chat::MessageRole;
-    use schemars::schema::{InstanceType, ObjectValidation, Schema, SingleOrVec};
+    use schemars::schema::SchemaObject;
     use serde_json::json;
 
     /// Helper: extract a subschema object by key from a `RootSchema`.
@@ -280,47 +280,36 @@ mod tests {
 
         // 3) Generate the JSON‐Schema for `OllamaAgent`
         let schema: RootSchema = schema_for!(OllamaAgent);
-
         // Look up the “OllamaAgent” definition in the `definitions` map
-        let defs = &schema.definitions;
-        let def_schema = defs
-            .get("OllamaAgent")
-            .expect("OllamaAgent definition missing");
-
-        // `def_schema` is a `&Schema`. We expect it to be an object, so match on `Schema::Object(...)`.
-        let obj = match def_schema {
-            Schema::Object(obj) => obj,
-            _ => panic!("Expected OllamaAgent definition to be an object"),
-        };
-
-        // Inside `obj`, the `object` field is `Option<Box<ObjectValidation>>`. Unwrap it:
-        let obj_validation: &ObjectValidation = obj
+        let root_obj: &SchemaObject = &schema.schema;
+        let props = root_obj
             .object
             .as_ref()
-            .expect("OllamaAgent schema should have an `object` block");
+            .expect("root must be an object")
+            .properties
+            .clone();
 
-        // Now `obj_validation.properties` is a map from field name → `Schema`.
-        let props = &obj_validation.properties;
-
-        // We can assert that “model”, “ollama_host”, and “ollama_port” appear:
+        // Now you can assert that "model", "ollama_host", and "ollama_port" are present:
         assert!(props.contains_key("model"));
         assert!(props.contains_key("ollama_host"));
         assert!(props.contains_key("ollama_port"));
 
-        // Finally, check that “model” indeed has type = "string":
-        if let Schema::Object(model_schema_obj) = &props["model"] {
-        let ty = model_schema_obj
-            .instance_type
-            .as_ref()
-            .and_then(|single_or_vec| match single_or_vec {
-                // If it was declared as a single type, unwrap that:
-                SingleOrVec::Single(boxed) => Some(*boxed.clone()),
-                // If it was a Vec of types, pick the first one (if any):
-                SingleOrVec::Vec(vec) => vec.get(0).cloned(),
-            });
-            assert_eq!(ty, Some(InstanceType::String));
+        // Check that “model” is a string:
+        if let Some(schemars::schema::Schema::Object(model_schema_obj)) = props.get("model") {
+            let ty = model_schema_obj
+                .instance_type
+                .as_ref()
+                .and_then(|single_or_vec| {
+                    // single_or_vec could be Single(InstanceType::String) or Vec([String,…])
+                    if let schemars::schema::SingleOrVec::Single(boxed) = single_or_vec {
+                        Some((**boxed).clone())
+                    } else {
+                        None
+                    }
+                });
+            assert_eq!(ty, Some(schemars::schema::InstanceType::String));
         } else {
-            panic!("`model` schema was not a Schema::Object(...)");
+            panic!("`model` property was not an object‐schema");
         }
     }
 
@@ -335,8 +324,9 @@ mod tests {
                 "action": "do_something"
             },
             "input": { "foo": 42 },
-            "msg": { "id": "m1", "payload": {"bar": "baz"}, "session_id": null }
+            "msg": { "id": "m1", "payload": {"bar": "baz"} }
         });
+
         let req_tool: OllamaRequest =
             serde_json::from_value(json_toolcall.clone()).expect("ToolCall JSON failed");
         match req_tool {

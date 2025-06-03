@@ -1,0 +1,83 @@
+id: telegram.weather_with_ollama
+title: Telegram → Weather (with Ollama extraction)
+description: >
+  A Telegram flow that greets the user, uses Ollama to parse “location”+“days,” 
+  calls weather_api, and replies via a template.
+channels:
+  - telegram
+
+nodes:
+  # 1) Incoming Telegram node: listens for ANY message from Telegram.
+  telegram_in:
+    channel: telegram
+    in: true
+
+  # 2) “start_template”: if the user just typed “/start,” reply with a greeting.
+  start_template:
+    template:
+      template: |
+        Hello {{from.display_name}}! Where and for how many days would you like a weather forecast?
+
+  # 3) “parse_request”: an OllamaAgent node that extracts { location, days } from free-text.
+  parse_request:
+    agent:
+      model: llama3.2:1b
+
+  # 4) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
+  forecast_weather:
+    tool:
+      name: weather_api
+      action: forecast_weather
+      parameters:
+        q: "{{location}}"
+        days: "{{days}}"
+      secrets:
+        - WEATHERAPI_KEY
+      in_map:
+        type: copy
+        payload:
+          - "/q"
+          - "/days"
+      out_map:
+        type: copy
+        payload:
+          - "/location/name"
+          - "/forecast/forecastday/0/day/maxtemp_c"
+          - "/forecast/forecastday/0/day/mintemp_c"
+          - "/forecast/forecastday/0/day/condition/text"
+          - "/forecast/forecastday/0/day/daily_will_it_rain"
+    max_retries: 2
+    retry_delay_secs: 1
+
+  # 5) “weather_out_template”: format the weather API’s JSON into a friendly sentence.
+  weather_out_template:
+    template:
+      template: |
+        Here’s your forecast for {{ location.name }}:
+
+        • High: {{ forecast.forecastday.[0].day.maxtemp_c }}°C
+        • Low: {{ forecast.forecastday.[0].day.mintemp_c }}°C
+        • Condition: {{ forecast.forecastday.[0].day.condition.text }}
+        • Rain Today? {{#if (eq (forecast.forecastday.[0].day.daily_will_it_rain) 1)}}Yes{{else}}No{{/if}}
+
+  # 6) “telegram_out”: send any payload back to Telegram.
+  telegram_out:
+    channel: telegram
+    out: true
+
+connections:
+  telegram_in:
+    - start_template
+    - parse_request
+
+  start_template:
+    - telegram_out
+
+  parse_request:
+    - forecast_weather
+
+  forecast_weather:
+    - weather_out_template
+
+  weather_out_template:
+    - telegram_out

@@ -433,6 +433,21 @@ mod tests {
         }
     }
 
+    async fn wait_for_tool<F>(mut check: F, timeout_ms: u64) -> bool
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while std::time::Instant::now() < deadline {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_dynamic_tool_watcher_load_and_remove() {
         let tool_dir = Path::new("./tests/wasm/tools_load_remove").to_path_buf();
@@ -453,31 +468,31 @@ mod tests {
         });
 
         // Wait briefly to ensure the watcher is running
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // copy the weather wasm
         let weather_wasm = Path::new("./tests/wasm/tools_call/weather_api.wasm");
         fs::copy(weather_wasm, test_wasm.clone()).expect("could not copy weather wasm");           
 
         // Wait for the watcher to find the file. Watcher has been configured for 2 seconds
-        tokio::time::sleep(Duration::from_millis(3000)).await;
-
-        // At least one tool should now be loaded
-        let keys = executor.list_tool_keys();
-        for key in keys.clone() {
-            print!("{} ",key);
-        }
-        assert!(keys.iter().any(|k| k.starts_with("weather_api_forecast_weather")), "Expected tool not loaded");
+        let loaded = wait_for_tool(|| {
+            executor.list_tool_keys()
+                    .iter()
+                    .any(|k| k.starts_with("weather_api_forecast_weather"))
+        }, 8_000).await;
+        assert!(loaded, "Expected tool not loaded after 8s");
 
         // Remove the file
         try_remove_file_until_gone(&test_wasm, 20);
         assert!(wait_until_removed(&test_wasm, 5000).await, "WASM file was not removed in time");
 
         // needed for the executor to notice the file is gone and to update the tools list
-        tokio::time::sleep(Duration::from_millis(2000)).await;
-
-        let tool_keys = executor.list_tool_keys();
-        assert!(tool_keys.iter().all(|k| !k.starts_with("weather_api_forecast_weather")), "Tool was not removed");
+        let removed = wait_for_tool(|| {
+        !executor.list_tool_keys()
+                 .iter()
+                 .any(|k| k.starts_with("weather_api_forecast_weather"))
+        }, 8_000).await;
+        assert!(removed, "Tool was not removed from executor in time");
         
     }
 
