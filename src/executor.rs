@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Error, Result};
 use dashmap::DashMap;
 use exports::wasix::mcp::router::{CallToolResult, Tool, ToolError, Value as McpValue};
 use exports::wasix::mcp::secrets_list::SecretsDescription;
-use serde_json::Value;
+use serde_json::{json, Value};
 use wasi::logging::logging;
 use wasix::mcp::secrets_store::{Host, HostSecret, Secret, SecretValue, SecretsError, add_to_linker};
 use wasmtime::{Engine, Store};
@@ -222,10 +222,24 @@ impl WatchedType for ToolDirHandler {
     path.extension().and_then(|e| e.to_str()) == Some("wasm")
   }
 
-  async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
-    reload_with_retry(&path.to_path_buf(), Arc::clone(&self.tools), self.secrets.clone(), self.logging.clone()).await;
-    Ok(())
-  }
+    async fn on_create_or_modify(&self, path: &Path) -> Result<()> {
+        let tool_id = path.file_stem().unwrap().to_str().unwrap().to_string();
+        let instance = instantiate_tool(self.secrets.clone(), self.logging.clone(), &tool_id, path.to_path_buf())?;
+        for tool in &instance.tools_list {
+            let name = format!("{}_{}", instance.tool_id, tool.name);
+            let schema: Value = match serde_json::from_str(&tool.input_schema.json) {
+                Ok(input) => input,
+                Err(_) => {
+                    let error = format!("Please check tool {} inside {:?} because its input schema is not a valid json.",tool.name,path);
+                    error!(error);
+                    json!({})
+                },
+            };
+            let wrapper = ToolWrapper::new(instance.clone(), tool.name.clone(), tool.description.clone(), instance.secrets_list.clone(), schema);
+            self.tools.insert(name, Arc::new(wrapper));
+        }
+        Ok(())
+    }
 
   async fn on_remove(&self, path: &Path) -> anyhow::Result<()> {
     if let Some(tool_id) = path.file_stem().and_then(|s| s.to_str()) {
@@ -234,45 +248,6 @@ impl WatchedType for ToolDirHandler {
     Ok(())
   }
 }
-
- #[tracing::instrument(name = "load_tool", skip(tools_map, secrets_manager,logging))]
-async fn reload_tool_from_path(
-    tools_map: &Arc<DashMap<String, Arc<ToolWrapper>>>,
-    secrets_manager: SecretsManager,
-    logging: Logger,
-    path: PathBuf
-) -> Result<()> {
-    wait_until_file_is_stable(&path, Duration::from_millis(300), Duration::from_secs(5)).await?;
-    // Extract tool ID from filename
-    let tool_id = path.file_stem().unwrap().to_str().unwrap().to_string();
-    let instance = instantiate_tool(secrets_manager.clone(), logging.clone(), &tool_id, path.clone())?;
-    for tool in &instance.tools_list {
-        let name = format!("{}_{}", instance.tool_id, tool.name);
-        let params: Value = serde_json::from_str(&tool.input_schema.json)?;
-        let wrapper = ToolWrapper::new(instance.clone(), tool.name.clone(), tool.description.clone(), instance.secrets_list.clone(), params);
-        tools_map.insert(name, Arc::new(wrapper));
-    }
-    Ok(())
-}
-
-async fn reload_with_retry(path: &PathBuf, tools_ref: Arc<DashMap<String, Arc<ToolWrapper>>>, secrets: SecretsManager, logging: Logger) {
-    const MAX_RETRIES: usize = 10;
-
-    for attempt in 0..MAX_RETRIES {
-        match reload_tool_from_path(&tools_ref, secrets.clone(), logging.clone(), path.clone()).await {
-            Ok(_) => return,
-            Err(e) => {
-                if attempt == MAX_RETRIES - 1 {
-                    tracing::error!("Failed to load {:?} after retries: {:?}", path, e);
-                } else {
-                    tracing::warn!("Retrying load for {:?} (attempt {}): {:?}", path, attempt + 1, e);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    }
-}
-
 
 #[derive(Clone, Debug,)]//, Serialize, Deserialize)]
 pub struct ToolWrapper{
@@ -401,7 +376,9 @@ pub async fn wait_until_file_is_stable(path: &Path, stable_for: Duration, timeou
                     last_mtime = mtime;
                 }
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                return Err(e);
+            },
         }
 
         sleep(interval).await;
@@ -499,18 +476,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_call_weather_tool() {
 
-        let test_wasm = Path::new("./tests/wasm/tools_call/weather_api.wasm");
+        let test_wasm = Path::new("./tests/wasm/tools_call");
         assert!(test_wasm.exists(), "WASM file should exist before running this test");
 
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(PathBuf::from("./greentic/secrets"))));
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets_manager, logging);
 
-        reload_tool_from_path(&executor.tools, executor.secrets_manager.clone(), executor.logger.clone(), test_wasm.to_path_buf()).await.expect("should load tool");
-
+        // Start watching the directory
+        let watcher = executor.watch_tool_dir(test_wasm.to_path_buf()).await.expect("watcher should start");
         let input = serde_json::json!({ "q": "London", "days": 1,  });
-       let result = 
-            executor.call_tool("weather_api".into(), "forecast_weather".into(), input);
+        let result = 
+                executor.call_tool("weather_api".into(), "forecast_weather".into(), input);
         match result {
             Ok(CallToolResult { content, is_error }) => {
                 if is_error == Some(true) {
@@ -525,6 +502,7 @@ mod tests {
             },
             Err(e) => panic!("Call failed: {:?}", e),
         }
+        watcher.shutdown();
     }
 
 

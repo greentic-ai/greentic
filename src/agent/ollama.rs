@@ -25,13 +25,17 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaAgent {
     /// The Ollama model to invoke (e.g. "llama2:latest", "vicuna:v1", etc.).
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
 
     /// If not set the default localhost with port 11434 will be used
+    #[serde(default)]
     pub ollama_host: Option<Url>,
+    #[serde(default)]
     pub ollama_port: Option<u16>,
 
     /// Set optional options for the model
+    #[serde(default)]
     pub model_options: Option<ModelOptions>,
 
     /// Map of `tool.name -> ToolNode` for any external tool calls (`ToolCall` variant).
@@ -43,14 +47,14 @@ pub struct OllamaAgent {
 impl OllamaAgent {
     /// Construct a new `OllamaAgent` with explicit fields.
     pub fn new(
-        model: impl Into<String>,
+        model: Option<String>,
         ollama_host: Option<Url>,
         ollama_port: Option<u16>,
         model_options: Option<ModelOptions>,
         tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
     ) -> Self {
         OllamaAgent {
-            model: model.into(),
+            model,
             ollama_host,
             ollama_port,
             model_options,
@@ -263,7 +267,7 @@ mod tests {
     fn ollamaagent_serde_roundtrip_and_schema() {
         // 1) Create a sample OllamaAgent
         let agent = OllamaAgent {
-            model: "llama2:latest".to_string(),
+            model: Some("llama2:latest".to_string()),
             ollama_host: Some(Url::parse("http://localhost").unwrap()),
             ollama_port: Some(11434),
             model_options: Some(ModelOptions::default()),
@@ -274,7 +278,7 @@ mod tests {
         let serialized = serde_json::to_string_pretty(&agent).expect("serialize failed");
         let deserialized: OllamaAgent =
             serde_json::from_str(&serialized).expect("deserialize failed");
-        assert_eq!(deserialized.model, "llama2:latest");
+        assert_eq!(deserialized.model, Some("llama2:latest".to_string()));
         assert_eq!(deserialized.ollama_port, Some(11434));
         assert_eq!(deserialized.ollama_host.unwrap().as_str(), "http://localhost/");
 
@@ -412,7 +416,7 @@ mod tests {
         // We give a bogus JSON so that `process()` will error out early.
         // Use a dummy OllamaAgent (host/port irrelevant here).
         let agent = OllamaAgent::new(
-            "llama2:latest",
+            Some("llama2:latest".to_string()),
             None,
             None,
             None,

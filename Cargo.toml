@@ -13,7 +13,7 @@ members = [
     "crates/channel_telegram",
     "crates/channel_mock_inout", 
     "crates/channel_mock_middle", 
-    "crates/xtask",
+    "crates/xtask", "tests/wasm/mock_tool",
 ]
 
 
@@ -65,4 +65,5 @@ ollama-rs = "0.3.1"
 url = { version="2.5.4", features = ["serde"] }
 serde_yaml = "0.9.33"
 rhai = { version="1.22.2", features = ["serde"] }
+
 

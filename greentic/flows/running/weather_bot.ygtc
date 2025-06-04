@@ -14,15 +14,16 @@ nodes:
 
   # 2) “start_template”: if the user just typed “/start,” reply with a greeting.
   start_template:
-    template:
-      template: |
+    template: |
         Hello {{from.display_name}}! Where and for how many days would you like a weather forecast?
 
   # 3) “parse_request”: an OllamaAgent node that extracts { location, days } from free-text.
   parse_request:
-    agent:
+    ollama:
       model: llama3.2:1b
-
+    task: |
+        Take the days and the location from the user and generate a valid JSON reply in the format:
+        { "q": "<the location>", "days": <the days> }
   # 4) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
   forecast_weather:
     tool:
@@ -51,8 +52,7 @@ nodes:
 
   # 5) “weather_out_template”: format the weather API’s JSON into a friendly sentence.
   weather_out_template:
-    template:
-      template: |
+    template: |
         Here’s your forecast for {{ location.name }}:
 
         • High: {{ forecast.forecastday.[0].day.maxtemp_c }}°C

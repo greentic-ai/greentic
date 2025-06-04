@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::FlowManager, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, state::InMemoryState, watcher::DirectoryWatcher
+    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::manager::FlowManager, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, state::InMemoryState, watcher::DirectoryWatcher
 };
 
 pub struct App

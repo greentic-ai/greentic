@@ -8,7 +8,7 @@ use std::fs;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::TemplateContext, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, state::StateValue, util::extension_from_mime};
+use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::manager::TemplateContext, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, state::StateValue, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
 
 
@@ -591,6 +591,8 @@ fn resolve_or_create_storage_dir(
 
 #[cfg(test)]
 pub mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::channel::manager::HostLogger;
     use crate::config::{ConfigManager, MapConfigManager};
@@ -686,7 +688,7 @@ pub mod tests {
     }
 
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_tool_node_with_text_output() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = HashMap::new();
@@ -695,6 +697,8 @@ pub mod tests {
         let secrets =SecretsManager(EmptySecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(),logging);
+        let watcher = executor.watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf()).await;
+        assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
@@ -706,13 +710,11 @@ pub mod tests {
 
         let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();
-
-        assert!(output.is_array());
-        let arr = output.as_array().unwrap();
-        assert!(arr.iter().all(|v| v.is_object()));
+        assert_eq!(output, json!({"input": "Hello"}));
+        watcher.unwrap().shutdown();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_tool_node_saves_binary_and_text() {
         let temp_dir = TempDir::new().unwrap();
         let mut config = HashMap::new();
@@ -721,6 +723,8 @@ pub mod tests {
         let secrets =SecretsManager(EmptySecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(),logging);
+        let watcher = executor.watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf()).await;
+        assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
@@ -732,17 +736,16 @@ pub mod tests {
 
         let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();
-        assert!(output.is_array());
 
-        for item in output.as_array().unwrap() {
-            let obj = item.as_object().expect("Expected object in array");
-            let path = obj.values().next().unwrap().as_str().unwrap();
-            assert!(
-                std::path::Path::new(path).exists(),
-                "Expected file path to exist: {}",
-                path
-            );
-        }
+        let obj = output.as_object().expect("Expected object in result");
+        let path = obj.values().next().unwrap().as_str().unwrap();
+        assert!(
+            std::path::Path::new(path).exists(),
+            "Expected file path to exist: {}",
+            path
+        );
+        
+        watcher.unwrap().shutdown();
     }
 
 }

@@ -1,6 +1,6 @@
 // channel_node.rs
 
-use crate::flow::{Flow, FlowManager, NodeKind};
+use crate::flow::manager::{Flow, FlowManager, NodeKind};
 use crate::message::Message;
 use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType};
 use async_trait::async_trait;
@@ -229,7 +229,7 @@ mod tests {
     use crate::channel::manager::{ChannelManager, HostLogger};
     use crate::config::{ConfigManager, MapConfigManager};
     use crate::process::manager::ProcessManager;
-    use crate::{executor::Executor, flow::FlowManager, logger::OpenTelemetryLogger,
+    use crate::{executor::Executor, flow::manager::FlowManager, logger::OpenTelemetryLogger,
                 secret::EmptySecretsManager, state::InMemoryState,};
     use crate::secret::SecretsManager;
     use crate::logger::Logger;

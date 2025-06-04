@@ -7,7 +7,7 @@ use schemars::schema_for;
 use serde_json::{json, Value};
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger}}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::Flow, logger::{FileTelemetry, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
+    channel::{manager::{ChannelManager, HostLogger}}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::manager::Flow, logger::{FileTelemetry, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
 };
 
 /// The entry point invoked by `main.rs` for `Commands::Schema`.

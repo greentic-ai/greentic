@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use schemars::{schema::RootSchema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
-use rhai::{Engine, Scope};
+use rhai::{serde::to_dynamic, Engine, Scope};
 use serde_json::json;
 
 use crate::{
@@ -125,16 +125,18 @@ impl NodeType for ScriptProcessNode {
         let engine = Engine::new();
         let mut scope = Scope::new();
 
-        scope.push("msg", input.clone());
-        scope.push("state", context.get_all_state().clone());
-        scope.push("payload", input.payload().clone());
 
-        for (k, v) in context.get_all_state() {
-            if let Ok(json_value) = serde_json::to_value(&v) {
-                if let Ok(dynamic) = rhai::serde::to_dynamic(&json_value) {
-                    scope.push_dynamic(k, dynamic);
-                }
-            }
+        // Convert msg, payload, and state into Dynamic so Rhai can access properties
+        if let Ok(dyn_msg) = to_dynamic(&serde_json::to_value(&input).unwrap_or_default()) {
+            scope.push_dynamic("msg", dyn_msg);
+        }
+
+        if let Ok(dyn_payload) = to_dynamic(&input.payload()) {
+            scope.push_dynamic("payload", dyn_payload);
+        }
+
+        if let Ok(dyn_state) = to_dynamic(&serde_json::to_value(context.get_all_state()).unwrap_or_default()) {
+            scope.push_dynamic("state", dyn_state);
         }
 
         match engine.eval_with_scope::<rhai::Dynamic>(&mut scope, &self.script) {
@@ -204,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn test_accessing_state_directly() {
         let node = ScriptProcessNode {
-            script: "age + 5".into(),
+            script: "state.age + 5".into(),
         };
 
         let msg = Message::new("id", json!({}), None);
@@ -220,7 +222,7 @@ mod tests {
     async fn test_returning_object() {
         let node = ScriptProcessNode {
             script: r#"
-                let name = user.name;
+                let name = state.user.name;
                 #{ greeting: "Hello " + name }
             "#.into(),
         };
@@ -237,7 +239,7 @@ mod tests {
     async fn test_condition_handling() {
         let node = ScriptProcessNode {
             script: r#"
-                if msg.session_id() == "abc" {
+                if msg.session_id == "abc" {
                     "known"
                 } else {
                     "unknown"
