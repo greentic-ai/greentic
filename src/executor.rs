@@ -112,30 +112,39 @@ pub struct ToolInstance {
     pub tools_list: Vec<Tool>,
 }
 
+pub trait ToolExecutorTrait: Send + Sync + Debug  {
+    fn tools(&self) -> Arc<DashMap<String, Arc<ToolWrapper>>>;
+    fn secrets_manager(&self) -> SecretsManager;
+    fn logger(&self) -> Logger;
+    fn secrets(&self, name: String) -> Option<Vec<SecretsDescription>>;
+    fn call_tool(&self, name: String, action: String, input: Value) -> Result<CallToolResult, ToolError>;
+    fn clone_box(&self) -> Arc<dyn ToolExecutorTrait>;
+}
+
+
+
 
 /// The Executor loads and instantiates tools from the tools dir.
 #[derive(Clone, Debug)]//, Serialize, Deserialize)]
 pub struct Executor {
     /// Mapping from tool key (as defined in config.tools) to an instantiated ToolInstance.
-    tools: Arc<DashMap<String, Arc<ToolWrapper>>>,
-    secrets_manager: SecretsManager,
-    logger: Logger,
+
+    pub(crate) executor: Arc<dyn ToolExecutorTrait>,
 }
 
 impl Executor {
     pub fn new(secrets_manager: SecretsManager, logger: Logger) -> Arc<Self> {
+        let executor = ToolExecutor::new(secrets_manager,logger);
         Arc::new(Executor {
-            tools: Arc::new(DashMap::new()),
-            secrets_manager,
-            logger,
+            executor,
         })
     }
 
     pub async fn watch_tool_dir(&self, tool_dir: PathBuf) -> Result<DirectoryWatcher,Error>  {
         let handler = ToolDirHandler {
-            tools: Arc::clone(&self.tools),
-            secrets: self.secrets_manager.clone(),
-            logging: self.logger.clone(),
+            tools: Arc::clone(&self.executor.tools()),
+            secrets: self.executor.secrets_manager().clone(),
+            logging: self.executor.logger().clone(),
         };
         // watch_dir will do exactly the same setup+loop+pattern-matching you already wrote for channels:
         DirectoryWatcher::new(tool_dir, Arc::new(handler), &["wasm"], true).await
@@ -144,11 +153,37 @@ impl Executor {
 
     
     pub fn get_tool(&self, tool_name: String) -> Option<Arc<ToolWrapper>> {
-        self.tools.get(&tool_name).map(|entry| Arc::clone(entry.value()))
+        self.executor.tools().get(&tool_name).map(|entry| Arc::clone(entry.value()))
     }
 
+   
+
+    pub fn list_tool_keys(&self) -> Vec<String> {
+        self.executor.tools().iter().map(|entry| entry.key().clone()).collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ToolExecutor{
+    tools: Arc<DashMap<String, Arc<ToolWrapper>>>,
+    secrets_manager: SecretsManager,
+    logger: Logger,
+}
+
+impl ToolExecutor {
+    pub fn new(secrets_manager: SecretsManager, logger: Logger) -> Arc<Self> {
+        Arc::new(ToolExecutor {
+            tools: Arc::new(DashMap::new()),
+            secrets_manager,
+            logger,
+        })
+    }
+}
+
+impl ToolExecutorTrait for ToolExecutor {
+
     #[tracing::instrument(name = "call_tool", skip(self))]
-    pub fn call_tool(&self, tool_name: String, tool_action: String, tool_args:  Value) -> Result<CallToolResult, ToolError> {
+    fn call_tool(&self, tool_name: String, tool_action: String, tool_args:  Value) -> Result<CallToolResult, ToolError> {
         let tool_key = format!("{}_{}", tool_name, tool_action);
         debug!("Tools loaded: {}",self.tools.len());
         match self.tools.get(&tool_key) 
@@ -203,9 +238,30 @@ impl Executor {
         }
 
     }
-
-    pub fn list_tool_keys(&self) -> Vec<String> {
-        self.tools.iter().map(|entry| entry.key().clone()).collect()
+    
+    fn tools(&self) -> Arc<DashMap<String, Arc<ToolWrapper>>> {
+        self.tools.clone()
+    }
+    
+    fn secrets_manager(&self) -> SecretsManager {
+        self.secrets_manager.clone()
+    }
+    
+    fn logger(&self) -> Logger {
+        self.logger.clone()
+    }
+    
+    fn clone_box(&self) -> Arc<dyn ToolExecutorTrait> {
+        Arc::new(self.clone())
+    }
+    
+    fn secrets(&self, name: String) -> Option<Vec<SecretsDescription>> {
+        if let Some(tool) = self.tools.get(&name) {
+            Some(tool.secrets())
+        } else {
+            None
+        }
+        
     }
 }
 
@@ -396,17 +452,78 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
-    use crate::executor::exports::wasix::mcp::router;
+    use crate::executor::exports::wasix::mcp::router::{self, Content, TextContent};
     use crate::logger::OpenTelemetryLogger;
     use crate::secret::{EmptySecretsManager, EnvSecretsManager};
 
+
     impl Executor {
         pub fn dummy() -> Arc<Self>{
-            Arc::new(Executor { 
-                tools: Arc::new(DashMap::new()), 
-                secrets_manager: SecretsManager(EmptySecretsManager::new()), 
-                logger: Logger(Box::new(OpenTelemetryLogger::new())), 
-            })
+            let result = CallToolResult{
+                 content: vec![],
+                 is_error: Some(false),
+            };
+            let executor = MockToolExecutor::new(Ok(result));
+            Arc::new(Self{executor: Arc::new(executor)})
+        }
+        pub fn mock(result: Result<CallToolResult, ToolError>) -> Self {
+            let executor = MockToolExecutor::new(result);
+            Self {
+                executor: Arc::new(executor),
+            }
+        }
+
+        pub fn with_success_json(json: Value) -> Self {
+            let result = CallToolResult {
+                content: vec![Content::Text(TextContent {text:json.to_string(), 
+                    annotations: None })],
+                is_error: Some(false),
+            };
+            Self::mock(Ok(result))
+        }
+
+        pub fn with_error(msg: &str) -> Self {
+            let error = Err(ToolError::ExecutionError(msg.to_string()));
+            Self::mock(error)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockToolExecutor{
+        result: Result<CallToolResult, ToolError>
+    }
+
+    impl MockToolExecutor{
+        pub fn new(result: Result<CallToolResult, ToolError>) -> Self {
+            Self {result}    
+        }
+    }
+
+    impl ToolExecutorTrait for MockToolExecutor {
+
+
+        fn call_tool(&self, _name: String, _action: String, _input: Value) -> Result<CallToolResult, ToolError> {
+            self.result.clone()
+        }
+        
+        fn tools(&self) -> Arc<dashmap::DashMap<String, Arc<crate::executor::ToolWrapper>>> {
+            Arc::new(DashMap::new())
+        }
+        
+        fn secrets_manager(&self) -> SecretsManager {
+            SecretsManager(EmptySecretsManager::new())
+        }
+        
+        fn logger(&self) -> Logger {
+            Logger(Box::new(OpenTelemetryLogger::new()))
+        }
+        
+        fn clone_box(&self) -> Arc<dyn ToolExecutorTrait> {
+            Arc::new(self.clone())
+        }
+        
+        fn secrets(&self, _name: String) -> Option<Vec<SecretsDescription>> {
+            None
         }
     }
 

@@ -5,12 +5,12 @@ use ollama_rs::models::ModelOptions;
 use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
 use ollama_rs::Ollama;
-use schemars::{schema::RootSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use tracing::error;
+use tracing::{error, warn};
 use url::Url;
 
+use crate::state::StateValue;
 use crate::{
     message::Message,
     node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, ToolNode},
@@ -22,45 +22,30 @@ use crate::{
 
 /// `OllamaAgent` invokes a local Ollama server via `ollama_rs`.  
 /// It supports plain generation (`Generate`), embeddings (`Embed`), chat mode (`Chat`), and tool calls (`ToolCall`).
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaAgent {
-    /// The Ollama model to invoke (e.g. "llama2:latest", "vicuna:v1", etc.).
+    pub task: String,
+
     #[serde(default)]
     pub model: Option<String>,
 
-    /// If not set the default localhost with port 11434 will be used
     #[serde(default)]
-    pub ollama_host: Option<Url>,
+    pub ollama_host: Option<url::Url>,
     #[serde(default)]
     pub ollama_port: Option<u16>,
 
-    /// Set optional options for the model
     #[serde(default)]
-    pub model_options: Option<ModelOptions>,
+    pub model_options: Option<ollama_rs::models::ModelOptions>,
+
+    #[serde(default)]
+    pub tool_names: Option<Vec<String>>,
 
     /// Map of `tool.name -> ToolNode` for any external tool calls (`ToolCall` variant).
     /// This field is not serialized in JSON nor included in the schema.
     #[serde(skip)]
     pub tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
-}
 
-impl OllamaAgent {
-    /// Construct a new `OllamaAgent` with explicit fields.
-    pub fn new(
-        model: Option<String>,
-        ollama_host: Option<Url>,
-        ollama_port: Option<u16>,
-        model_options: Option<ModelOptions>,
-        tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
-    ) -> Self {
-        OllamaAgent {
-            model,
-            ollama_host,
-            ollama_port,
-            model_options,
-            tool_nodes,
-        }
-    }
 }
 
 #[async_trait]
@@ -70,8 +55,8 @@ impl NodeType for OllamaAgent {
         "ollama".to_string()
     }
 
-    fn schema(&self) -> RootSchema {
-        schema_for!(OllamaAgent)
+    fn schema(&self) -> schemars::schema::RootSchema {
+        schemars::schema_for!(OllamaAgent)
     }
 
     #[tracing::instrument(name = "ollama_agent_node_process", skip(self, context))]
@@ -80,19 +65,209 @@ impl NodeType for OllamaAgent {
         input: Message,
         context: &mut NodeContext,
     ) -> Result<NodeOut, NodeErr> {
-        // 1) Parse the incoming payload as an `OllamaRequest`
-        let req: OllamaRequest = serde_json::from_value(input.payload().clone())
-            .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!(
-                "Invalid OllamaRequest JSON: {}",
-                e
-            ))))?;
+        let model = self.model.clone().unwrap_or("llama3:latest".into());
+        let client = if let (Some(host), Some(port)) = (&self.ollama_host, self.ollama_port) {
+            Ollama::new(host.clone(), port)
+        } else {
+            Ollama::default()
+        };
 
-        // 2) Delegate to our handler
-        handle_request(input, req, self, context).await
+        let system_prompt = r#"You are part of an agentic flow.
+You have access to:
+- `task`: the current task you must perform
+- `payload`: the result of the previous node
+- `state`: a key-value store with flow state
+- `connections`: a list of connections you can send the payload to
+- `tools`: a list of tools that can be called
+Respond with a valid JSON:
+{
+  "payload": { ... }, // can be JSON Value
+  "state": {
+    "add": [{"key": ..., "value": ...}],
+    "update": [...],
+    "delete": [...]
+  },
+  "tool_calls": [
+    { 
+        "inline": true,
+        "name": ..., 
+        "action": ..., 
+        "input": { ... } 
+    },
+    {
+        "inline": false,
+        "connection": ...,
+        "input": { ... }
+  ],
+  "connection": [ ... ]
+}
+rules:
+- If all `connections` should get the respnse payload, do not include connections
+- Only include `tool_calls` if a tool should be called. 
+- Inline calls are executed now. Routed ones must specify a `connection`.
+- All fields are optional except `payload`.
+"#;
+
+        let task = self.task;
+        let state = serde_json::to_value(context.get_all_state()).unwrap_or(json!({}));
+        let connections = context.connections().unwrap_or_default();
+        let tools: Vec<String> = self
+            .tool_nodes
+            .as_ref()
+            .map(|map| map.iter().map(|entry| entry.key().clone()).collect())
+            .unwrap_or_default();
+
+        let final_history = vec![
+            ChatMessage::system(system_prompt.to_string()),
+            ChatMessage::user(format!(
+                "task: {}\npayload: {}\nstate: {}\nconnections: {:?}\ntools: {:?}",
+                task,
+                input.payload(),
+                state,
+                connections,
+                tools,
+            )),
+        ];
+
+
+        let mut req = ChatMessageRequest::new(model.clone(), final_history);
+        if let Some(opts) = &self.model_options {
+            req = req.options(opts.clone());
+        }
+
+        let resp = client.send_chat_messages_with_history(&mut vec![], req).await;
+        let reply_text = match resp {
+            Ok(r) => r.message.content,
+            Err(err) => {
+                return Err(NodeErr::all(NodeError::ExecutionFailed(format!(
+                    "Chat API error: {}",
+                    err
+                ))))
+            }
+        };
+
+        let parsed: JsonValue = serde_json::from_str(&reply_text).map_err(|e| {
+            NodeErr::all(NodeError::ExecutionFailed(format!(
+                "Invalid JSON from LLM: {}",
+                e
+            )))
+        })?;
+
+        let payload = parsed.get("payload").cloned().unwrap_or(json!({}));
+
+        // Optional state updates
+        if let Some(state_obj) = parsed.get("state") {
+            if let Some(add) = state_obj.get("add").and_then(|v| v.as_array()) {
+                for item in add {
+                    if let (Some(k), Some(v)) = (item.get("key"), item.get("value")) {
+                        if let Some(k) = k.as_str() {
+                            match StateValue::try_from(v.clone()) {
+                                Ok(state_val) => context.set_state(k, state_val),
+                                Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(update) = state_obj.get("update").and_then(|v| v.as_array()) {
+                for item in update {
+                    if let (Some(k), Some(v)) = (item.get("key"), item.get("value")) {
+                        if let Some(k) = k.as_str() {
+                            match StateValue::try_from(v.clone()) {
+                                Ok(state_val) => context.set_state(k, state_val),
+                                Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(delete) = state_obj.get("delete").and_then(|v| v.as_array()) {
+                for key in delete {
+                    if let Some(k) = key.as_str() {
+                        context.delete_state(k);
+                    }
+                }
+            }
+        }
+
+        // Gather inline and deferred tool calls
+        let mut follow_up: Vec<String> = parsed
+            .get("connection")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+
+        // Process `tool_calls` array
+        if let Some(tools_calls) = payload.get("tools_calls") {
+            for tools_call in tools_calls.as_array() {
+                if let ((Some(inline) == true)) = tools_call.get("inline".to_string()) {
+
+                if let (Some(name), Some(action), Some(input)) = (tools_call.get("name"), tools_call.get("action"), tools_call.get("input")) {
+                    let tool_payload = json!({
+                        "tool_call": {
+                            "name": name,
+                            "action": action,
+                            "input": input
+                        }
+                    });
+
+                    let tool_msg = Message::new("tool_call_forwarded", tool_payload, input.session_id());
+
+                    if inline {
+                        // Route to a generic dynamic tool node (configured to accept and dispatch tool calls)
+                        follow_up.push("dynamic_tool_node".to_string());  // or another known node ID
+                        extra_outputs.push(NodeOut::new(tool_msg, Some(vec!["dynamic_tool_node".to_string()])));
+                    } else if let Some(c) = conn {
+                        // Forward to the specified connection
+                        extra_outputs.push(NodeOut::one(tool_msg, c.to_string()));
+                    }
+
+                    // Optional: if you're returning multiple tool calls
+                    if !extra_outputs.is_empty() {
+                        return Ok(extra_outputs.remove(0)); // or NodeOuts::many(extra_outputs) if supported
+                    }
+                }
+            }
+        }
+
+        // Emit message
+        let msg = Message::new(&input.id(), payload, input.session_id());
+        Ok(if !follow_up.is_empty() {
+            NodeOut::new(msg, Some(follow_up))
+        } else {
+            NodeOut::all(msg)
+        })
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {
         Box::new(self.clone())
+    }
+}
+
+
+impl OllamaAgent {
+    /// Construct a new `OllamaAgent` with explicit fields.
+    pub fn new(
+        task: String,
+        model: Option<String>,
+        ollama_host: Option<Url>,
+        ollama_port: Option<u16>,
+        model_options: Option<ModelOptions>,
+        tool_names: Option<Vec<String>>,
+        tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
+    ) -> Self {
+        OllamaAgent {
+            task,
+            model,
+            ollama_host,
+            ollama_port,
+            model_options,
+            tool_names,
+            tool_nodes,
+        }
     }
 }
 

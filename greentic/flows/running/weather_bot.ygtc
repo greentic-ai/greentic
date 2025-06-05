@@ -29,9 +29,6 @@ nodes:
     tool:
       name: weather_api
       action: forecast_weather
-      parameters:
-        q: "{{location}}"
-        days: "{{days}}"
       secrets:
         - WEATHERAPI_KEY
       in_map:

@@ -197,6 +197,7 @@ pub struct NodeContext {
     process_manager: Arc<ProcessManager>,
     secrets: SecretsManager,
     channel_origin: Option<ChannelOrigin>,
+    connections: Option<Vec<String>>,
     pub hb: Arc<Handlebars<'static>>,
 }
 
@@ -204,7 +205,7 @@ impl NodeContext
 {
     pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
         let hb = make_handlebars();
-        Self { state, config, executor, channel_manager, process_manager, secrets, channel_origin, hb}
+        Self { state, config, executor, channel_manager, process_manager, secrets, connections: None, channel_origin, hb}
     }
 
     pub fn channel_origin(&self) -> Option<ChannelOrigin> {
@@ -253,6 +254,14 @@ impl NodeContext
 
     pub fn process_manager(&self) -> &ProcessManager {
         &self.process_manager.as_ref()
+    }
+
+    pub fn set_connections(&mut self, connections: Option<Vec<String>>) {
+        self.connections = connections;
+    }
+
+    pub fn connections(&self) -> Option<Vec<String>> {
+        self.connections.clone()
     }
 
     pub async fn reveal_secret(&self, key: &str) -> Option<String> {
@@ -352,49 +361,56 @@ impl fmt::Display for NodeError {
 }
 
 impl std::error::Error for NodeError {}
+
+/// A ToolNode allows to call a tool either by name, action
+/// and the payload will be passed to the action.
+/// or dynamically by passing through the payload:
+/// "tool_call": {
+///     "name": "<name of the tool to call>",
+///     "action": "<tool action to call>",
+///     "input": "<input parameters to pass to the tool>"
+/// }
+/// You can use an optional Mapper for transforming input (in_map), 
+/// output (out_map) and error (err_map).
+/// If you want a specific set of connections to be called when the
+/// call is successful, then set the names in the on_ok list.
+/// If you want other connections to be called on error, set their names
+/// in the on_err list.
+/// If no on_ok or on_err are specified then all connections will be called 
+/// with the result. 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename = "tool")]
 pub struct ToolNode {
     name: String,
     action: String,
-    parameters: Option<Value>,
-    secrets: Option<HashMap<String, String>>,
     in_map: Option<Mapper>,
     out_map: Option<Mapper>,
     err_map: Option<Mapper>,
+    on_ok: Option<Vec<String>>,
+    on_err: Option<Vec<String>>,
 }
 
 impl ToolNode {
     pub fn new(
             name: String,
             action: String,
-            parameters: Option<Value>,
-            secrets: Option<HashMap<String, String>>,
             in_map: Option<Mapper>,
             out_map: Option<Mapper>,
             err_map: Option<Mapper>,
+            on_ok: Option<Vec<String>>,
+            on_err: Option<Vec<String>>,
         ) -> Self {
         Self {
             name,
             action,
-            parameters,
-            secrets,
             in_map,
             out_map,
             err_map,
+            on_ok,
+            on_err,
         }
     }
-    /// Supply static parameters to the tool.
-    pub fn with_parameters(mut self, params: Value) -> Self {
-        self.parameters = Some(params);
-        self
-    }
 
-    /// Supply secret keys to the tool; these will be fetched from the SecretsManager.
-    pub fn with_secrets(mut self, secrets: HashMap<String, String>) -> Self {
-        self.secrets = Some(secrets);
-        self
-    }
 
     pub fn in_map(&self) -> Option<&Mapper> {
         self.in_map.as_ref()
@@ -444,12 +460,12 @@ impl Clone for ToolNode {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
-            parameters: self.parameters.clone(),
-            secrets: self.secrets.clone(),
             action: self.action.clone(),
             in_map: self.in_map.clone(),
             out_map: self.out_map.clone(),
             err_map: self.err_map.clone(),
+            on_ok: self.on_ok.clone(),
+            on_err: self.on_err.clone(),
         }
     }
 }
@@ -472,21 +488,44 @@ impl NodeType for ToolNode {
 
         let executor = context.executor();
 
-        // apply the in_map if available
-        let effective_payload = if self.use_in_map() {
-            self.in_map
-                .as_ref()
-                .unwrap()
-                .apply_input(&input.payload(), &context.config, &context.state)
-        } else {
-            input.payload()
+        // Check for dynamic override and go dynamic, otherwise use static configuration
+        let (name, action, params) = match input.payload().get("tool_call") {
+            Some(tool_call) => {
+                let name = tool_call.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.name)
+                    .to_string();
+
+                let action = tool_call.get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.action)
+                    .to_string();
+
+                let input = tool_call.get("input").cloned().unwrap_or(json!({}));
+                (name, action, input)
+            },
+            None => {
+                // Fallback to static configuration
+                let payload = if self.use_in_map() {
+                    self.in_map
+                        .as_ref()
+                        .unwrap()
+                        .apply_input(&input.payload(), &context.config, &context.state)
+                } else {
+                    input.payload()
+                };
+
+                (self.name.clone(), self.action.clone(), payload)
+            }
         };
 
-        let result = executor.call_tool(
-            self.name.clone(),
-            self.action.clone(),
-            effective_payload,
-        );
+        if input.payload().get("tool_call").is_some() {
+            tracing::info!("Executing dynamic tool call: {}/{}", name, action);
+        } else {
+            tracing::info!("Executing static tool call: {}/{}", name, action);
+        }
+
+        let result = executor.executor.call_tool(name.clone(), action.clone(), params);
 
         match result {
             Ok(call_result) => {
@@ -558,12 +597,36 @@ impl NodeType for ToolNode {
                     for (k, v) in mapper_output.config_updates {
                         context.config.insert(k, v);
                     }
-                    Ok(NodeOut::all(Message::new(&input.id(), mapper_output.payload,input.session_id())))
+                    let output_message = Message::new(&input.id(), mapper_output.payload, input.session_id());
+
+                    let output = if call_result.is_error.unwrap_or(false) {
+                        let routes = self.on_err.clone();
+                        NodeOut::new(output_message, routes)
+                    } else {
+                        let routes = self.on_ok.clone();
+                        NodeOut::new(output_message, routes)
+                    };
+                    Ok(output)
                 } else {
-                    Ok(NodeOut::all(Message::new(&input.id(), output_json,input.session_id())))
+                   let output_message = Message::new(&input.id(), output_json, input.session_id());
+                    let output = if call_result.is_error.unwrap_or(false) {
+                        let routes = self.on_err.clone();
+                        NodeOut::new(output_message, routes)
+                    } else {
+                        let routes = self.on_ok.clone();
+                        NodeOut::new(output_message, routes)
+                    };
+                    Ok(output)
                 }
             }
-            Err(e) => Err(NodeErr::all(NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e)))),
+            Err(e) => {
+                let err = NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e));
+                if let Some(err_targets) = &self.on_err {
+                    Err(NodeErr::new(err, Some(err_targets.clone())))
+                } else {
+                    Err(NodeErr::all(err))
+                }
+            }
         }
     }
     fn clone_box(&self) -> Box<dyn NodeType> {
@@ -592,14 +655,14 @@ fn resolve_or_create_storage_dir(
 #[cfg(test)]
 pub mod tests {
     use std::path::Path;
-
     use super::*;
     use crate::channel::manager::HostLogger;
     use crate::config::{ConfigManager, MapConfigManager};
+    use crate::executor::exports::wasix::mcp::router::{CallToolResult, TextContent, ToolError};
     use crate::logger::{Logger, OpenTelemetryLogger};
     use crate::message::Message;
     use crate::secret::{EmptySecretsManager, SecretsManager};
-    use crate::state::{StateValue};
+    use crate::state::StateValue;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -614,10 +677,28 @@ pub mod tests {
                 process_manager: ProcessManager::dummy(), 
                 secrets: SecretsManager(EmptySecretsManager::new()), 
                 channel_origin: None, 
+                connections: None,
+                hb,
+            }
+        }
+
+        pub fn mock(result: Result<CallToolResult, ToolError>) -> Self {
+            let hb = make_handlebars();
+            Self { 
+                state: HashMap::new(), 
+                config: HashMap::new(), 
+                executor: Arc::new(Executor::mock(result)), 
+                channel_manager: ChannelManager::dummy(), 
+                process_manager: ProcessManager::dummy(), 
+                secrets: SecretsManager(EmptySecretsManager::new()), 
+                channel_origin: None, 
+                connections: None,
                 hb,
             }
         }
     }
+
+    
 
     #[derive(Debug, Serialize, Deserialize, JsonSchema)]
     struct EchoNode;
@@ -648,6 +729,104 @@ pub mod tests {
         fn clone_box(&self) -> Box<dyn NodeType> {
             Box::new(self.clone())
         }
+    }
+
+   
+
+    fn make_test_context_with_mock(exec_result: Result<CallToolResult, ToolError>) -> NodeContext {
+        NodeContext::mock(exec_result)
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_tool_call_executes_correctly() {
+        let payload = json!({
+            "tool_call": {
+                "name": "weather_tool",
+                "action": "forecast",
+                "input": { "location": "Paris" }
+            }
+        });
+
+        let input = Message::new("test", payload, Some("sess1".to_string()));
+        let result = CallToolResult {
+            content: vec![Content::Text(TextContent {text:"{\"result\":\"sunny\"}".into(), annotations: None })],
+            is_error: Some(false),
+        };
+
+        let node = ToolNode::new(
+            "fallback_tool".into(),
+            "fallback_action".into(),
+            None, None, None,
+            Some(vec!["next_success".into()]),
+            Some(vec!["on_error".into()])
+        );
+
+        let mut ctx = make_test_context_with_mock(Ok(result));
+        let out = node.process(input, &mut ctx).await.unwrap();
+        assert_eq!(out.out_only(), Some(vec!["next_success".into()]));
+    }
+
+    #[tokio::test]
+    async fn test_static_tool_config_used_if_no_tool_call() {
+        let payload = json!({ "location": "London" });
+        let input = Message::new("static_test", payload.clone(), Some("sess2".to_string()));
+
+        let result = CallToolResult {
+            content: vec![Content::Text(TextContent {text:"{\"static\":\"ok\"}".into(), annotations:None})],
+            is_error: Some(false),
+        };
+
+        let node = ToolNode::new("static_tool".into(), "run".into(), None, None, None, None, None);
+        let mut ctx = make_test_context_with_mock(Ok(result));
+        let out = node.process(input.clone(), &mut ctx).await.unwrap();
+        assert_eq!(out.message().payload()["static"], "ok");
+    }
+
+    #[tokio::test]
+    async fn test_error_routing_goes_to_on_err() {
+        let payload = json!({
+            "tool_call": {
+                "name": "bad_tool",
+                "action": "crash",
+                "input": {}
+            }
+        });
+
+        let input = Message::new("err_test", payload, Some("sess3".to_string()));
+
+        let node = ToolNode::new(
+            "fallback".into(),
+            "noop".into(),
+            None, None, None,
+            Some(vec!["ok_conn".into()]),
+            Some(vec!["err_conn".into()])
+        );
+
+        let mut ctx = make_test_context_with_mock(Err(ToolError::ExecutionError("bad call".into())));
+
+        let err = node.process(input, &mut ctx).await.unwrap_err();
+        assert!(err.error().to_string().contains(&"err_conn".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_missing_dynamic_fields_falls_back_to_static() {
+        let payload = json!({
+            "tool_call": {
+                "input": { "location": "nowhere" }
+            }
+        });
+
+        let input = Message::new("missing", payload.clone(), Some("sess4".to_string()));
+        let result = CallToolResult {
+            content: vec![Content::Text(TextContent {text:"{\"fallback\":\"true\"}".into(), annotations: None })],
+            is_error: Some(false),
+        };
+
+        let node = ToolNode::new("fallback_tool".into(), "fallback_action".into(), None, None, None, None, None);
+        let mut ctx = make_test_context_with_mock(Ok(result));
+        let out = node.process(input, &mut ctx).await.unwrap();
+
+        assert_eq!(out.message().payload()["fallback"], "true");
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use dashmap::DashMap;
 use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{Topo, Walker}, Directed, Direction::Incoming};
 use schemars::{schema::{InstanceType, Metadata, Schema, SchemaObject}, JsonSchema, SchemaGenerator};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json,Value};
+use serde_json::Value;
 use tokio::{sync::Mutex,time::sleep};
 use tracing::{error, info};
 use crate::node::ToolNode;
@@ -373,41 +373,44 @@ impl Flow {
                     NodeKind::Tool { tool } => {
                         // same as before…
                         let mut msg_with_params = input.clone();
-                        if let Some(params) = &tool.parameters {
-                            // Pull out the session ID and payload before we overwrite msg_with_params
-                            let session_id = msg_with_params.session_id().clone();
-                            let payload = msg_with_params.payload();
+                        // Pull out the session ID and payload before we overwrite msg_with_params
+                        let session_id = msg_with_params.session_id().clone();
+                        let payload = msg_with_params.payload();
 
-                            // Rebuild the message
-                            msg_with_params = Message::new(
-                                &msg_with_params.id(),
-                                json!({
-                                    "parameters": params,
-                                    "payload": payload,
-                                }),
-                                session_id,
-                            );
-                        }
+                        // Rebuild the message
+                        msg_with_params = Message::new(
+                            &msg_with_params.id(),
+                            payload,
+                            session_id,
+                        );
+
                         // fetch secrets…
+                        let secrets_keys = ctx.executor().executor.secrets(tool.name.clone());
+
                         let mut secret_map = HashMap::new();
-                        for s in &tool.secrets {
-                            if let Some(tok) = ctx.reveal_secret(s).await {
-                                secret_map.insert(s.clone(), tok.clone());
+                        if secrets_keys.is_some() {
+                            for s in &secrets_keys.unwrap()
+                            {
+                                let name = s.name.clone();
+                                if let Some(tok) = ctx.reveal_secret(&name).await {
+                                    secret_map.insert(name, tok.clone());
+                                }
                             }
                         }
+
                         ToolNode::new(
                             tool.name.clone(),
                             tool.action.clone(),
-                            tool.parameters.clone(),
-                            Some(secret_map),
                             tool.in_map.clone(),
                             tool.out_map.clone(),
                             tool.err_map.clone(),
+                            tool.on_ok.clone(),
+                            tool.on_err.clone(),
                         ).process(msg_with_params, ctx).await
                     }
 
                     NodeKind::Agent { agent } => {
-                        agent.agent.process(input.clone(), ctx).await
+                        agent.process(input.clone(), ctx).await
                     }
 
                     NodeKind::Process { process } => {
@@ -643,7 +646,7 @@ pub enum NodeKind {
     #[serde(rename_all = "camelCase")]
     Agent {
         #[serde(flatten)]
-        agent: AgentNodeConfig,
+        agent: BuiltInAgent,
     },
     #[serde(rename_all = "camelCase")]
     Process {
@@ -653,31 +656,36 @@ pub enum NodeKind {
 }
 
 
-/// Internal tool-node config
+/// A ToolNodeConfig allows to call a tool either by name, action
+/// and the payload will be passed to the action.
+/// or dynamically by passing through the payload:
+/// "tool_call": {
+///     "name": "<name of the tool to call>",
+///     "action": "<tool action to call>",
+///     "input": "<input parameters to pass to the tool>"
+/// }
+/// You can use an optional Mapper for transforming input (in_map), 
+/// output (out_map) and error (err_map).
+/// If you want a specific set of connections to be called when the
+/// call is successful, then set the names in the on_ok list.
+/// If you want other connections to be called on error, set their names
+/// in the on_err list.
+/// If no on_ok or on_err are specified then all connections will be called 
+/// with the result. 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolNodeConfig {
     pub name: String,
     pub action: String,
-    /// literal parameters to the operation
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<Value>,
-    /// secret *names* whose values we must fetch at runtime
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_map: Option<Mapper>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out_map: Option<Mapper>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub err_map: Option<Mapper>,
-}
-
-/// Internal agent-node config
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AgentNodeConfig {
-    #[serde(flatten)]
-    pub agent: BuiltInAgent,
-    pub task: String,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_ok: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_err: Option<Vec<String>>,
 }
 
 
