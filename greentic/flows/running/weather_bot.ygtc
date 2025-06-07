@@ -12,38 +12,42 @@ nodes:
     channel: telegram
     in: true
 
-  # 2) “start_template”: if the user just typed “/start,” reply with a greeting.
-  start_template:
-    template: |
-        Hello {{from.display_name}}! Where and for how many days would you like a weather forecast?
+  # 2) QA node: ask location & days, fallback to OllamaAgent on parsing errors
+  ask_location_and_days:
+    qa:
+      # No separate welcome—first question is our “greeting + ask location”
+      welcome_template: "Hi there! Let's get your forecast. First: {{state_not_used}}"
+      questions:
+        - id: q_location
+          prompt: "👉 What location would you like a forecast for?"
+          answer_type: Text
+          state_key: q
+        - id: q_days
+          prompt: "👉 Over how many days? (enter a number)"
+          answer_type: Number
+          state_key: days
+      fallback_agent:
+        type: ollama
+        model: llama3.2:1b
+        # task: you can repeat the same instruction you used before
+        task: |
+          The user responded in free text.  Extract exactly two fields from
+          their reply: `"q"` (string location) and `"days"` (integer number of days).
+          Return **exactly** a JSON object like:
+          {
+            "q": "<location text>",
+            "days": <integer>
+          }
+      routing:
+        - to: forecast_weather
+          condition:
+            always: {}
 
-  # 3) “parse_request”: an OllamaAgent node that extracts { location, days } from free-text.
-  parse_request:
-    ollama:
-      model: llama3.2:1b
-    task: |
-        Take the days and the location from the user and generate a valid JSON reply in the format:
-        { "q": "<the location>", "days": <the days> }
-  # 4) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
+  # 3) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
   forecast_weather:
     tool:
       name: weather_api
       action: forecast_weather
-      secrets:
-        - WEATHERAPI_KEY
-      in_map:
-        type: copy
-        payload:
-          - "/q"
-          - "/days"
-      out_map:
-        type: copy
-        payload:
-          - "/location/name"
-          - "/forecast/forecastday/0/day/maxtemp_c"
-          - "/forecast/forecastday/0/day/mintemp_c"
-          - "/forecast/forecastday/0/day/condition/text"
-          - "/forecast/forecastday/0/day/daily_will_it_rain"
     max_retries: 2
     retry_delay_secs: 1
 
@@ -63,16 +67,15 @@ nodes:
     out: true
 
 connections:
+  # Kick off QA on any incoming message
   telegram_in:
-    - start_template
-    - parse_request
+    - ask_location_and_days
 
-  start_template:
-    - telegram_out
-
-  parse_request:
+  # Once QA finishes, go call weather_api
+  ask_location_and_days:
     - forecast_weather
 
+  # Then render & send back
   forecast_weather:
     - weather_out_template
 

@@ -205,7 +205,7 @@ impl NodeContext
 {
     pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
         let hb = make_handlebars();
-        Self { state, config, executor, channel_manager, process_manager, secrets, connections: None, channel_origin, hb}
+        Self { state, config, executor, channel_manager, process_manager, secrets, connections: None, channel_origin, hb,}
     }
 
     pub fn channel_origin(&self) -> Option<ChannelOrigin> {
@@ -453,6 +453,10 @@ impl ToolNode {
 
     pub fn name(&self) -> String {
         self.name.clone()
+    }
+
+    pub fn action(&self) -> String {
+        self.action.clone()
     }
 
 }
@@ -805,7 +809,7 @@ pub mod tests {
         let mut ctx = make_test_context_with_mock(Err(ToolError::ExecutionError("bad call".into())));
 
         let err = node.process(input, &mut ctx).await.unwrap_err();
-        assert!(err.error().to_string().contains(&"err_conn".to_string()));
+        assert!(err.err_only().expect("did not find routing errors").contains(&"err_conn".to_string()));
     }
 
     #[tokio::test]

@@ -665,7 +665,7 @@ mod tests {
         });
 
         // Wait briefly to ensure the watcher is running
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // copy the weather wasm
         let weather_wasm = Path::new("./tests/wasm/tools_call/weather_api.wasm");
@@ -707,7 +707,7 @@ mod tests {
         let watcher = executor.watch_tool_dir(test_wasm.to_path_buf()).await.expect("watcher should start");
         let input = serde_json::json!({ "q": "London", "days": 1,  });
         let result = 
-                executor.call_tool("weather_api".into(), "forecast_weather".into(), input);
+                executor.executor.call_tool("weather_api".into(), "forecast_weather".into(), input);
         match result {
             Ok(CallToolResult { content, is_error }) => {
                 if is_error == Some(true) {

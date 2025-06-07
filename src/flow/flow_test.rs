@@ -256,6 +256,8 @@ mod tests {
             flow.add_node(node_name.to_string(), cfg);
         }
 
+        // HOT TO ADD THIS? parameters: Some(json!({ "q": "New York", "days": 3 })),
+
         // 3) Add tool nodes: weather_in and weather_out
         for node_name in &["weather_in", "weather_out"] {
             let cfg = NodeConfig::new(
@@ -346,8 +348,6 @@ mod tests {
                 "tool": {
                     "name": "weather_api",
                     "action": "forecast_weather",
-                    "parameters": { "q": "New York", "days": 3 },
-                    "secrets": ["WEATHERAPI_KEY"],
                     "in_map": { "type": "copy", "payload": ["q", "days"] }
                 },
                 "max_retries": 2,
@@ -357,8 +357,6 @@ mod tests {
                 "tool": {
                     "name": "weather_api",
                     "action": "forecast_weather",
-                    "parameters": { "q": "New York", "days": 3 },
-                    "secrets": ["WEATHERAPI_KEY"],
                     "in_map": { "type": "copy", "payload": ["q", "days"] }
                 },
                 "max_retries": 2,
