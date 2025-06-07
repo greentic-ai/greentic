@@ -99,7 +99,7 @@ use crate::{
 /// ---
 ///
 /// For full language documentation, see: https://rhai.rs/book/
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename = "script")]
 pub struct ScriptProcessNode {
     pub script: String,

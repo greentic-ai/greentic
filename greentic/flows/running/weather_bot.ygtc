@@ -20,11 +20,11 @@ nodes:
       questions:
         - id: q_location
           prompt: "👉 What location would you like a forecast for?"
-          answer_type: Text
+          answer_type: text
           state_key: q
         - id: q_days
           prompt: "👉 Over how many days? (enter a number)"
-          answer_type: Number
+          answer_type: number
           state_key: days
           validate:
             range:

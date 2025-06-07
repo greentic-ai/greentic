@@ -154,7 +154,7 @@ use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, 
 ///
 /// This makes `QAProcessNode` a powerful way to build multi‐step, stateful forms or wizards
 /// entirely in your flow YAML, without writing any extra Rust!
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct QAProcessNode {
     #[serde(flatten)]
     pub config: QAProcessConfig,
@@ -604,6 +604,8 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
+    use crate::process::manager::BuiltInProcess;
+
     use super::*;
     use serde_json::json;
     use chrono::Utc;
@@ -806,73 +808,86 @@ routing:
         assert_eq!(val_manual, val_literal);
     }
 
+#[derive(serde::Deserialize)]
+struct QaWrapper {
+    qa: QAProcessConfig,
+}
+
     #[test]
-    fn qa_process_config_manual_vs_yaml() {
+    fn qa_process_config_manual_vs_yaml() {  
         let yaml = r#"
-welcome_template: "Welcome!"
-questions:
-  - id: "age"
-    prompt: "👉 How old are you?"
-    answer_type: number
-    state_key: "user_age"
-    validate:
-      range:
-        min: 0.0
-        max: 120.0
+qa:
+  welcome_template: "Welcome!"
+  questions:
+    - id: "age"
+      prompt: "👉 How old are you?"
+      answer_type: number
+      state_key: "user_age"
+      validate:
+        range:
+          min: 0.0
+          max: 120.0
 
-  - id: "name"
-    prompt: "👉 What is your name?"
-    answer_type: text
-    state_key: "user_name"
+    - id: "name"
+      prompt: "👉 What is your name?"
+      answer_type: text
+      state_key: "user_name"
 
-routing:
-  - condition:
+  routing:
+    - condition:
         less_than:
-            question_id: "age"
-            threshold: 18.0
-    to: "minor_flow"
+          question_id: "age"
+          threshold: 18.0
+      to: "minor_flow"
 
-  - to: "adult_flow"
+    - to: "adult_flow"
 "#;
+        // build the same config by hand
+       let manual = 
+        BuiltInProcess::Qa(
+            QAProcessNode {
+                config: QAProcessConfig {
+                    welcome_template: "Welcome!".into(),
+                    questions: vec![
+                        QuestionConfig {
+                            id: "age".into(),
+                            prompt: "👉 How old are you?".into(),
+                            answer_type: AnswerType::Number,
+                            state_key: "user_age".into(),
+                            validate: Some(ValidationRule::Range {
+                                range: RangeParams { min: 0.0, max: 120.0 },
+                            }),
+                        },
+                        QuestionConfig {
+                            id: "name".into(),
+                            prompt: "👉 What is your name?".into(),
+                            answer_type: AnswerType::Text,
+                            state_key: "user_name".into(),
+                            validate: None,
+                        },
+                    ],
+                    fallback_agent: None,
+                    routing: vec![
+                        RoutingRule {
+                            condition: Some(Condition::LessThan {
+                                question_id: "age".into(),
+                                threshold: 18.0,
+                            }),
+                            to: "minor_flow".into(),
+                        },
+                        RoutingRule {
+                            condition: None,
+                            to: "adult_flow".into(),
+                        },
+                    ],
+                },
+            }
+        );
 
         // parse YAML
-        let from_yaml: QAProcessConfig =
+        let w: QaWrapper =
             serde_yaml::from_str(yaml).expect("valid QA yaml");
-
-        // build the same config by hand
-        let manual = QAProcessConfig {
-            welcome_template: "Welcome!".into(),
-            questions: vec![
-                QuestionConfig {
-                    id: "age".into(),
-                    prompt: "👉 How old are you?".into(),
-                    answer_type: AnswerType::Number,
-                    state_key: "user_age".into(),
-                    validate: Some(ValidationRule::Range { range: RangeParams{min: 0.0, max: 120.0 }}),
-                },
-                QuestionConfig {
-                    id: "name".into(),
-                    prompt: "👉 What is your name?".into(),
-                    answer_type: AnswerType::Text,
-                    state_key: "user_name".into(),
-                    validate: None,
-                },
-            ],
-            fallback_agent: None,
-            routing: vec![
-                RoutingRule {
-                    condition: Some(Condition::LessThan {
-                        question_id: "age".into(),
-                        threshold: 18.0,
-                    }),
-                    to: "minor_flow".into(),
-                },
-                RoutingRule {
-                    condition: None,
-                    to: "adult_flow".into(),
-                },
-            ],
-        };
+        let from_yaml = BuiltInProcess::Qa(QAProcessNode { config: w.qa });
 
         assert_eq!(manual, from_yaml);
     }

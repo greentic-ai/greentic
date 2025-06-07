@@ -6,7 +6,7 @@ use crate::{message::Message, node::{NodeContext, NodeErr, NodeOut, NodeType}};
 
 
 /// A simple debug node for testing that just echoes its input.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename = "debug")]
 pub struct DebugProcessNode;
 

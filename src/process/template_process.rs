@@ -77,7 +77,7 @@ use crate::{message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, N
 /// - Complex conditionals (e.g., `==`, `>`, `&&`) require custom helpers (not supported by default).
 ///
 /// For advanced usage and custom helpers, refer to the [Handlebars Rust docs](https://docs.rs/handlebars).
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename = "template")]
 pub struct TemplateProcessNode {
     pub template: String,

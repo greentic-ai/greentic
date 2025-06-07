@@ -23,8 +23,8 @@ use super::{
 ///
 /// When you load a `.wasm` plugin from `/plugins/foo.wasm`, you will spawn a
 /// `BuiltInProcess::Plugin { name: "foo".into(), path: "/plugins/foo.wasm".into() }`.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum BuiltInProcess {
     /// A baked-in “debug” process
     Debug(DebugProcessNode),
