@@ -4,6 +4,7 @@
 
 use crate::message::Message;
 use crate::node::{NodeContext, NodeErr, NodeError, NodeOut};
+use crate::process::qa_process::QAProcessNode;
 use crate::watcher::DirectoryWatcher;
 use crate::{node::NodeType, process::process::ProcessWatcher};
 use std::path::PathBuf;
@@ -34,6 +35,10 @@ pub enum BuiltInProcess {
     /// A baked-in Handlebars template process
     Template(TemplateProcessNode),
 
+    /// A Question & Answer process with optional agent support
+    #[serde(rename = "qa")]
+    Qa(QAProcessNode),
+
     /// A disk-loaded plugin (e.g. `/plugins/foo.wasm` → name = "foo").
     Plugin {
         /// Unique name of the plugin (used as registry key)
@@ -54,6 +59,7 @@ impl BuiltInProcess {
             BuiltInProcess::Debug(inner) => inner.type_name(),
             BuiltInProcess::Script(inner) => inner.type_name(),
             BuiltInProcess::Template(inner) => inner.type_name(),
+            BuiltInProcess::Qa(inner) => inner.type_name(),
             BuiltInProcess::Plugin { name, .. } => name.clone(),
         }
     }
@@ -63,6 +69,7 @@ impl BuiltInProcess {
             BuiltInProcess::Debug(inner) => inner.process(msg,ctx).await,
             BuiltInProcess::Script(inner) => inner.process(msg,ctx).await,
             BuiltInProcess::Template(inner) => inner.process(msg,ctx).await,
+            BuiltInProcess::Qa(inner) => inner.process(msg,ctx).await,
             BuiltInProcess::Plugin { name, .. } => {
                 let watcher = ctx.process_manager().clone().watcher;
                 if watcher.is_none() {

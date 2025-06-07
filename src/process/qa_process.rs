@@ -1,16 +1,18 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use handlebars::Handlebars;
 use regex::Regex;
 use schemars::{schema::RootSchema, schema_for, JsonSchema};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{json,  Value as JsonValue};
+use serde::{
+    de::{self, MapAccess, Visitor},
+    ser::SerializeMap,
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 
 use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, state::StateValue, util::render_handlebars};
-
-
 /// QAProcessNode
 ///
 /// A “stateful” question‐and‐answer node that guides a user through a series of prompts,
@@ -60,14 +62,34 @@ use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, 
 ///     to:        String,       // node ID or channel name to send the final payload to
 ///   }
 ///   ```
-///   Conditions:
-///   ```text
-///   Always {}                                // always matches
-///   Equals { question_id, value }            // JSON‐value equality
-///   GreaterThan { question_id, threshold }   // numeric >
-///   LessThan    { question_id, threshold }   // numeric <
-///   Custom { expr }                          // any Handlebars boolean sub‐expression
-///   ```
+///   ```markdown
+///   Conditions (all inside a top-level `condition:` key; omit or set to `null` for “always”):
+/// 
+///   ```yaml
+///   # exact equality
+///   condition:
+///     equals:
+///       question_id: "age"
+///       value: 21
+///   
+///   # numeric greater-than
+///   condition:
+///     greater_than:
+///       question_id: "score"
+///       threshold: 50.0
+///   
+///   # numeric less-than
+///   condition:
+///     less_than:
+///       question_id: "score"
+///       threshold: 20.0
+///   
+///   # arbitrary Handlebars boolean expr
+///   condition:
+///     custom:
+///       expr: "state.score >= 75 && state.passed == true"
+///   
+///   # omit entirely (or explicitly `condition: null`) → always matches
 ///
 /// ## Example YAML Usage
 ///
@@ -109,13 +131,12 @@ use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, 
 ///       # if they are under 18, send to "underage" flow; else to "main_process"
 ///       routing:
 ///         - condition:
-///             LessThan:
+///             Less_than:
 ///               question_id: "age"
 ///               threshold: 18
 ///           to: "underage"
 ///
-///         - condition: Always {}
-///           to: "main_process"
+///         - to: "main_process"
 /// ```
 ///
 /// In the above:
@@ -135,6 +156,7 @@ use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, 
 /// entirely in your flow YAML, without writing any extra Rust!
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct QAProcessNode {
+    #[serde(flatten)]
     pub config: QAProcessConfig,
 }
 
@@ -280,14 +302,22 @@ pub struct QAProcessConfig {
 
     /// If the user’s free‐text reply doesn’t parse as any of our expected answer types,
     /// you can optionally hand them off to an LLM agent to try to interpret.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_agent: Option<BuiltInAgent>,
 
     /// Once all questions are answered, pick the outgoing connection by matching one of these.
     pub routing: Vec<RoutingRule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+impl PartialEq for QAProcessConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.welcome_template == other.welcome_template
+            && self.questions == other.questions
+            && self.routing == other.routing
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct QuestionConfig {
     /// Unique ID for this question (used in state and in routing conditions).
     pub id: String,
@@ -302,11 +332,11 @@ pub struct QuestionConfig {
     pub state_key: String,
 
     /// Optional regexp or range check to validate their answer.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validate: Option<ValidationRule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all="snake_case")]
 pub enum AnswerType {
     Text,
@@ -315,53 +345,42 @@ pub enum AnswerType {
     Choice { options: Vec<String> },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all="snake_case")]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
 pub enum ValidationRule {
+    /// foo              → free‐form string
     Regex(String),
-    Range { min: f64, max: f64 },
+
+    ///   range: { min:…, max:… }
+    Range { range: RangeParams },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct RoutingRule {
-    /// Only applies if this condition is true (see below).
-    #[serde(flatten)]
-    pub condition: Condition,
+/// helper for your `range:` mapping
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct RangeParams {
+    pub min: f64,
+    pub max: f64,
+}
 
-    /// The node‐ID or channel to send the final payload to.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct RoutingRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<Condition>,
     pub to: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum Condition {
-    /// Always match
-    Always {},
-
-    /// key == value
-    Equals { question_id: String, value: JsonValue },
-
-    /// run a custom Handlebars‐powered predicate (returns true/false)
-    Custom { expr: String },
-
-    /// New: numeric “>”
-    GreaterThan {
-        question_id: String,
-        /// must be a JSON number
-        threshold: f64,
-    },
-
-    /// New: numeric “<”
-    LessThan {
-        question_id: String,
-        threshold: f64,
-    },
+impl RoutingRule {
+    pub fn matches(&self, answers: &HashMap<String, JsonValue>) -> bool {
+        match &self.condition {
+            None => true,
+            Some(cond) => cond.matches(answers),
+        }
+    }
 }
 
 impl Condition {
     pub fn matches(&self, answers: &HashMap<String, JsonValue>) -> bool {
         match self {
-            Condition::Always {} => true,
 
             Condition::Equals { question_id, value } => {
                 answers
@@ -400,11 +419,6 @@ impl Condition {
     }
 }
 
-impl RoutingRule {
-    pub fn matches(&self, answers: &HashMap<String, JsonValue>) -> bool {
-        self.condition.matches(answers)
-    }
-}
 
 /// Try to parse the raw string into the given `answer_type`, then optionally
 /// apply `validate` (regex or numeric range).  On success you get back a
@@ -431,7 +445,7 @@ pub fn parse_and_validate(
         AnswerType::Number => {
             let v: f64 = raw.trim().parse().map_err(|_| "please enter a number".to_string())?;
             // range check if given
-            if let Some(ValidationRule::Range { min, max }) = validate {
+            if let Some(ValidationRule::Range { range: RangeParams{min, max }}) = validate {
                 if v < *min || v > *max {
                     return Err(format!("must be between {} and {}", min, max));
                 }
@@ -471,12 +485,130 @@ pub fn parse_and_validate(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Condition {
+    Equals { question_id: String, value: JsonValue },
+    Custom { expr: String },
+    GreaterThan { question_id: String, threshold: f64 },
+    LessThan    { question_id: String, threshold: f64 },
+}
+
+impl Serialize for Condition {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // we'll emit a map of exactly one entry
+        let mut map = ser.serialize_map(Some(1))?;
+        match self {
+            Condition::Equals { question_id, value } => {
+                map.serialize_entry("equals", &json!({
+                    "question_id": question_id,
+                    "value": value
+                }))?;
+            }
+            Condition::Custom { expr } => {
+                map.serialize_entry("custom", &json!({ "expr": expr }))?;
+            }
+            Condition::GreaterThan { question_id, threshold } => {
+                map.serialize_entry("greater_than", &json!({
+                    "question_id": question_id,
+                    "threshold": threshold
+                }))?;
+            }
+            Condition::LessThan { question_id, threshold } => {
+                map.serialize_entry("less_than", &json!({
+                    "question_id": question_id,
+                    "threshold": threshold
+                }))?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Condition {
+    fn deserialize<D>(deser: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CondVisitor;
+        impl<'de> Visitor<'de> for CondVisitor {
+            type Value = Condition;
+            fn expecting(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+                write!(fmt, "a single‐key map with a Condition variant")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Condition, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let (key, value): (String, serde_yaml::Value) = map
+                    .next_entry()?
+                    .ok_or_else(|| de::Error::custom("Expected one entry in Condition map"))?;
+                match key.as_ref() {
+                    "equals" => {
+                        // expect a map mapping question_id→…, value→…
+                        let m: HashMap<String, serde_json::Value> =
+                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                        let question_id = m.get("question_id")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| de::Error::custom("Equals.question_id must be string"))?
+                            .to_string();
+                        let value = m.get("value")
+                            .cloned()
+                            .ok_or_else(|| de::Error::custom("Equals.value missing"))?;
+                        Ok(Condition::Equals { question_id, value })
+                    }
+                    "custom" => {
+                        let m: HashMap<String, String> =
+                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                        let expr = m.get("expr")
+                            .cloned()
+                            .ok_or_else(|| de::Error::custom("Custom.expr missing"))?;
+                        Ok(Condition::Custom { expr })
+                    }
+                    "greater_than" => {
+                        let m: HashMap<String, serde_json::Value> =
+                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                        let question_id = m.get("question_id")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| de::Error::custom("GreaterThan.question_id must be string"))?
+                            .to_string();
+                        let threshold = m.get("threshold")
+                            .and_then(|v| v.as_f64())
+                            .ok_or_else(|| de::Error::custom("GreaterThan.threshold must be number"))?;
+                        Ok(Condition::GreaterThan { question_id, threshold })
+                    }
+                    "less_than" => {
+                        let m: HashMap<String, serde_json::Value> =
+                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                        let question_id = m.get("question_id")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| de::Error::custom("LessThan.question_id must be string"))?
+                            .to_string();
+                        let threshold = m.get("threshold")
+                            .and_then(|v| v.as_f64())
+                            .ok_or_else(|| de::Error::custom("LessThan.threshold must be number"))?;
+                        Ok(Condition::LessThan { question_id, threshold })
+                    }
+                    other => Err(de::Error::unknown_variant(other, &[
+                        "always", "equals", "custom", "greater_than", "less_than",
+                    ])),
+                }
+            }
+        }
+        deser.deserialize_map(CondVisitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use chrono::Utc;
     use std::collections::HashMap;
+    use serde_yaml::Value as YamlValue;
 
     #[test]
     fn parse_and_validate_text_no_regex() {
@@ -511,7 +643,7 @@ mod tests {
         assert!(parse_and_validate("foo", &AnswerType::Number, None).is_err());
 
         // with range
-        let rule = ValidationRule::Range { min: 0.0, max: 10.0 };
+        let rule = ValidationRule::Range {range:RangeParams { min: 0.0, max: 10.0 } };
         assert_eq!(parse_and_validate("5", &AnswerType::Number, Some(&rule)).unwrap(), json!(5.0));
         assert!(parse_and_validate("-1", &AnswerType::Number, Some(&rule)).is_err());
     }
@@ -552,8 +684,6 @@ mod tests {
         answers.insert("a".to_string(), json!(42));
         answers.insert("b".to_string(), json!("foo"));
 
-        // Always
-        assert!(Condition::Always {}.matches(&answers));
 
         // Equals
         let eq = Condition::Equals {
@@ -583,14 +713,169 @@ mod tests {
 
         // route to "pass" if score >= 50, else to "fail"
         let rule_pass = RoutingRule {
-            condition: Condition::GreaterThan { question_id: "score".into(), threshold: 50. },
+            condition: Some(Condition::GreaterThan { question_id: "score".into(), threshold: 50. }),
             to: "pass".into(),
         };
         let rule_fail = RoutingRule {
-            condition: Condition::LessThan { question_id: "score".into(), threshold: 50. },
+            condition: Some(Condition::LessThan { question_id: "score".into(), threshold: 50. }),
             to: "fail".into(),
         };
         assert!(rule_pass.matches(&answers));
         assert!(!rule_fail.matches(&answers));
     }
+
+
+
+    const QA_YAML: &str = r#"
+welcome_template: "Welcome!"
+questions:
+  - id: "age"
+    prompt: "👉 How old are you?"
+    answer_type: number
+    state_key: "user_age"
+    validate:
+      range:
+        min: 0.0
+        max: 120.0
+
+  - id: "name"
+    prompt: "👉 What is your name?"
+    answer_type: text
+    state_key: "user_name"
+
+routing:
+  - condition:
+        less_than:
+            question_id: "age"
+            threshold: 18.0
+    to: "minor_flow"
+
+  - to: "adult_flow"
+"#;
+
+    #[test]
+    fn qa_process_config_manual_vs_yaml_value() {
+        // 1) Manually construct exactly the same struct
+        let cfg_manual = QAProcessConfig {
+            welcome_template: "Welcome!".into(),
+            questions: vec![
+                QuestionConfig {
+                    id: "age".into(),
+                    prompt: "👉 How old are you?".into(),
+                    answer_type: AnswerType::Number,
+                    state_key: "user_age".into(),
+                    validate: Some(ValidationRule::Range {range: RangeParams{ min: 0.0, max: 120.0 }}),
+                },
+                QuestionConfig {
+                    id: "name".into(),
+                    prompt: "👉 What is your name?".into(),
+                    answer_type: AnswerType::Text,
+                    state_key: "user_name".into(),
+                    validate: None,
+                },
+            ],
+            fallback_agent: None,
+            routing: vec![
+                RoutingRule {
+                    condition: Some(Condition::LessThan {
+                        question_id: "age".into(),
+                        threshold: 18.0,
+                    }),
+                    to: "minor_flow".into(),
+                },
+                RoutingRule {
+                    condition: None,
+                    to: "adult_flow".into(),
+                },
+            ],
+        };
+
+        // 2) Serialize your manual struct → YamlValue
+        let val_manual: YamlValue =
+            serde_yaml::to_value(&cfg_manual).expect("to_value");
+
+        // 3) Parse the literal YAML → YamlValue
+        let val_literal: YamlValue =
+            serde_yaml::from_str(QA_YAML).expect("from_str");
+
+        // 4) Compare and, if they differ, print them out in full
+        if val_manual != val_literal {
+            eprintln!("--- MANUAL YamlValue:\n{:#?}", val_manual);
+            eprintln!("--- LITERAL YamlValue:\n{:#?}", val_literal);
+        }
+        assert_eq!(val_manual, val_literal);
+    }
+
+    #[test]
+    fn qa_process_config_manual_vs_yaml() {
+        let yaml = r#"
+welcome_template: "Welcome!"
+questions:
+  - id: "age"
+    prompt: "👉 How old are you?"
+    answer_type: number
+    state_key: "user_age"
+    validate:
+      range:
+        min: 0.0
+        max: 120.0
+
+  - id: "name"
+    prompt: "👉 What is your name?"
+    answer_type: text
+    state_key: "user_name"
+
+routing:
+  - condition:
+        less_than:
+            question_id: "age"
+            threshold: 18.0
+    to: "minor_flow"
+
+  - to: "adult_flow"
+"#;
+
+        // parse YAML
+        let from_yaml: QAProcessConfig =
+            serde_yaml::from_str(yaml).expect("valid QA yaml");
+
+        // build the same config by hand
+        let manual = QAProcessConfig {
+            welcome_template: "Welcome!".into(),
+            questions: vec![
+                QuestionConfig {
+                    id: "age".into(),
+                    prompt: "👉 How old are you?".into(),
+                    answer_type: AnswerType::Number,
+                    state_key: "user_age".into(),
+                    validate: Some(ValidationRule::Range { range: RangeParams{min: 0.0, max: 120.0 }}),
+                },
+                QuestionConfig {
+                    id: "name".into(),
+                    prompt: "👉 What is your name?".into(),
+                    answer_type: AnswerType::Text,
+                    state_key: "user_name".into(),
+                    validate: None,
+                },
+            ],
+            fallback_agent: None,
+            routing: vec![
+                RoutingRule {
+                    condition: Some(Condition::LessThan {
+                        question_id: "age".into(),
+                        threshold: 18.0,
+                    }),
+                    to: "minor_flow".into(),
+                },
+                RoutingRule {
+                    condition: None,
+                    to: "adult_flow".into(),
+                },
+            ],
+        };
+
+        assert_eq!(manual, from_yaml);
+    }
+
 }
+

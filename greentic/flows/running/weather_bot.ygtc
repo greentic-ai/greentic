@@ -26,6 +26,10 @@ nodes:
           prompt: "👉 Over how many days? (enter a number)"
           answer_type: Number
           state_key: days
+          validate:
+            range:
+              min: 0.0
+              max: 7.0
       fallback_agent:
         type: ollama
         model: llama3.2:1b
@@ -40,8 +44,6 @@ nodes:
           }
       routing:
         - to: forecast_weather
-          condition:
-            always: {}
 
   # 3) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
   forecast_weather:
