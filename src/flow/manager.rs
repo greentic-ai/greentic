@@ -633,22 +633,19 @@ impl ChannelNodeConfig {
 /// Node kinds, flattened by top-level key
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeKind {
-    #[serde(rename_all = "camelCase")]
     Channel {
         #[serde(flatten)]
         cfg: ChannelNodeConfig,
     },
-    #[serde(rename_all = "camelCase")]
     Tool {
         tool: ToolNodeConfig,
     },
-    #[serde(rename_all = "camelCase")]
     Agent {
         #[serde(flatten)]
         agent: BuiltInAgent,
     },
-    #[serde(rename_all = "camelCase")]
     Process {
         #[serde(flatten)]
         process: BuiltInProcess,

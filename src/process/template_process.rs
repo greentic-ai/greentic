@@ -78,7 +78,7 @@ use crate::{message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, N
 ///
 /// For advanced usage and custom helpers, refer to the [Handlebars Rust docs](https://docs.rs/handlebars).
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(rename = "template")]
+#[serde(transparent)]
 pub struct TemplateProcessNode {
     pub template: String,
 }
