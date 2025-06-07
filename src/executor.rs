@@ -18,6 +18,7 @@ use wasmtime::component::{Component, Linker, Resource};
 use wasmtime_wasi::{ResourceTable};
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 use futures_util::FutureExt;
+use crate::executor::exports::wasix::mcp::router::{Annotations, Content, ResourceContents, Role};
 use crate::secret::{EmptySecretsManager, SecretsManager};
 use crate::watcher::{DirectoryWatcher, WatchedType};
 use std::fmt::Debug;
@@ -161,6 +162,108 @@ impl Executor {
     pub fn list_tool_keys(&self) -> Vec<String> {
         self.executor.tools().iter().map(|entry| entry.key().clone()).collect()
     }
+}
+
+/// Converts a CallToolResult in a Value and returns true if it is an error
+pub fn call_result_to_json(call_tool_result: CallToolResult) -> Value {
+    // map each Content into a Value
+    let items: Vec<Value> = call_tool_result.content.iter().map(|c| {
+        match c {
+            Content::Text(text) => {
+                let mut base = json!({ "text": text.text });
+                if let Some(ann) = &text.annotations {
+                    base["annotations"] = annotations_to_json(ann);
+                }
+                json!({ "text": base })
+            }
+            Content::Image(img) => {
+                let mut inner = json!({
+                    "data": img.data,
+                    "mime_type": img.mime_type,
+                });
+                if let Some(ann) = &img.annotations {
+                    inner["annotations"] = annotations_to_json(ann);
+                }
+                json!({ "image": inner })
+            }
+            Content::Embedded(embed) => {
+                // embed.resource_contents is a ResourceContents enum
+                let rc = match &embed.resource_contents {
+                    ResourceContents::Text(tc) => {
+                        let mut t = json!({
+                            "uri": tc.uri,
+                            "text": tc.text,
+                        });
+                        if let Some(m) = &tc.mime_type {
+                            t["mime_type"] = json!(m);
+                        }
+                        json!({ "text": t })
+                    }
+                    ResourceContents::Blob(bc) => {
+                        let mut b = json!({
+                            "uri": bc.uri,
+                            "blob": bc.blob,
+                        });
+                        if let Some(m) = &bc.mime_type {
+                            b["mime_type"] = json!(m);
+                        }
+                        json!({ "blob": b })
+                    }
+                };
+                let mut wrapper = json!({ "resource_contents": rc });
+                if let Some(ann) = &embed.annotations {
+                    wrapper["annotations"] = annotations_to_json(ann);
+                }
+                json!({ "embedded": wrapper })
+            }
+        }
+    }).collect();
+
+    let mut result = if items.len() == 1 {
+        // single item → inline
+        items.into_iter().next().unwrap()
+    } else {
+        // multiple → array
+        Value::Array(items)
+    };
+
+    // attach the error flag if any
+    if let Some(err) = call_tool_result.is_error {
+        let map= result.as_object_mut().unwrap();
+        map.insert("is_error".into(), json!(err));
+    }
+
+    result
+
+}
+
+pub fn role_to_json(r: &Role) -> Value {
+    match r {
+        Role::User => Value::String("user".to_string()),
+        Role::Assistant => Value::String("assistant".to_string()),
+    }
+}
+
+/// Convert an `Annotations` struct into a JSON object
+pub fn annotations_to_json(a: &Annotations) -> Value {
+    let mut m = serde_json::Map::new();
+
+    if let Some(aud) = &a.audience {
+        // turn Vec<Role> → [ "user", "assistant", … ]
+        let arr = aud.iter().map(role_to_json).collect();
+        m.insert("audience".into(), Value::Array(arr));
+    }
+
+    if let Some(p) = a.priority {
+        m.insert("priority".into(), json!(p));
+    }
+
+    if let Some(ts) = &a.timestamp {
+        // RFC3339 is a reasonable wire format for datetime
+         m.insert("timestamp".into(), serde_json::Value::String(ts.clone()));
+    }
+
+    Value::Object(m)
 }
 
 #[derive(Clone, Debug)]

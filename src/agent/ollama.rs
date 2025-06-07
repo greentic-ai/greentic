@@ -10,6 +10,7 @@ use serde_json::{json, Value as JsonValue};
 use tracing::{error, warn};
 use url::Url;
 
+use crate::executor::call_result_to_json;
 use crate::state::StateValue;
 use crate::{
     message::Message,
@@ -66,7 +67,7 @@ impl NodeType for OllamaAgent {
         context: &mut NodeContext,
     ) -> Result<NodeOut, NodeErr> {
         let model = self.model.clone().unwrap_or("llama3:latest".into());
-        let client = if let (Some(host), Some(port)) = (&self.ollama_host, self.ollama_port) {
+        let mut client = if let (Some(host), Some(port)) = (&self.ollama_host, self.ollama_port) {
             Ollama::new(host.clone(), port)
         } else {
             Ollama::default()
@@ -78,7 +79,7 @@ You have access to:
 - `payload`: the result of the previous node
 - `state`: a key-value store with flow state
 - `connections`: a list of connections you can send the payload to
-- `tools`: a list of tools that can be called
+- `tool`: a tool that can be called
 Respond with a valid JSON:
 {
   "payload": { ... }, // can be JSON Value
@@ -87,28 +88,21 @@ Respond with a valid JSON:
     "update": [...],
     "delete": [...]
   },
-  "tool_calls": [
-    { 
-        "inline": true,
+  "tool_call": {
         "name": ..., 
         "action": ..., 
         "input": { ... } 
-    },
-    {
-        "inline": false,
-        "connection": ...,
-        "input": { ... }
-  ],
-  "connection": [ ... ]
+  },
+  "connections": [ ... ]
 }
 rules:
-- If all `connections` should get the respnse payload, do not include connections
-- Only include `tool_calls` if a tool should be called. 
+- If all `connections` should get the respnse payload, do not include `connections`
+- Only include `tool_call` if a tool should be called. 
 - Inline calls are executed now. Routed ones must specify a `connection`.
 - All fields are optional except `payload`.
 "#;
 
-        let task = self.task;
+        let task = self.task.clone();
         let state = serde_json::to_value(context.get_all_state()).unwrap_or(json!({}));
         let connections = context.connections().unwrap_or_default();
         let tools: Vec<String> = self
@@ -191,8 +185,8 @@ rules:
         }
 
         // Gather inline and deferred tool calls
-        let mut follow_up: Vec<String> = parsed
-            .get("connection")
+        let follow_up: Vec<String> = parsed
+            .get("connections")
             .and_then(|c| c.as_array())
             .cloned()
             .unwrap_or_default()
@@ -200,46 +194,61 @@ rules:
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
 
-        // Process `tool_calls` array
-        if let Some(tools_calls) = payload.get("tools_calls") {
-            for tools_call in tools_calls.as_array() {
-                if let ((Some(inline) == true)) = tools_call.get("inline".to_string()) {
+        let next_conn = match follow_up.is_empty() {
+            true => None,
+            false => Some(follow_up),
+        };
 
-                if let (Some(name), Some(action), Some(input)) = (tools_call.get("name"), tools_call.get("action"), tools_call.get("input")) {
-                    let tool_payload = json!({
-                        "tool_call": {
-                            "name": name,
-                            "action": action,
-                            "input": input
-                        }
-                    });
 
-                    let tool_msg = Message::new("tool_call_forwarded", tool_payload, input.session_id());
+        // 1) Process “tool_calls” if present:
+        if let Some(call) = parsed.get("tool_call") {
+           
+            let name = call
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    NodeErr::new(NodeError::ExecutionFailed(
+                        "Missing `name` in tool_call".into()),
+                        next_conn.clone())
+                })?;
+            let action = call
+                .get("action")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    NodeErr::new(NodeError::ExecutionFailed(
+                        "Missing `action` in tool_call".into()),
+                    next_conn.clone())
+                })?;
+            let args = call.get("input").cloned().unwrap_or(json!({}));
+            match context.executor().executor.call_tool(
+                name.to_string(),
+                action.to_string(),
+                args.clone(),
+            ) {
+                Ok(tool_res) => {
+                    let result_json = call_result_to_json(tool_res);
 
-                    if inline {
-                        // Route to a generic dynamic tool node (configured to accept and dispatch tool calls)
-                        follow_up.push("dynamic_tool_node".to_string());  // or another known node ID
-                        extra_outputs.push(NodeOut::new(tool_msg, Some(vec!["dynamic_tool_node".to_string()])));
-                    } else if let Some(c) = conn {
-                        // Forward to the specified connection
-                        extra_outputs.push(NodeOut::one(tool_msg, c.to_string()));
-                    }
-
-                    // Optional: if you're returning multiple tool calls
-                    if !extra_outputs.is_empty() {
-                        return Ok(extra_outputs.remove(0)); // or NodeOuts::many(extra_outputs) if supported
-                    }
+                    let tool_msg = Message::new(
+                        &input.id(),
+                        result_json,
+                        input.session_id().clone(),
+                    );
+                    return Ok(NodeOut::new(tool_msg,next_conn));
+                }
+                Err(e) => {
+                    // route to your on_err connection
+                    return Err(NodeErr::new(
+                        NodeError::ExecutionFailed(format!("tool `{}` errored: {:?}", name, e)),
+                        next_conn,
+                    ));
                 }
             }
+
         }
 
-        // Emit message
-        let msg = Message::new(&input.id(), payload, input.session_id());
-        Ok(if !follow_up.is_empty() {
-            NodeOut::new(msg, Some(follow_up))
-        } else {
-            NodeOut::all(msg)
-        })
+        // 2) No inline/deferred tool_calls left: emit your normal LLM payload + any follow-ups
+        let main_msg = Message::new(&input.id(), payload.clone(), input.session_id().clone());
+        Ok(NodeOut::new(main_msg,next_conn))
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {
@@ -424,7 +433,7 @@ mod tests {
 
     use super::*;
     use ollama_rs::generation::chat::MessageRole;
-    use schemars::schema::SchemaObject;
+    use schemars::{schema::{RootSchema, SchemaObject}, schema_for};
     use serde_json::json;
 
     /// Helper: extract a subschema object by key from a `RootSchema`.
@@ -442,11 +451,13 @@ mod tests {
     fn ollamaagent_serde_roundtrip_and_schema() {
         // 1) Create a sample OllamaAgent
         let agent = OllamaAgent {
+            task: "call a local tool".to_string(),
             model: Some("llama2:latest".to_string()),
             ollama_host: Some(Url::parse("http://localhost").unwrap()),
             ollama_port: Some(11434),
             model_options: Some(ModelOptions::default()),
             tool_nodes: None,
+            tool_names: Some(vec!["local_tool".to_string()]),
         };
 
         // 2) Round‐trip serialization
@@ -472,6 +483,8 @@ mod tests {
         assert!(props.contains_key("model"));
         assert!(props.contains_key("ollama_host"));
         assert!(props.contains_key("ollama_port"));
+        assert!(props.contains_key("task"));
+        assert!(props.contains_key("tool_names"));
 
         // Check that “model” is a string:
         if let Some(schemars::schema::Schema::Object(model_schema_obj)) = props.get("model") {
@@ -591,7 +604,9 @@ mod tests {
         // We give a bogus JSON so that `process()` will error out early.
         // Use a dummy OllamaAgent (host/port irrelevant here).
         let agent = OllamaAgent::new(
+            "The task".to_string(),
             Some("llama2:latest".to_string()),
+            None,
             None,
             None,
             None,
