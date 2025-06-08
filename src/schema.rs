@@ -51,7 +51,7 @@ pub async fn write_schema(
         .expect("Could not start channels");
     
     for wrapper in channel_mgr.channels().iter() {
-        let (name, schema) = wrapper.schema_json()?;
+        let (name, schema) = wrapper.wrapper().schema_json()?;
         let filename = format!("channel-{}.schema.json", name.to_lowercase());
         fs::write(out_dir.join(filename), schema)?;
     }

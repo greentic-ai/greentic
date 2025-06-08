@@ -8,7 +8,7 @@ mod tests {
     use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
     use channel_plugin::plugin::{ChannelState, PluginLogger};
     use channel_plugin::PluginHandle;
-    use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler};
+    use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler, ManagedChannel};
     use crate::channel::node::ChannelsRegistry;
     use crate::channel::plugin::Plugin;
     use crate::channel::PluginWrapper;
@@ -577,7 +577,7 @@ mod tests {
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
         let noop = make_noop_plugin();              // Arc<Plugin>
         let wrapper = PluginWrapper::new(noop.clone());
-        channel_manager.register_channel("mock".into(), wrapper).expect("failed to register noop channel");
+        channel_manager.register_channel("mock".into(), ManagedChannel::new(wrapper,None,None)).expect("failed to register noop channel");
         // **4.** *tell* the FlowManager about your new flow so that it fires
         //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.
         fm.register_flow(built.id().as_str(), built.clone());

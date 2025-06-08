@@ -548,7 +548,7 @@ pub async fn wait_until_file_is_stable(path: &Path, stable_for: Duration, timeou
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use tokio::time::timeout;
 
     use super::*;

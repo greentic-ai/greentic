@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
 };
 use crate::{
-    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, state::StateStore, watcher::{DirectoryWatcher, WatchedType}
+    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::{manager::{BuiltInProcess, ProcessManager}}, secret::SecretsManager, state::StateStore, watcher::{DirectoryWatcher, WatchedType}
 };
 use anyhow::Error;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
@@ -342,80 +342,77 @@ impl Flow {
                 // dispatch by kind
                 let res = match &cfg.kind {
                     NodeKind::Channel { cfg } => {
-                        if cfg.channel_out {
-                            let cm = cfg.create_out_msg(
-                                ctx,
-                                input.id().to_string(),
-                                input.session_id(),
-                                input.payload(),
-                                MessageDirection::Outgoing,
-                            );
+                                        if cfg.channel_out {
+                                            let cm = cfg.create_out_msg(
+                                                ctx,
+                                                input.id().to_string(),
+                                                input.session_id(),
+                                                input.payload(),
+                                                MessageDirection::Outgoing,
+                                            );
                             
-                            match cm {
-                                Ok(msg) => {
-                                    ctx.channel_manager()
-                                    .send_to_channel(&cfg.channel_name, msg)
-                                    .map(|_| NodeOut::all(input.clone()))
-                                    .map_err(|e| NodeErr::all(NodeError::ConnectionFailed(format!("{:?}", e))))
-                                },
-                                Err(err) => {
-                                    let error = format!("Could not create a channel message because of {:?}",err);
-                                    error!(error);
-                                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
-                                },
-                            }
+                                            match cm {
+                                                Ok(msg) => {
+                                                    ctx.channel_manager()
+                                                    .send_to_channel(&cfg.channel_name, msg)
+                                                    .map(|_| NodeOut::all(input.clone()))
+                                                    .map_err(|e| NodeErr::all(NodeError::ConnectionFailed(format!("{:?}", e))))
+                                                },
+                                                Err(err) => {
+                                                    let error = format!("Could not create a channel message because of {:?}",err);
+                                                    error!(error);
+                                                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
+                                                },
+                                            }
                             
-                        } else {
-                            Ok(NodeOut::all(input.clone()))
-                        }
-                    }
-
+                                        } else {
+                                            Ok(NodeOut::all(input.clone()))
+                                        }
+                                    }
                     NodeKind::Tool { tool } => {
-                        // same as before…
-                        let mut msg_with_params = input.clone();
-                        // Pull out the session ID and payload before we overwrite msg_with_params
-                        let session_id = msg_with_params.session_id().clone();
-                        let payload = msg_with_params.payload();
+                                        // same as before…
+                                        let mut msg_with_params = input.clone();
+                                        // Pull out the session ID and payload before we overwrite msg_with_params
+                                        let session_id = msg_with_params.session_id().clone();
+                                        let payload = msg_with_params.payload();
 
-                        // Rebuild the message
-                        msg_with_params = Message::new(
-                            &msg_with_params.id(),
-                            payload,
-                            session_id,
-                        );
+                                        // Rebuild the message
+                                        msg_with_params = Message::new(
+                                            &msg_with_params.id(),
+                                            payload,
+                                            session_id,
+                                        );
 
-                        // fetch secrets…
-                        let secrets_keys = ctx.executor().executor.secrets(tool.name.clone());
+                                        // fetch secrets…
+                                        let secrets_keys = ctx.executor().executor.secrets(tool.name.clone());
 
-                        let mut secret_map = HashMap::new();
-                        if secrets_keys.is_some() {
-                            for s in &secrets_keys.unwrap()
-                            {
-                                let name = s.name.clone();
-                                if let Some(tok) = ctx.reveal_secret(&name).await {
-                                    secret_map.insert(name, tok.clone());
-                                }
-                            }
-                        }
+                                        let mut secret_map = HashMap::new();
+                                        if secrets_keys.is_some() {
+                                            for s in &secrets_keys.unwrap()
+                                            {
+                                                let name = s.name.clone();
+                                                if let Some(tok) = ctx.reveal_secret(&name).await {
+                                                    secret_map.insert(name, tok.clone());
+                                                }
+                                            }
+                                        }
 
-                        ToolNode::new(
-                            tool.name.clone(),
-                            tool.action.clone(),
-                            tool.in_map.clone(),
-                            tool.out_map.clone(),
-                            tool.err_map.clone(),
-                            tool.on_ok.clone(),
-                            tool.on_err.clone(),
-                        ).process(msg_with_params, ctx).await
-                    }
-
+                                        ToolNode::new(
+                                            tool.name.clone(),
+                                            tool.action.clone(),
+                                            tool.in_map.clone(),
+                                            tool.out_map.clone(),
+                                            tool.err_map.clone(),
+                                            tool.on_ok.clone(),
+                                            tool.on_err.clone(),
+                                        ).process(msg_with_params, ctx).await
+                                    }
                     NodeKind::Agent { agent } => {
-                        agent.process(input.clone(), ctx).await
-                    }
-
+                                        agent.process(input.clone(), ctx).await
+                                    }
                     NodeKind::Process { process } => {
-                        process.process( input.clone(),ctx).await
-                    }
+                                        process.process( input.clone(),ctx).await
+                                    }
                 };
 
                 let finished = Utc::now();
@@ -651,7 +648,6 @@ pub enum NodeKind {
         process: BuiltInProcess,
     },
 }
-
 
 /// A ToolNodeConfig allows to call a tool either by name, action
 /// and the payload will be passed to the action.

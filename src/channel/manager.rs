@@ -1,14 +1,14 @@
 // src/channel/manager.rs
 
 use std::{
-    collections::HashMap, ffi::{c_char, c_void, CStr}, fmt, path::PathBuf, sync::{Arc, Mutex}, time::Duration
+    collections::HashMap, ffi::{c_char, c_void, CStr}, fmt, path::PathBuf, sync::{Arc, Mutex},
 };
 use anyhow::{bail, Error, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::time::sleep;
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, trace, warn};
-
+use tokio_util::sync::CancellationToken;
 use channel_plugin::{message::ChannelMessage, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
 
 use crate::{
@@ -32,7 +32,7 @@ pub trait IncomingHandler: Send + Sync {
 pub struct ChannelManager {
     config:        ConfigManager,
     secrets:       SecretsManager,
-    channels:      Arc<DashMap<String, PluginWrapper>>,
+    channels:      Arc<DashMap<String, ManagedChannel>>,
     host_logger:   Arc<HostLogger>,
     incoming_subscribers: Arc<Mutex<Vec<Arc<dyn IncomingHandler>>>>,
 }
@@ -60,7 +60,7 @@ impl ChannelManager {
     pub fn diagnostics(&self) -> HashMap<String, ChannelState> {
         self.channels
             .iter()
-            .map(|kv| (kv.key().clone(), kv.value().state()))
+            .map(|kv| (kv.key().clone(), kv.value().wrapper.state()))
             .collect()
     }
 
@@ -70,8 +70,8 @@ impl ChannelManager {
     }
 
     /// Load & start a channel plugin immediately.
-    pub fn register_channel(&self, name: String, mut wrapper: PluginWrapper) -> Result<(), PluginError> {
-        wrapper.start()?;
+    pub fn register_channel(&self, name: String, mut wrapper: ManagedChannel) -> Result<(), PluginError> {
+        wrapper.wrapper.start()?;
         self.channels.insert(name, wrapper);
         Ok(())
     }
@@ -79,7 +79,7 @@ impl ChannelManager {
     /// Unload & stop a channel by name.
     pub async fn unload_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some((_, mut wrapper)) = self.channels.remove(name) {
-            wrapper.stop()?;
+            wrapper.wrapper.stop()?;
         }
         Ok(())
     }
@@ -87,7 +87,7 @@ impl ChannelManager {
     /// Start (or restart) a currently‐loaded channel.
     pub async fn start_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some(mut entry) = self.channels.get_mut(name) {
-            entry.value_mut().start()?;
+            entry.value_mut().wrapper.start()?;
         }
         Ok(())
     }
@@ -95,7 +95,7 @@ impl ChannelManager {
     /// Get a channel.
     pub fn channel(&self, name: &str) -> Option<PluginWrapper> {
         if let Some(entry) = self.channels.get(name) {
-            Some(entry.value().clone())
+            Some(entry.value().wrapper.clone())
         } else {
             None
         }
@@ -105,7 +105,7 @@ impl ChannelManager {
     /// Stop (but keep loaded) a channel.
     pub async fn stop_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some(mut entry) = self.channels.get_mut(name) {
-            entry.value_mut().stop()?;
+            entry.value_mut().wrapper.stop()?;
         }
         Ok(())
     }
@@ -118,7 +118,7 @@ impl ChannelManager {
         msg: ChannelMessage,
     ) -> Result<(), PluginError> {
         if let Some(mut wrapper) = self.channels.get_mut(name) {
-            wrapper.send(msg)
+            wrapper.wrapper.send(msg)
         } else {
             Err(PluginError::Other(format!("channel `{}` not loaded", name)))
         }
@@ -130,7 +130,7 @@ impl ChannelManager {
     }
 
     /// Get all loaded channels.
-    pub fn channels(&self) -> Arc<DashMap<String,PluginWrapper>> {
+    pub fn channels(&self) -> Arc<DashMap<String,ManagedChannel>> {
         self.channels.clone()
     }
 
@@ -158,7 +158,7 @@ impl ChannelManager {
     pub fn shutdown_all(&self, graceful: bool, timeout_ms: u64) {
         // Kick off drain/stop on each one.
         for kv in self.channels.iter() {
-            let mut w = kv.value().clone();
+            let mut w = kv.value().wrapper.clone();
             if graceful {
                 let _ = w.drain();
             } else {
@@ -168,7 +168,7 @@ impl ChannelManager {
         // If draining, wait them out.
         if graceful {
             for kv in self.channels.iter() {
-                let mut w = kv.value().clone();
+                let mut w = kv.value().wrapper.clone();
                 let _ = w.wait_until_drained(timeout_ms);
             }
         }
@@ -184,7 +184,12 @@ impl PluginEventHandler for ChannelManager {
         // If already present, tear down the old one:
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
             // stopping the channel
-            if let Err(e) = old_plugin.stop() {
+            // signal its poller to exit
+            // signal its poller to exit
+            old_plugin.cancel.as_ref().map(|tok| tok.cancel());
+            // wait for it to actually stop
+            old_plugin.poller.as_ref().map(|poller| poller.abort());
+            if let Err(e) = old_plugin.wrapper.stop() {
                 info!("Could not stop existing plugin `{}`: {:?}", name, e);
             }
             // Now remove it from the map
@@ -196,6 +201,7 @@ impl PluginEventHandler for ChannelManager {
 
         // Wrap + configure:
         let mut wrapper = PluginWrapper::new(plugin);
+        
 
         // Wire in the host’s logger callback
         let ffi_logger = self.host_logger.clone().as_ffi();
@@ -227,38 +233,54 @@ impl PluginEventHandler for ChannelManager {
             Ok(_) => {info!("Plugin {} started",name)}
         };
 
-        // 4) Insert into our map
-        self.channels.insert(name.to_string(), wrapper.clone());
+
 
         // 5) Spawn its polling loop
         let caps = wrapper.capabilities();
         if caps.supports_receiving {
             let channel_name = name.to_string();
-            let wrapper = wrapper.clone(); 
             let subs = self.incoming_subscribers.clone();
-            tokio::spawn(async move { 
-                loop {
-                    match wrapper.poll() {
-                        Ok(mut msg) => {
-                            msg.channel = channel_name.clone();
 
-                            // 1) grab and clone the subscriber list under the lock
-                            let handlers: Vec<Arc<dyn IncomingHandler>> = {
-                                let guard = subs.lock().unwrap();
-                                guard.clone()
-                            };
-                            // 2) now drop the lock, and call each handler
-                            for handler in handlers {
-                                handler.handle_incoming(msg.clone()).await;
+            let cancel = CancellationToken::new();
+            let child_token = cancel.child_token();
+            // clone the wrapper for the poller
+            let wrapper_for_poller = wrapper.clone();
+
+            let poller = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = child_token.cancelled() => break,
+                        res = tokio::task::spawn_blocking({
+                            let w = wrapper_for_poller.clone();
+                            move || w.poll()
+                        }) => match res {
+                            Ok(Ok(mut msg)) => {
+                                msg.channel = channel_name.clone();
+                                let handlers = subs.lock().unwrap().clone();
+                                for h in handlers {
+                                    h.handle_incoming(msg.clone()).await;
+                                }
                             }
-                        }
-                        Err(e) => {
-                            warn!("Poll error on channel `{}`: {:?}", channel_name, e);
-                        }
+                            Ok(Err(e)) => tracing::warn!(%channel_name, ?e, "poll error"),
+                            Err(join_err) => tracing::error!(?join_err, "poll thread panicked"),
+                        },
                     }
-                    sleep(Duration::from_millis(200)).await;
                 }
             });
+
+            // now you still have the original `wrapper`, and you can move it into your map
+            self.channels.insert(name.to_string(), ManagedChannel {
+                wrapper,
+                cancel: Some(cancel),
+                poller: Some(poller),
+            });
+
+        } else {
+             self.channels.insert(name.to_string(), ManagedChannel {
+                wrapper,
+                cancel:None,
+                poller:None, 
+            });           
         }
 
         Ok(())
@@ -269,7 +291,12 @@ impl PluginEventHandler for ChannelManager {
 
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
             // stopping the channel
-            if let Err(e) = old_plugin.stop() {
+            // signal its poller to exit
+            old_plugin.cancel().as_ref().map(|tok| tok.cancel());
+            
+            // wait for it to actually stop
+            old_plugin.poller().as_ref().map(|poller| poller.abort());
+            if let Err(e) = old_plugin.wrapper.stop() {
                 info!("Could not stop existing plugin `{}`: {:?}", name, e);
             }
             // Now remove it from the map
@@ -281,6 +308,30 @@ impl PluginEventHandler for ChannelManager {
             warn!("Tried to remove unknown channel plugin: {}", name);
         }
         Ok(())
+    }
+}
+
+pub struct ManagedChannel {
+    wrapper: PluginWrapper,
+    cancel:  Option<CancellationToken>,
+    poller:  Option<JoinHandle<()>>,
+}
+
+impl ManagedChannel {
+    pub fn new(wrapper: PluginWrapper, cancel: Option<CancellationToken>, poller:  Option<JoinHandle<()>>) -> Self {
+        Self {wrapper,cancel, poller}
+    }
+
+    fn cancel(&self) -> &Option<CancellationToken> {
+        &self.cancel
+    }
+
+    fn poller(&mut self) -> &Option<JoinHandle<()>> {
+        &self.poller
+    }
+
+    pub fn wrapper(&self) -> &PluginWrapper {
+        &self.wrapper
     }
 }
 
@@ -450,7 +501,7 @@ pub mod tests {
         let plugin = make_noop_plugin();
         let mut wrapper = PluginWrapper::new(plugin.clone());
         wrapper.set_logger(ffi_logger);
-        mgr.register_channel("foo".into(), wrapper).unwrap();
+        mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);
         mgr.unload_channel("foo").await.unwrap();
         assert!(mgr.list_channels().is_empty());

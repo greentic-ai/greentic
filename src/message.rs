@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     id: String,
     session_id: Option<String>,

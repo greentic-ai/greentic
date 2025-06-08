@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use notify::{Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
+use notify::{event::{CreateKind, ModifyKind}, Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
 use std::{path::{Path, PathBuf}, sync::Arc};
 use tokio::{sync::mpsc::UnboundedReceiver, task::JoinHandle, time::{sleep, Duration}};
 use tracing::{error, warn};
@@ -98,7 +98,7 @@ impl DirectoryWatcher {
             while let Some(res) = rx.recv().await {
                 match res {
                     Ok(Event {
-                        kind: EventKind::Create(_) | EventKind::Modify(_),
+                        kind: EventKind::Create(CreateKind::Any) | EventKind::Modify(ModifyKind::Data(_)),
                         paths,
                         ..
                     }) => {
@@ -147,6 +147,7 @@ impl DirectoryWatcher {
                     Err(e) => {
                         warn!(?e, "Watcher error");
                     }
+                 
                     _ => {}
                 }
             }
