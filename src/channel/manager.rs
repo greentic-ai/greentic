@@ -241,29 +241,47 @@ impl PluginEventHandler for ChannelManager {
             let channel_name = name.to_string();
             let subs = self.incoming_subscribers.clone();
 
-            let cancel = CancellationToken::new();
-            let child_token = cancel.child_token();
-            // clone the wrapper for the poller
-            let wrapper_for_poller = wrapper.clone();
+            // create your cancellation token *once*
+            let cancel_token = CancellationToken::new();
+            // clone exactly for the poller
+            let poller_cancel = cancel_token.clone();
+            let poller_wrapper = wrapper.clone();
 
             let poller = tokio::spawn(async move {
+                // run this entire loop inside a single blocking thread:
+                // that way there's exactly one `.poll()` in flight at a time.
                 loop {
-                    tokio::select! {
-                        _ = child_token.cancelled() => break,
-                        res = tokio::task::spawn_blocking({
-                            let w = wrapper_for_poller.clone();
-                            move || w.poll()
-                        }) => match res {
-                            Ok(Ok(mut msg)) => {
-                                msg.channel = channel_name.clone();
-                                let handlers = subs.lock().unwrap().clone();
-                                for h in handlers {
-                                    h.handle_incoming(msg.clone()).await;
-                                }
+                    // check for cancellation _before_ we block again
+                    if poller_cancel.is_cancelled() {
+                         break;
+                    }
+
+                    let w = poller_wrapper.clone();
+                    let poll_result = w.poll();
+
+                    match poll_result {
+                        Ok(mut msg) => {
+                            // got a real message
+                            msg.channel = channel_name.clone();
+
+                            // snapshot & drop the lock quickly
+                            let handlers = {
+                                let guard = subs.lock().unwrap();
+                                guard.clone()
+                            };
+
+                            // now dispatch in async land
+                            for h in handlers {
+                                let m = msg.clone();
+                                tokio::spawn(async move {
+                                    let _ = h.handle_incoming(m).await;
+                                });
                             }
-                            Ok(Err(e)) => tracing::warn!(%channel_name, ?e, "poll error"),
-                            Err(join_err) => tracing::error!(?join_err, "poll thread panicked"),
-                        },
+                        }
+                        Err(err) => {
+                            tracing::warn!(%channel_name, ?err, "plugin.poll() returned error");
+                            // you might want a small backoff here to avoid a busy loop
+                        }
                     }
                 }
             });
@@ -271,7 +289,7 @@ impl PluginEventHandler for ChannelManager {
             // now you still have the original `wrapper`, and you can move it into your map
             self.channels.insert(name.to_string(), ManagedChannel {
                 wrapper,
-                cancel: Some(cancel),
+                cancel: Some(cancel_token),
                 poller: Some(poller),
             });
 

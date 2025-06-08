@@ -276,16 +276,12 @@ async fn handle_update(
 fn send_msg(msg: ChannelMessage, chat_id: String, bot: Option<Bot>, log: &Arc<PluginLogger>)  -> anyhow::Result<(),PluginError> {
 
 
-    log.log(LogLevel::Info, "telegram", "send_msg");
-
     // 3) Extract text content
     let text = match &msg.content {
         Some(MessageContent::Text(t)) => t.clone(),
         _ => return Err(PluginError::Other("only Text messages supported".into())),
     };
 
-
-    log.log(LogLevel::Info, "telegram", "text");
 
 
     // 4) Grab the Bot
@@ -294,32 +290,27 @@ fn send_msg(msg: ChannelMessage, chat_id: String, bot: Option<Bot>, log: &Arc<Pl
         .ok_or_else(|| PluginError::Other("Bot not initialized".into()))?
         .clone();
 
-    log.log(LogLevel::Info, "telegram", "bot");
-
     // 5) Perform the async send under a runtime
     let req = bot.send_message(chat_id, text);
-
-    log.log(LogLevel::Info, "telegram", "send");
 
     // Now run that Future to completion in whichever runtime we have:
     let send_fut = req.send();
 
-    log.log(LogLevel::Info, "telegram", "send fut");
+    log.log(LogLevel::Debug, "telegram", "send fut");
     let res = if Handle::try_current().is_ok() {
-            log.log(LogLevel::Info, "telegram", "current");
+            log.log(LogLevel::Debug, "telegram", "current");
         // We're inside Tokio already, so block in place rather than spawn a new runtime
         task::block_in_place(|| {
             Handle::current().block_on(send_fut)
         })
     } else {
-            log.log(LogLevel::Info, "telegram", "rt");
+    
         // No runtime, so spin one up
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| PluginError::Other(format!("failed to start runtime: {}", e)))?;
         rt.block_on(send_fut)
     };
 
-        log.log(LogLevel::Info, "telegram", "map_err");
     // 6) Map errors into PluginError
     res.map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))?;
 
