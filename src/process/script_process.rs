@@ -105,6 +105,12 @@ pub struct ScriptProcessNode {
     pub script: String,
 }
 
+impl ScriptProcessNode{
+    pub fn new(script: String) -> Self {
+        Self{script}
+    }
+}
+
 #[async_trait]
 #[typetag::serde]
 impl NodeType for ScriptProcessNode {

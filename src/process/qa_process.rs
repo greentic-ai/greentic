@@ -200,7 +200,7 @@ impl NodeType for QAProcessNode {
                 json!({ "text": prompt }),
                 Some(session.to_string()),
             );
-            return Ok(NodeOut::all(out));
+            return Ok(NodeOut::reply(out));
         }
 
         // now we have asked all questions, but haven't yet stored the last answer

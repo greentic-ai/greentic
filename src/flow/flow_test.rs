@@ -3,28 +3,34 @@ mod tests {
     // src/flow_test.rs
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::SystemTime;
+    use async_trait::async_trait;
     use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
     use channel_plugin::plugin::{ChannelState, PluginLogger};
     use channel_plugin::PluginHandle;
+    use schemars::schema::RootSchema;
+    use serde::{Deserialize, Serialize};
     use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler, ManagedChannel};
     use crate::channel::node::ChannelsRegistry;
     use crate::channel::plugin::Plugin;
     use crate::channel::PluginWrapper;
     use crate::config::{ConfigManager, MapConfigManager};
     use crate::mapper::{CopyKey, CopyMapper, Mapper};
-    use crate::process::manager::ProcessManager;
+    use crate::process::debug_process::DebugProcessNode;
+    use crate::process::manager::{BuiltInProcess, ProcessManager};
+    use crate::process::script_process::ScriptProcessNode;
     use crate::state::{InMemoryState, StateValue};
     use petgraph::visit::Topo;
-    use schemars::schema_for;
+    use schemars::{schema_for, JsonSchema};
     use serde_json::json;
 
     use crate::executor::Executor;
     use crate::flow::manager::{ChannelNodeConfig, ExecutionReport, Flow, FlowManager, NodeConfig, NodeKind, ResolveError, TemplateContext, ToolNodeConfig, ValueOrTemplate};
     use crate::logger::{Logger, OpenTelemetryLogger};
     use crate::message::Message;
-    use crate::node::{ChannelOrigin, NodeContext};
+    use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType};
     use crate::secret::{EmptySecretsManager, SecretsManager};
     use tempfile::TempDir;
 
@@ -97,6 +103,273 @@ mod tests {
         fn render_template(&self, template: &str) -> Result<String, String> {
             Ok(template.to_string())
         }
+    }
+
+    /// little helper to build a NodeContext with no channel_origin
+    fn make_ctx() -> NodeContext {
+        NodeContext::new(
+            HashMap::new(),                     // initial flow‐state
+            HashMap::new(),                     // our "local" state
+            Executor::dummy(),
+            ChannelManager::dummy(),
+            ProcessManager::dummy(),
+            SecretsManager(EmptySecretsManager::new()),
+            None,                               // no channel_origin
+        )
+    }
+
+    /// A little `ProcessNode` that fails exactly once, then succeeds.
+    #[derive(Clone, JsonSchema, Debug, Serialize, Deserialize)]
+    struct FailableNode {
+        // shared across calls
+        #[serde(skip)]
+        #[schemars(skip)]
+        counter: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    #[typetag::serde]
+    impl NodeType for FailableNode {
+        fn type_name(&self) -> String { "failable".into() }
+        fn schema(&self) -> RootSchema { schema_for!(FailableNode) }
+
+        async fn process(&self, msg: Message, _ctx: &mut NodeContext)
+            -> Result<NodeOut, crate::node::NodeErr>
+        {
+            let prev = self.counter.fetch_add(1, Ordering::SeqCst);
+            if prev == 0 {
+                // first call: fail
+                Err(NodeErr::all(NodeError::ExecutionFailed("boom".into())))
+            } else {
+                // subsequent: echo
+                Ok(NodeOut::all(msg))
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn crate::node::NodeType> {
+            Box::new(self.clone())
+        }
+    }
+
+
+    #[tokio::test]
+    async fn test_linear_run() {
+        // Build a trivial flow: start -> middle -> end
+        let mut flow = Flow::new("linear", "Linear", "A → B → C");
+        // three debug‐process nodes
+        let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
+        flow.add_node("start".into(), NodeConfig::new(
+                "start",
+                NodeKind::Process { process: dbg.clone() },
+                None
+            ));
+        flow.add_node("middle".into(), NodeConfig::new(
+                "middle",
+                NodeKind::Process { process: dbg.clone() },
+                None
+            ));
+        flow.add_node("end".into(), NodeConfig::new(
+                "end",
+                NodeKind::Process { process: dbg.clone() },
+                None
+            ));
+        flow.add_connection("start".into(), vec!["middle".into()]);
+        flow.add_connection("middle".into(), vec!["end".into()]);
+        flow.clone().build();
+
+        let mut ctx = make_ctx();
+        let msg = Message::new("m1", json!({"foo":"bar"}), None);
+        let report = flow.clone().run(msg.clone(), "start", &mut ctx).await;
+
+        // Should have three records, no error:
+        assert!(report.error.is_none());
+        assert_eq!(report.records.len(), 3);
+        // in order: start, middle, end
+        let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
+        assert_eq!(ids, &["start","middle","end"]);
+
+        // And each has echoed the same payload
+        for rec in report.records {
+            assert!(matches!(rec.result, Ok(ref out) if out.message().payload() == msg.payload()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_branch_and_merge() {
+        // A splits to B and C; both feed into D
+        //
+        //      ┌─> B ┐
+        //  A ──┤      ├─> D
+        //      └─> C ┘
+        //
+        // At D we should see payload = [payload_from_B, payload_from_C].
+
+        let mut flow = Flow::new("branch", "Branch & Merge", "");
+        let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
+        flow
+            .add_node("A".into(), NodeConfig::new(
+                "A", NodeKind::Process { process: dbg.clone() }, None
+            ));
+        flow.add_node("B".into(), NodeConfig::new(
+                "B", NodeKind::Process { process: dbg.clone() }, None
+            ));
+        flow.add_node("C".into(), NodeConfig::new(
+                "C", NodeKind::Process { process: dbg.clone() }, None
+            ));
+        flow.add_node("D".into(), NodeConfig::new(
+                "D", NodeKind::Process { process: dbg.clone() }, None
+            ));
+
+        // connections: A→B, A→C; B→D, C→D
+        flow.add_connection("A".into(), vec!["B".into(), "C".into()]);
+        flow.add_connection("B".into(), vec!["D".into()]);
+        flow.add_connection("C".into(), vec!["D".into()]);
+        flow.clone().build();
+
+        let mut ctx = make_ctx();
+        let input = Message::new("m2", json!({"val":123}), None);
+        let report = flow.clone().run(input.clone(), "A", &mut ctx).await;
+
+        // Should have four records (A,B,C,D) in that topo order:
+        assert!(report.error.is_none());
+        let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
+        assert_eq!(ids, &["A","B","C","D"]);
+
+        // A,B,C each echo the same payload
+        for r in &report.records[0..3] {
+            assert!(matches!(r.result, Ok(ref o) if o.message().payload() == input.payload()));
+        }
+
+        // Now at D we expect an *array* of the two incoming payloads:
+        let last = &report.records[3];
+        if let Ok(ref out) = last.result {
+            let v = out.message().payload();
+            // must be Value::Array([{"val":123}, {"val":123}])
+            if let serde_json::Value::Array(arr) = v {
+                assert_eq!(arr.len(), 2);
+                assert_eq!(arr[0], json!({"val":123}));
+                assert_eq!(arr[1], json!({"val":123}));
+            } else {
+                panic!("D did not get a merged array, got {:?}", v);
+            }
+        } else {
+            panic!("D failed: {:?}", last.result);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_retry_once() {
+        // build flow: start → failable → end
+        let mut flow = Flow::new("retry", "Retry", "fail once then succeed");
+
+        // seed the shared counter
+        //let failer = FailableNode { counter: Arc::new(AtomicUsize::new(0)) };
+        let fp = BuiltInProcess::Script(ScriptProcessNode::new(
+            // hack: wrap our FailableNode under ScriptProcessNode so we can inject it
+            // but if you have a direct variant you can skip that
+            r#"
+                if !globalContains("tries") {
+                    globalSet("tries", 1);
+                    throw "boom";
+                } else {
+                    payload
+                }
+            "#.to_string())
+        );
+
+        flow.add_node("start".into(), NodeConfig::new("start", NodeKind::Process { process: fp.clone() }, None));
+        flow.add_node("end".into(),   NodeConfig::new("end",   NodeKind::Process { process: BuiltInProcess::Debug(DebugProcessNode{print:false}) }, None));
+        flow.add_connection("start".into(), vec!["end".into()]);
+
+        // allow 1 retry on our failable node
+        flow.nodes().get_mut("start").unwrap().max_retries = Some(1);
+        flow.clone().build();
+
+        let mut ctx = make_ctx();
+        let input = Message::new("m-retry", json!({"x":1}), None);
+        let report = flow.run(input.clone(), "start", &mut ctx).await;
+
+        // we should see two attempts of the "start" node, then one of "end"
+        let recs = &report.records;
+        assert_eq!(recs.len(), 3);
+        assert_eq!(recs[0].attempt, 0);
+        assert!(matches!(recs[0].result, Err(_)));
+        assert_eq!(recs[1].attempt, 1);
+        assert!(matches!(recs[1].result, Ok(_)));
+
+        // end ran once
+        assert_eq!(recs[2].node_id, "end");
+        assert!(report.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_out_only_override() {
+        // Build A→X and A→Y, but A should override to only Y.
+        let mut flow = Flow::new("override", "out_only override", "");
+        // A is a tiny process node that always returns NodeOut::one(_, "Y")
+        let a_node = BuiltInProcess::Script(ScriptProcessNode::new(
+            // hack: wrap our FailableNode under ScriptProcessNode so we can inject it
+            // but if you have a direct variant you can skip that
+            r#"
+                if !globalContains("tries") {
+                    globalSet("tries", 1);
+                    throw "boom";
+                } else {
+                    payload
+                }
+            "#.to_string())
+        );
+
+        let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
+        flow.add_node("A".into(), NodeConfig::new("A", NodeKind::Process { process: a_node }, None));
+        flow.add_node("X".into(), NodeConfig::new("X", NodeKind::Process { process: dbg.clone() }, None));
+        flow.add_node("Y".into(), NodeConfig::new("Y", NodeKind::Process { process: dbg.clone() }, None));
+
+        // A normally fans to X and Y...
+        flow.add_connection("A".into(), vec!["X".into(), "Y".into()]);
+        flow.clone().build();
+
+        let mut ctx = make_ctx();
+        let input = Message::new("m-o", json!({"ok":true}), None);
+        let report = flow.run(input.clone(), "A", &mut ctx).await;
+
+        // records: just A then Y
+        assert!(report.error.is_none());
+        let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
+        assert_eq!(ids, &["A","Y"]);
+    }
+
+    #[tokio::test]
+    async fn test_channel_out_node() {
+        // simulate a channel‐out node
+        let mut flow = Flow::new("chanout", "Channel Out", "");
+        let cfg = ChannelNodeConfig {
+            channel_name: "mock".into(),
+            channel_in:  false,
+            channel_out: true,
+            from: None,
+            to: None,
+            content: None,
+            thread_id: None,
+            reply_to_id: None,
+        };
+        flow.add_node("chan".into(), NodeConfig::new("chan", NodeKind::Channel { cfg }, None));
+        flow.add_node("dbg".into(),   NodeConfig::new("dbg", NodeKind::Process { process: BuiltInProcess::Debug(DebugProcessNode{print:false}) }, None));
+        flow.add_connection("chan".into(), vec!["dbg".into()]);
+        flow.clone().build();
+
+        // seed a raw Message into "chan"
+        let mut ctx = make_ctx();
+        let m = Message::new("m-c", json!({"foo":"bar"}), None);
+        let report = flow.run(m.clone(), "chan", &mut ctx).await;
+
+        // Should have two records (chan and dbg)
+        assert!(report.error.is_none());
+        let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
+        assert_eq!(ids, &["chan","dbg"]);
+
+        // The dbg payload should match the original
+        assert!(matches!(report.records[1].result, Ok(ref o) if o.message().payload() == m.payload()));
     }
 
     #[test]

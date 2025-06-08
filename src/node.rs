@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt, sync::Arc};
 use async_trait::async_trait;
-use channel_plugin::message::Participant;
+use channel_plugin::message::{MessageDirection, Participant};
 use handlebars::{Handlebars,JsonValue};
 use serde::{Deserialize,  Serialize};
 use tempfile::TempDir;
@@ -8,7 +8,7 @@ use std::fs;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::manager::TemplateContext, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, state::StateValue, util::extension_from_mime};
+use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate}, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, state::StateValue, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
 
 
@@ -43,6 +43,12 @@ impl NodeOut {
     pub fn out_only(&self) -> Option<Vec<String>> {
         self.out_only.clone()
     }
+
+    /// “Reply to the same channel/session that delivered the incoming Message.”
+    pub fn reply(message: Message) -> Self {
+        // here we encode “reply” as a special empty `out_only` list
+        Self { message, out_only: Some(vec![]) }
+    }
 }
 
 /// NodeErr enables to send a NodeError to all connections (default)
@@ -74,6 +80,10 @@ impl NodeErr {
 
     pub fn err_only(&self) -> Option<Vec<String>> {
         self.err_only.clone()
+    }
+
+    pub fn reply(error: NodeError) -> Self {
+        Self { error, err_only: Some(vec![]) }
     }
 }
 
@@ -184,6 +194,36 @@ impl ChannelOrigin {
 
     pub fn participant(&self) -> Participant {
         self.participant.clone()
+    }
+
+    /// Build a ChannelMessage that “replies” with `payload` to the original sender.
+    pub fn reply(&self, 
+                 node_id: &str,
+                 session_id: Option<String>,
+                 payload: serde_json::Value,
+                 ctx: &NodeContext
+    ) -> Result<channel_plugin::message::ChannelMessage, ResolveError> {
+        // you can re‐use your existing ChannelNodeConfig logic
+        // to fill in from/to/content/thread_id/etc.
+        let cfg = ChannelNodeConfig {
+          channel_name: self.channel.clone(),
+          channel_in: false,
+          channel_out: true,
+          from: None,           // defaults to `greentic` platform
+          to: Some(vec![ValueOrTemplate::Value(self.participant.clone())]),
+          content: None,        // so that create_out_msg falls back to payload
+          thread_id: None,
+          reply_to_id: None,
+        };
+
+        // build it:
+        cfg.create_out_msg(
+          ctx,
+          node_id.to_string(),
+          session_id,
+          payload,
+          MessageDirection::Outgoing
+        )
     }
 }
 

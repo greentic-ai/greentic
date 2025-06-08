@@ -342,77 +342,77 @@ impl Flow {
                 // dispatch by kind
                 let res = match &cfg.kind {
                     NodeKind::Channel { cfg } => {
-                                        if cfg.channel_out {
-                                            let cm = cfg.create_out_msg(
-                                                ctx,
-                                                input.id().to_string(),
-                                                input.session_id(),
-                                                input.payload(),
-                                                MessageDirection::Outgoing,
-                                            );
-                            
-                                            match cm {
-                                                Ok(msg) => {
-                                                    ctx.channel_manager()
-                                                    .send_to_channel(&cfg.channel_name, msg)
-                                                    .map(|_| NodeOut::all(input.clone()))
-                                                    .map_err(|e| NodeErr::all(NodeError::ConnectionFailed(format!("{:?}", e))))
-                                                },
-                                                Err(err) => {
-                                                    let error = format!("Could not create a channel message because of {:?}",err);
-                                                    error!(error);
-                                                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
-                                                },
-                                            }
-                            
-                                        } else {
-                                            Ok(NodeOut::all(input.clone()))
-                                        }
-                                    }
+                        if cfg.channel_out {
+                            let cm = cfg.create_out_msg(
+                                ctx,
+                                input.id().to_string(),
+                                input.session_id(),
+                                input.payload(),
+                                MessageDirection::Outgoing,
+                            );
+            
+                            match cm {
+                                Ok(msg) => {
+                                    ctx.channel_manager()
+                                    .send_to_channel(&cfg.channel_name, msg)
+                                    .map(|_| NodeOut::all(input.clone()))
+                                    .map_err(|e| NodeErr::all(NodeError::ConnectionFailed(format!("{:?}", e))))
+                                },
+                                Err(err) => {
+                                    let error = format!("Could not create a channel message because of {:?}",err);
+                                    error!(error);
+                                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
+                                },
+                            }
+            
+                        } else {
+                            Ok(NodeOut::all(input.clone()))
+                        }
+                    }
                     NodeKind::Tool { tool } => {
-                                        // same as before…
-                                        let mut msg_with_params = input.clone();
-                                        // Pull out the session ID and payload before we overwrite msg_with_params
-                                        let session_id = msg_with_params.session_id().clone();
-                                        let payload = msg_with_params.payload();
+                        // same as before…
+                        let mut msg_with_params = input.clone();
+                        // Pull out the session ID and payload before we overwrite msg_with_params
+                        let session_id = msg_with_params.session_id().clone();
+                        let payload = msg_with_params.payload();
 
-                                        // Rebuild the message
-                                        msg_with_params = Message::new(
-                                            &msg_with_params.id(),
-                                            payload,
-                                            session_id,
-                                        );
+                        // Rebuild the message
+                        msg_with_params = Message::new(
+                            &msg_with_params.id(),
+                            payload,
+                            session_id,
+                        );
 
-                                        // fetch secrets…
-                                        let secrets_keys = ctx.executor().executor.secrets(tool.name.clone());
+                        // fetch secrets…
+                        let secrets_keys = ctx.executor().executor.secrets(tool.name.clone());
 
-                                        let mut secret_map = HashMap::new();
-                                        if secrets_keys.is_some() {
-                                            for s in &secrets_keys.unwrap()
-                                            {
-                                                let name = s.name.clone();
-                                                if let Some(tok) = ctx.reveal_secret(&name).await {
-                                                    secret_map.insert(name, tok.clone());
-                                                }
-                                            }
-                                        }
+                        let mut secret_map = HashMap::new();
+                        if secrets_keys.is_some() {
+                            for s in &secrets_keys.unwrap()
+                            {
+                                let name = s.name.clone();
+                                if let Some(tok) = ctx.reveal_secret(&name).await {
+                                    secret_map.insert(name, tok.clone());
+                                }
+                            }
+                        }
 
-                                        ToolNode::new(
-                                            tool.name.clone(),
-                                            tool.action.clone(),
-                                            tool.in_map.clone(),
-                                            tool.out_map.clone(),
-                                            tool.err_map.clone(),
-                                            tool.on_ok.clone(),
-                                            tool.on_err.clone(),
-                                        ).process(msg_with_params, ctx).await
-                                    }
+                        ToolNode::new(
+                            tool.name.clone(),
+                            tool.action.clone(),
+                            tool.in_map.clone(),
+                            tool.out_map.clone(),
+                            tool.err_map.clone(),
+                            tool.on_ok.clone(),
+                            tool.on_err.clone(),
+                        ).process(msg_with_params, ctx).await
+                    }
                     NodeKind::Agent { agent } => {
-                                        agent.process(input.clone(), ctx).await
-                                    }
+                        agent.process(input.clone(), ctx).await
+                    }
                     NodeKind::Process { process } => {
-                                        process.process( input.clone(),ctx).await
-                                    }
+                        process.process( input.clone(),ctx).await
+                    }
                 };
 
                 let finished = Utc::now();
@@ -439,7 +439,69 @@ impl Flow {
 
             match result {
                 Ok(out_msg) => {
-                    outputs.insert(nx, out_msg.message());
+                    // figure out which downstream connections to actually use:
+                    let target_ids: Result<Vec<String>,NodeErr> = match out_msg.out_only() {
+                        None => {
+                            // default: whatever the YAML said
+                            Ok(self.connections
+                                .get(&node_id)
+                                .cloned()
+                                .unwrap_or_default())
+                        }
+                        Some(list) if list.is_empty() => {
+                            // “reply” special case:
+                            if let Some(origin) = ctx.channel_origin() {
+                                // build & send a ChannelMessage back to origin.channel
+                               let cm = origin.reply(
+                                    &node_id,
+                                    out_msg.message().session_id().clone(),
+                                    out_msg.message().payload(),
+                                    ctx,
+                                    )// map any build‐error into a NodeErr
+                                    .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(e.to_string()))); 
+                                match cm {
+                                    Ok(cm) => {
+                                        // send it—and if that fails, record and abort
+                                        if let Err(e) = ctx.channel_manager()
+                                                        .send_to_channel(&origin.channel(), cm)
+                                        {
+                                            early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // reply‐construction failed
+                                        early_err = Some((node_id.clone(), e.error()));
+                                        break;
+                                    }
+                                }                     
+                            }
+                            // don’t propagate through the flow graph
+                            Ok(Vec::new())
+                        }
+                        Some(list) => {
+                            // override: only send to the named subset
+                            Ok(list.clone())
+                        }
+                    };
+
+                    // if building that list itself failed, catch it here:
+                    let downstream = match target_ids{
+                        Ok(v) => v,
+                        Err(e) => {
+                            early_err = Some((node_id.clone(), e.error()));
+                            break;
+                        }
+                    };
+
+                    // finally enqueue into each successor
+                    for to in downstream {
+                        let &succ_idx = self
+                            .index_of
+                            .get(&to)
+                            .unwrap_or_else(|| panic!("unknown connection `{}`", to));
+                        outputs.insert(succ_idx, out_msg.message().clone());
+                    }
                 }
                 Err(err) => {
                     early_err = Some((node_id.clone(), err.error()));
