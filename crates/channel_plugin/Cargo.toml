@@ -5,16 +5,19 @@ authors = ["maarten <maarten@greentic.com>"]
 description = "The fastest, most secure and extendable agentic platform"
 license = "MIT"
 repository = "https://github.com/greentic-ai/greentic"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["rlib", "dylib"]
 
 [dependencies]
 anyhow = "1.0.98"
+async-ffi = { version = "0.5.0", features = ["macros"] }
+async-trait = "0.1.88"
 chrono = { version = "0.4", features = ["serde"] }
 schemars = { version = "0.8.22", features = ["chrono"] } 
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 thiserror = "2.0.12"
+
 

@@ -120,7 +120,10 @@ impl App {
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
         
         // then start watching
+        println!("### GOT 1");
+
         self.channel_manager.clone().unwrap().start_all(channels_dir.clone()).await?;
+        println!("### GOT 3");
 
 
         

@@ -1,0 +1,22 @@
+[package]
+name = "channel_ws"
+version = "0.1.2"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib","cdylib"]
+
+[dependencies]
+channel_plugin = { version = "0.1.2", path = "../channel_plugin" }
+anyhow = "1.0.98"
+serde_json = "1.0.140"
+tracing = "0.1.41"
+uuid = { version = "1.17.0", features = ["v4"] }
+chrono = "0.4.41"
+dashmap = "6.1.0"
+futures-util = "0.3.31"
+async-trait = "0.1.88"
+tokio-tungstenite = "0.26.2"
+tokio = { version = "1.45.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time"] }
+async-ffi = { version = "0.5.0", features = ["macros"] }
+

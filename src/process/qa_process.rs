@@ -543,14 +543,14 @@ impl<'de> Deserialize<'de> for Condition {
             where
                 A: MapAccess<'de>,
             {
-                let (key, value): (String, serde_yaml::Value) = map
+                let (key, value): (String, serde_yaml_bw::Value) = map
                     .next_entry()?
                     .ok_or_else(|| de::Error::custom("Expected one entry in Condition map"))?;
                 match key.as_ref() {
                     "equals" => {
                         // expect a map mapping question_id→…, value→…
                         let m: HashMap<String, serde_json::Value> =
-                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                            serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
                         let question_id = m.get("question_id")
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| de::Error::custom("Equals.question_id must be string"))?
@@ -562,7 +562,7 @@ impl<'de> Deserialize<'de> for Condition {
                     }
                     "custom" => {
                         let m: HashMap<String, String> =
-                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                            serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
                         let expr = m.get("expr")
                             .cloned()
                             .ok_or_else(|| de::Error::custom("Custom.expr missing"))?;
@@ -570,7 +570,7 @@ impl<'de> Deserialize<'de> for Condition {
                     }
                     "greater_than" => {
                         let m: HashMap<String, serde_json::Value> =
-                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                            serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
                         let question_id = m.get("question_id")
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| de::Error::custom("GreaterThan.question_id must be string"))?
@@ -582,7 +582,7 @@ impl<'de> Deserialize<'de> for Condition {
                     }
                     "less_than" => {
                         let m: HashMap<String, serde_json::Value> =
-                            serde_yaml::from_value(value).map_err(de::Error::custom)?;
+                            serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
                         let question_id = m.get("question_id")
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| de::Error::custom("LessThan.question_id must be string"))?
@@ -604,13 +604,14 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::process::manager::BuiltInProcess;
+    use crate::{channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, flow::manager::Flow, logger::OpenTelemetryLogger, node::ChannelOrigin, process::manager::{BuiltInProcess, ProcessManager}, secret::{EnvSecretsManager, SecretsManager}};
 
     use super::*;
+    use channel_plugin::message::Participant;
     use serde_json::json;
     use chrono::Utc;
-    use std::collections::HashMap;
-    use serde_yaml::Value as YamlValue;
+    use std::{collections::HashMap, path::Path, sync::Arc};
+    use serde_yaml_bw::Value as YamlValue;
 
     #[test]
     fn parse_and_validate_text_no_regex() {
@@ -794,11 +795,11 @@ routing:
 
         // 2) Serialize your manual struct → YamlValue
         let val_manual: YamlValue =
-            serde_yaml::to_value(&cfg_manual).expect("to_value");
+            serde_yaml_bw::to_value(&cfg_manual).expect("to_value");
 
         // 3) Parse the literal YAML → YamlValue
         let val_literal: YamlValue =
-            serde_yaml::from_str(QA_YAML).expect("from_str");
+            serde_yaml_bw::from_str(QA_YAML).expect("from_str");
 
         // 4) Compare and, if they differ, print them out in full
         if val_manual != val_literal {
@@ -886,11 +887,87 @@ qa:
 
         // parse YAML
         let w: QaWrapper =
-            serde_yaml::from_str(yaml).expect("valid QA yaml");
+            serde_yaml_bw::from_str(yaml).expect("valid QA yaml");
         let from_yaml = BuiltInProcess::Qa(QAProcessNode { config: w.qa });
 
         assert_eq!(manual, from_yaml);
     }
 
+
+    #[tokio::test]
+    async fn test_qa_via_mock_yaml() {
+        use crate::executor::Executor;
+        use crate::logger::Logger;
+
+        let yaml = r#"
+id: test-qa-mock
+description: "Test QA via Mock"
+channels:
+  - mock
+
+nodes:
+  mock_in:
+    channel: mock
+    in: true
+
+  qa_ask:
+    qa:
+      welcome_template: "Hi there! Let's get your forecast."
+      questions:
+        - id: q_location
+          prompt: "👉 What location would you like a forecast for?"
+          answer_type: text
+          state_key: q
+        - id: q_days
+          prompt: "👉 Over how many days? (enter a number)"
+          answer_type: number
+          state_key: days
+          validate:
+            range:
+              min: 0.0
+              max: 7.0
+      fallback_agent:
+        name: ollama
+
+  debug_node:
+    debug: {}
+
+connections:
+  - from: mock_in
+    to: qa_ask
+  - from: qa_ask
+    to: debug_node
+        "#;
+
+        // 2. Parse the flow
+        let flow: Flow = serde_yaml_bw::from_str(&yaml).expect("invalid flow YAML");
+
+        // 3. Set up runtime context
+        let logger = Logger(Box::new(OpenTelemetryLogger::new()));
+        let secrets = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
+        let executor = Executor::new(secrets.clone(), logger.clone());
+        let state = HashMap::<String, StateValue>::new();
+        let config = HashMap::<String,String>::new();
+        let config_manager = ConfigManager(MapConfigManager::new());
+        let host_logger = HostLogger::new();
+        let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
+        let channel_origin = ChannelOrigin::new("mock".to_string(), Participant::new("id".to_string(), None, None));
+        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), host_logger).await.expect("could not make channel manager");
+        let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_send.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
+        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin)),None,None);
+        channel_manager.register_channel("mock".to_string(), mock).await.expect("could not load mock channel");
+        let mut ctx = NodeContext::new(state, config, executor, channel_manager, Arc::new(process_manager), secrets, Some(channel_origin));
+
+        let payload = json!({"q": "London".to_string(), "days": 5});
+        let incoming = Message::new_uuid("test", payload);
+
+        // 5. Run the flow starting at telegram_in
+        let report = flow.run(incoming.clone(), "telegram_in", &mut ctx).await;
+        println!("Flow report: {:?}", report);
+
+        let state = ctx.get_all_state();
+        assert!(state.contains_key("q"));
+        assert!(state.contains_key("days"));
+    }
 }
 

@@ -1,18 +1,17 @@
-use std::{collections::HashMap, ffi::{CStr, CString}, sync::{atomic::AtomicUsize, Arc}};
-use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, PluginError}};
+use std::{collections::HashMap, ffi::{c_char, CStr, CString}, sync::Arc};
+use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger}};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{schema::{Metadata}, schema_for};
 use serde_json::json;
-use std::sync::atomic::Ordering;
-
+ use async_trait::async_trait;
 use super::plugin::Plugin;
-
+use async_ffi::FfiFuture;          // for the FFI‐safe future
 
 #[derive(Clone,Debug)]
 pub struct PluginWrapper {
     inner: Arc<Plugin>,
     state:   Arc<AtomicCell<ChannelState>>,
-    inflight: Arc<AtomicUsize>,
+    logger: Option<PluginLogger>,
 }
 
 impl PluginWrapper {
@@ -20,7 +19,7 @@ impl PluginWrapper {
         Self {
             inner,
             state:   Arc::new(AtomicCell::new(ChannelState::Running)),
-            inflight: Arc::new(AtomicUsize::new(0)),
+            logger: None,
         }
     }
 
@@ -60,7 +59,7 @@ impl PluginWrapper {
         Ok((caps.name,text))
     }
 }
-
+#[async_trait]
 impl ChannelPlugin for PluginWrapper {
     fn name(&self) -> String {
         // 1) call the FFI, get a *mut c_char
@@ -78,37 +77,6 @@ impl ChannelPlugin for PluginWrapper {
         unsafe { (self.inner.free_string)(ptr) };
 
         name
-    }
-
-    #[tracing::instrument(name = "channel_send_message", skip(self))]
-    fn send(&mut self, msg: ChannelMessage) -> Result<(),PluginError> {
-        // 1) check life-cycle state
-        match self.state.load() {
-            ChannelState::Stopped|ChannelState::Draining|ChannelState::Starting=>{return Err(PluginError::InvalidState)}
-            ChannelState::Running=>{}
-        }
-
-        // 2) serialize & call into the plugin
-        self.inflight.fetch_add(1, Ordering::SeqCst);
-        let ok = unsafe { (self.inner.send)(self.inner.handle, &msg as *const _) };
-        self.inflight.fetch_sub(1, Ordering::SeqCst);
-
-        if ok {
-            Ok(())
-        } else {
-            Err(PluginError::Other("Failed to send message".into()))
-        }
-    }
-
-    #[tracing::instrument(name = "channel_send_message", skip(self))]
-    fn poll(&self) -> Result<ChannelMessage, PluginError> {
-        let mut msg = ChannelMessage::default();
-        let ok = unsafe { (self.inner.poll)(self.inner.handle, &mut msg as *mut _) };
-        if ok {
-            Ok(msg)
-        } else {
-            Err(PluginError::Other("Poll returned no message or error".into()))
-        }
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
@@ -165,13 +133,18 @@ impl ChannelPlugin for PluginWrapper {
         unsafe { (self.inner.state)(self.inner.handle) }
     }
 
-    fn start(&mut self) -> Result<(),PluginError> {
-        if unsafe { (self.inner.start)(self.inner.handle) } {
-            self.state.store(ChannelState::Running);
+    async fn start(&mut self) -> Result<(),PluginError> {
+        let fut: FfiFuture<bool> = unsafe {
+            (self.inner.start)(self.inner.handle)
+        };
+        // Await the FFI future
+        let ok = fut.await;
+        if ok {
             Ok(())
         } else {
             Err(PluginError::Other("start failed".into()))
         }
+        
     }
 
     fn drain(&mut self) -> Result<(),PluginError> {
@@ -183,18 +156,26 @@ impl ChannelPlugin for PluginWrapper {
         }
     }
 
-    fn wait_until_drained(&mut self, timeout_ms: u64) -> Result<(), PluginError> {
-        // first let the plugin drain its own in-flight work
-        let ok = unsafe { (self.inner.wait_until_drained)(self.inner.handle, timeout_ms) };
-        if !ok {
-            return Err(PluginError::Other("plugin_drain failed".into()));
+    async fn wait_until_drained(&mut self, timeout_ms: u64) -> Result<(), PluginError> {
+        let fut: FfiFuture<bool> = unsafe {
+             (self.inner.wait_until_drained)(self.inner.handle, timeout_ms)
+        };
+        // Await the FFI future
+        let ok = fut.await;
+        if ok {
+            Ok(())
+        } else {
+            Err(PluginError::Other("plugin_drain failed".into()))
         }
-        Ok(())
     }
 
-    fn stop(&mut self) -> Result<(),PluginError>{
-        if unsafe { (self.inner.stop)(self.inner.handle) } {
-            self.state.store(ChannelState::Stopped);
+    async fn stop(&mut self) -> Result<(),PluginError>{
+        let fut: FfiFuture<bool> = unsafe {
+            (self.inner.stop)(self.inner.handle)
+        };
+        // Await the FFI future
+        let ok = fut.await;
+        if ok {
             Ok(())
         } else {
             Err(PluginError::Other("stop failed".into()))
@@ -207,13 +188,58 @@ impl ChannelPlugin for PluginWrapper {
                 (self.inner.set_logger)(self.inner.handle, logger);
             }
     }
+
+    fn get_logger(&self) -> Option<channel_plugin::plugin::PluginLogger> {
+        self.logger
+    }
+    
+    #[tracing::instrument(name = "channel_send_message_async", skip(self, msg))]
+    async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(), PluginError> {
+        // Call the FFI shim, passing in the raw pointer to our C‐allocated message
+        let fut: FfiFuture<bool> = unsafe {
+            (self.inner.send_message)(self.inner.handle, &msg as *const _)
+        };
+        // Await the FFI future
+        let ok = fut.await;
+        if ok {
+            Ok(())
+        } else {
+            Err(PluginError::Other("plugin_send_message returned false".into()))
+        }
+    }
+
+    #[tracing::instrument(name = "channel_receive_message_async", skip(self))]
+    async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
+        // Call the FFI shim that returns an FfiFuture<ChannelMessage>
+        let fut: FfiFuture<*mut c_char> = unsafe {
+            (self.inner.receive_message)(self.inner.handle)
+        };
+        // 2) Await it
+        let ptr = fut.await;
+        if ptr.is_null() {
+            return Err(PluginError::Other("receive_message returned null".into()).into());
+        }
+        // 3) Convert to Rust String
+        let cstr = unsafe { CStr::from_ptr(ptr) };
+        let json = cstr.to_string_lossy().into_owned();
+
+        // 4) Free the C‐allocated string
+        unsafe { (self.inner.free_string)(ptr) };
+
+        // 5) Deserialize into ChannelMessage
+        let msg: ChannelMessage = serde_json::from_str(&json)
+            .map_err(|e| PluginError::Other(format!("JSON parse error: {}", e)))?;
+
+        Ok(msg)
+    }
     
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
 
     use super::*;
+    use async_ffi::{BorrowingFfiFuture, FutureExt};
     use channel_plugin::message::{ChannelMessage, ChannelCapabilities};
     use channel_plugin::plugin::{ChannelState, LogLevel, PluginLogger};
     use channel_plugin::PluginHandle;
@@ -224,7 +250,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::SystemTime;
 
-    struct FakePlugin {
+    pub struct FakePlugin {
         sent: Mutex<Vec<ChannelMessage>>,
         polled: Mutex<Vec<ChannelMessage>>,
         state: Mutex<ChannelState>,
@@ -234,7 +260,7 @@ mod tests {
     }
 
     impl FakePlugin {
-        fn new() -> Arc<Self> {
+        pub fn new() -> Arc<Self> {
             Arc::new(FakePlugin {
                 sent: Mutex::new(vec![]),
                 polled: Mutex::new(vec![]),
@@ -245,21 +271,7 @@ mod tests {
             })
         }
 
-        unsafe extern "C" fn send_fn(handle: PluginHandle, msg: *const ChannelMessage) -> bool {
-            let plugin = unsafe { &*(handle as *const FakePlugin) };
-            let msg = unsafe { &*msg };
-            plugin.sent.lock().unwrap().push(msg.clone());
-            plugin.send_ok
-        }
-        unsafe extern "C" fn poll_fn(handle: PluginHandle, out: *mut ChannelMessage) -> bool {
-            let plugin = unsafe { &*(handle as *const FakePlugin) };
-            if let Some(msg) = plugin.polled.lock().unwrap().pop() {
-                unsafe { std::ptr::write(out, msg) };
-                true
-            } else {
-                false
-            }
-        }
+
         // new “set_logger” FFI entry‐point:
         unsafe extern "C" fn set_logger_fn(
             handle: PluginHandle,
@@ -289,25 +301,26 @@ mod tests {
             plugin.state.lock().unwrap().clone()
         }
 
-        unsafe extern "C" fn start_fn(handle: PluginHandle) -> bool {
+        unsafe extern "C" fn start_fn(handle: PluginHandle) -> FfiFuture<bool> {
             // Cast to *mut FakePlugin so we can mutate through the Mutex
             let plugin = unsafe { &*(handle as *const FakePlugin) };
             *plugin.state.lock().unwrap() = ChannelState::Running;
-            true
+            return BorrowingFfiFuture::<bool>::new(async move {true}); 
         }
 
-        unsafe extern "C" fn stop_fn(handle: PluginHandle) -> bool {
+        unsafe extern "C" fn stop_fn(handle: PluginHandle) -> FfiFuture<bool> {
             // Cast to *mut FakePlugin so we can mutate through the Mutex
             let plugin = unsafe { &*(handle as *const FakePlugin) };
             *plugin.state.lock().unwrap() = ChannelState::Stopped;
-            true
+            return BorrowingFfiFuture::<bool>::new(async move {true}); 
         }
         unsafe extern "C" fn drain_fn(handle: PluginHandle) -> bool {
             let plugin = unsafe { &*(handle as *const FakePlugin) };
             *plugin.state.lock().unwrap() = ChannelState::Draining;
             true
         }
-        unsafe extern "C" fn wait_fn(_: PluginHandle, _: u64) -> bool {true}
+        unsafe extern "C" fn wait_fn(_: PluginHandle, _: u64) -> FfiFuture<bool> 
+        { return BorrowingFfiFuture::<bool>::new(async move {true}); }
         unsafe extern "C" fn set_config_fn(_: PluginHandle, _: *const c_char) {}
         unsafe extern "C" fn set_secrets_fn(_: PluginHandle, _: *const c_char) {}
         
@@ -320,10 +333,36 @@ mod tests {
         unsafe extern "C" fn list_secrets_fn(_: PluginHandle) -> *mut c_char { std::ptr::null_mut() }
         unsafe extern "C" fn free_string_fn(_: *mut c_char) {}
 
+        // 1) Async‐style send → FfiFuture<bool>
+        unsafe extern "C" fn send_message_fn(
+            handle: PluginHandle,
+            msg: *const ChannelMessage,
+        ) -> FfiFuture<bool> {
+            let plugin = unsafe { &*(handle as *const FakePlugin) };
+            let msg = unsafe { &*msg };
+            plugin.sent.lock().unwrap().push(msg.clone());
+            BorrowingFfiFuture::<bool>::new(async move {plugin.send_ok})
+        }
+
+        // 2) Async‐style receive → FfiFuture<ChannelMessage>
+        unsafe extern "C" fn receive_message_fn(
+            handle: PluginHandle,
+        ) -> BorrowingFfiFuture<'static, *mut c_char> {
+            let plugin = unsafe { &*(handle as *const FakePlugin) };
+            let fut = async move {
+                let msg = plugin.polled.lock().unwrap().pop();
+                
+                // serialize to JSON
+                let js = serde_json::to_string(&msg).unwrap_or_default();
+                CString::new(js).unwrap().into_raw()
+            };
+            fut.into_ffi()
+        }
+
         unsafe extern "C" fn destroy(_: PluginHandle) {}
     }
 
-    fn make_wrapper() -> PluginWrapper {
+    pub fn make_wrapper() -> PluginWrapper {
         let fake = FakePlugin::new();
         let p = Plugin {
             lib: None,
@@ -335,14 +374,14 @@ mod tests {
             drain: FakePlugin::drain_fn,
             stop: FakePlugin::stop_fn,
             wait_until_drained: FakePlugin::wait_fn,
-            poll: FakePlugin::poll_fn,
-            send: FakePlugin::send_fn,
             caps: FakePlugin::caps_fn,
             state: FakePlugin::state_fn,
             set_config:  FakePlugin::set_config_fn,
             set_secrets: FakePlugin::set_secrets_fn,
             list_config: FakePlugin::list_config_fn,
             list_secrets:FakePlugin::list_secrets_fn,
+            send_message: FakePlugin::send_message_fn,
+            receive_message: FakePlugin::receive_message_fn,
             free_string: FakePlugin::free_string_fn,
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
@@ -416,33 +455,33 @@ mod tests {
     #[tokio::test]
     async fn test_send_and_poll() {
         let mut w = make_wrapper();
-        w.start().expect("could not start");
+        w.start().await.expect("could not start");
         let msg = ChannelMessage { id: "1".into(), ..Default::default() };
-        assert!(w.send(msg.clone()).is_ok());
+        assert!(w.send_message(msg.clone()).await.is_ok());
         let fake = unsafe { &*(w.inner.handle as *const FakePlugin) };
         fake.polled.lock().unwrap().push(msg.clone());
-        let got = w.poll().unwrap();
+        let got = w.receive_message().await.unwrap();
         assert_eq!(got.id, "1");
     }
 
-    #[test]
-    fn test_capabilities_and_state() {
+    #[tokio::test]
+    async fn test_capabilities_and_state() {
         let mut w = make_wrapper();
         assert_eq!(w.state(), ChannelState::Stopped);
-        w.start().expect("could not start");
+        w.start().await.expect("could not start");
         assert_eq!(w.state(), ChannelState::Running);
         let caps = w.capabilities();
         assert_eq!(caps.name, "Fake");
     }
 
-    #[test]
-    fn test_lifecycle_methods() {
+    #[tokio::test]
+    async fn test_lifecycle_methods() {
         let mut w = make_wrapper();
-        w.start().expect("could not start");
+        w.start().await.expect("could not start");
         w.drain().expect("could not draing");
         assert_eq!(w.state(), ChannelState::Draining);
-        w.wait_until_drained(10).expect("could not drain 2");
-        w.stop().expect("could not stop");
+        w.wait_until_drained(10).await.expect("could not drain 2");
+        w.stop().await.expect("could not stop");
         assert_eq!(w.state(), ChannelState::Stopped);
     }
 

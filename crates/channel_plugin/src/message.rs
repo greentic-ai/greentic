@@ -31,6 +31,12 @@ pub struct Participant {
     pub display_name: Option<String>,   // Optional for SMS, Email
     pub channel_specific_id: Option<String>, // E.g., phone number, email, handle
 }
+
+impl Participant {
+    pub fn new(id: String, display_name: Option<String>, channel_specific_id: Option<String>) -> Self {
+        Self{id, display_name, channel_specific_id}
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub enum MessageContent {
     Text(String),

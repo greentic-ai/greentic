@@ -355,6 +355,7 @@ impl Flow {
                                 Ok(msg) => {
                                     ctx.channel_manager()
                                     .send_to_channel(&cfg.channel_name, msg)
+                                    .await
                                     .map(|_| NodeOut::all(input.clone()))
                                     .map_err(|e| NodeErr::all(NodeError::ConnectionFailed(format!("{:?}", e))))
                                 },
@@ -463,7 +464,7 @@ impl Flow {
                                     Ok(cm) => {
                                         // send it—and if that fails, record and abort
                                         if let Err(e) = ctx.channel_manager()
-                                                        .send_to_channel(&origin.channel(), cm)
+                                                        .send_to_channel(&origin.channel(), cm).await
                                         {
                                             early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
                                             break;
@@ -500,7 +501,22 @@ impl Flow {
                             .index_of
                             .get(&to)
                             .unwrap_or_else(|| panic!("unknown connection `{}`", to));
-                        outputs.insert(succ_idx, out_msg.message().clone());
+                        outputs.entry(succ_idx)
+                        .and_modify(|existing| {
+                            let session_id = existing.session_id().clone();
+                            let id = out_msg.message().id().to_string();
+
+                            let new_payload = match (existing.payload(), out_msg.message().payload()) {
+                                (Value::Array(mut arr), other) => {
+                                    arr.push(other);
+                                    Value::Array(arr)
+                                }
+                                (a, b) => Value::Array(vec![a, b]),
+                            };
+
+                            *existing = Message::new(&id, new_payload, session_id);
+                        })
+                        .or_insert_with(|| out_msg.message().clone());
                     }
                 }
                 Err(err) => {
@@ -531,19 +547,22 @@ impl Flow {
         self.connections.clone()
     }
 
-    pub fn add_channel(&mut self, name: impl Into<String>) {
+    pub fn add_channel(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
         if !self.channels.contains(&name) {
             self.channels.push(name);
         }
+        self
     }
 
-    pub fn add_node(&mut self, name: String, node: NodeConfig) -> Option<NodeConfig> {
-        self.nodes.insert(name, node)
+    pub fn add_node(mut self, name: String, node: NodeConfig) -> Self {
+        self.nodes.insert(name, node);
+        self
     }
 
-    pub fn add_connection(&mut self, name: String, flows: Vec<String>) -> Option<Vec<String>> {
-        self.connections.insert(name, flows)
+    pub fn add_connection(mut self, name: String, flows: Vec<String>) -> Self {
+        self.connections.insert(name, flows);
+        self
     }
 
     pub fn graph(&self) -> StableGraph<NodeConfig, (), Directed, u32> {
@@ -892,7 +911,7 @@ impl FlowManager {
             }
             "ygtc" => {
                 // YAML‐based flow file
-                serde_yaml::from_str(&contents)
+                serde_yaml_bw::from_str(&contents)
                     .map_err(|e| FlowError::SerializationError(format!("YAML parse error: {}", e)))?
             }
             other => {
@@ -922,7 +941,7 @@ impl FlowManager {
                 }
                 "ygtc" => {
                     // YAML output
-                    serde_yaml::to_string(flow)
+                    serde_yaml_bw::to_string(flow)
                         .map_err(|e| FlowError::SerializationError(format!("{}", e)))?
                 }
                 other => {

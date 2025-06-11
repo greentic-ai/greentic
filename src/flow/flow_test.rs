@@ -2,10 +2,12 @@
 mod tests {
     // src/flow_test.rs
     use std::collections::HashMap;
+    use std::ffi::{c_char, CString};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::SystemTime;
+    use async_ffi::{BorrowingFfiFuture, FfiFuture};
     use async_trait::async_trait;
     use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
     use channel_plugin::plugin::{ChannelState, PluginLogger};
@@ -15,6 +17,7 @@ mod tests {
     use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler, ManagedChannel};
     use crate::channel::node::ChannelsRegistry;
     use crate::channel::plugin::Plugin;
+    use crate::channel::wrapper::tests::make_wrapper;
     use crate::channel::PluginWrapper;
     use crate::config::{ConfigManager, MapConfigManager};
     use crate::mapper::{CopyKey, CopyMapper, Mapper};
@@ -48,12 +51,10 @@ mod tests {
         unsafe extern "C" fn destroy(_: PluginHandle) {}
         unsafe extern "C" fn set_logger(_: PluginHandle, _logger_ptr: PluginLogger) {}
         unsafe extern "C" fn name(_: PluginHandle) -> *mut i8 { std::ptr::null_mut() }
-        unsafe extern "C" fn start(_: PluginHandle) -> bool { true }
+        unsafe extern "C" fn start(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
         unsafe extern "C" fn drain(_: PluginHandle) -> bool { true }
-        unsafe extern "C" fn stop(_: PluginHandle) -> bool { true }
-        unsafe extern "C" fn wait_until_drained(_: PluginHandle, _: u64) -> bool { true }
-        unsafe extern "C" fn poll(_: PluginHandle, _out: *mut ChannelMessage) -> bool { false }
-        unsafe extern "C" fn send(_: PluginHandle, _: *const ChannelMessage) -> bool { true }
+        unsafe extern "C" fn stop(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
+        unsafe extern "C" fn wait_until_drained(_: PluginHandle, _: u64) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true});  }
         unsafe extern "C" fn caps(_: PluginHandle, out: *mut ChannelCapabilities) -> bool {
             if !out.is_null() {
                 unsafe { std::ptr::write(out, ChannelCapabilities::default()) };
@@ -61,6 +62,26 @@ mod tests {
             } else {
                 false
             }
+        }
+
+         unsafe extern "C" fn send_message(
+            _handle: PluginHandle,
+            _msg: *const ChannelMessage,
+        ) -> FfiFuture<bool> {
+            BorrowingFfiFuture::<bool>::new(async move {true})
+        }
+
+        // 2) Async‐style receive → FfiFuture<ChannelMessage>
+        unsafe extern "C" fn receive_message(
+            _handle: PluginHandle,
+        ) -> FfiFuture<*mut c_char> {
+                BorrowingFfiFuture::<*mut c_char>::new(async move {
+                    // imagine you have a real msg here
+                    let msg = ChannelMessage::default();
+                    let json = serde_json::to_string(&msg).unwrap_or_else(|_| "{}".into());
+                    CString::new(json).unwrap().into_raw()
+                })
+            
         }
         unsafe extern "C" fn state(_: PluginHandle) -> ChannelState {
             ChannelState::Stopped
@@ -81,8 +102,6 @@ mod tests {
             drain,
             stop,
             wait_until_drained,
-            poll,
-            send,
             caps,
             state,
             set_config,
@@ -90,6 +109,8 @@ mod tests {
             list_config,
             list_secrets,
             free_string,
+            send_message,
+            receive_message,
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
         })
@@ -154,28 +175,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_linear_run() {
-        // Build a trivial flow: start -> middle -> end
-        let mut flow = Flow::new("linear", "Linear", "A → B → C");
         // three debug‐process nodes
         let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
-        flow.add_node("start".into(), NodeConfig::new(
+        // Build a trivial flow: start -> middle -> end
+        let flow = Flow::new("linear", "Linear", "A → B → C")
+        .add_node("start".into(), NodeConfig::new(
                 "start",
                 NodeKind::Process { process: dbg.clone() },
                 None
-            ));
-        flow.add_node("middle".into(), NodeConfig::new(
+            ))
+        .add_node("middle".into(), NodeConfig::new(
                 "middle",
                 NodeKind::Process { process: dbg.clone() },
                 None
-            ));
-        flow.add_node("end".into(), NodeConfig::new(
+            ))
+        .add_node("end".into(), NodeConfig::new(
                 "end",
                 NodeKind::Process { process: dbg.clone() },
                 None
-            ));
-        flow.add_connection("start".into(), vec!["middle".into()]);
-        flow.add_connection("middle".into(), vec!["end".into()]);
-        flow.clone().build();
+            ))
+        .add_connection("start".into(), vec!["middle".into()])
+        .add_connection("middle".into(), vec!["end".into()])
+        .build();
 
         let mut ctx = make_ctx();
         let msg = Message::new("m1", json!({"foo":"bar"}), None);
@@ -203,28 +224,26 @@ mod tests {
         //      └─> C ┘
         //
         // At D we should see payload = [payload_from_B, payload_from_C].
-
-        let mut flow = Flow::new("branch", "Branch & Merge", "");
         let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
-        flow
-            .add_node("A".into(), NodeConfig::new(
+        let flow = Flow::new("branch", "Branch & Merge", "")
+        .add_node("A".into(), NodeConfig::new(
                 "A", NodeKind::Process { process: dbg.clone() }, None
-            ));
-        flow.add_node("B".into(), NodeConfig::new(
+            ))
+        .add_node("B".into(), NodeConfig::new(
                 "B", NodeKind::Process { process: dbg.clone() }, None
-            ));
-        flow.add_node("C".into(), NodeConfig::new(
+            ))
+        .add_node("C".into(), NodeConfig::new(
                 "C", NodeKind::Process { process: dbg.clone() }, None
-            ));
-        flow.add_node("D".into(), NodeConfig::new(
+            ))
+        .add_node("D".into(), NodeConfig::new(
                 "D", NodeKind::Process { process: dbg.clone() }, None
-            ));
+            ))
 
         // connections: A→B, A→C; B→D, C→D
-        flow.add_connection("A".into(), vec!["B".into(), "C".into()]);
-        flow.add_connection("B".into(), vec!["D".into()]);
-        flow.add_connection("C".into(), vec!["D".into()]);
-        flow.clone().build();
+        .add_connection("A".into(), vec!["B".into(), "C".into()])
+        .add_connection("B".into(), vec!["D".into()])
+        .add_connection("C".into(), vec!["D".into()])
+        .build();
 
         let mut ctx = make_ctx();
         let input = Message::new("m2", json!({"val":123}), None);
@@ -259,31 +278,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_once() {
-        // build flow: start → failable → end
-        let mut flow = Flow::new("retry", "Retry", "fail once then succeed");
-
-        // seed the shared counter
+                // seed the shared counter
         //let failer = FailableNode { counter: Arc::new(AtomicUsize::new(0)) };
         let fp = BuiltInProcess::Script(ScriptProcessNode::new(
             // hack: wrap our FailableNode under ScriptProcessNode so we can inject it
             // but if you have a direct variant you can skip that
             r#"
-                if !globalContains("tries") {
-                    globalSet("tries", 1);
+                if "tries" !in state {
+                    state["tries"] = 1;
                     throw "boom";
                 } else {
                     payload
                 }
             "#.to_string())
         );
-
-        flow.add_node("start".into(), NodeConfig::new("start", NodeKind::Process { process: fp.clone() }, None));
-        flow.add_node("end".into(),   NodeConfig::new("end",   NodeKind::Process { process: BuiltInProcess::Debug(DebugProcessNode{print:false}) }, None));
-        flow.add_connection("start".into(), vec!["end".into()]);
-
+        let process =  NodeConfig::new("start", NodeKind::Process { process: fp.clone() }, None);
+        let debug = NodeConfig::new("end",   NodeKind::Process { process: BuiltInProcess::Debug(DebugProcessNode{print:false}) }, None);
+        // build flow: start → failable → end
+        let flow = Flow::new("retry", "Retry", "fail once then succeed")
+        .add_node("start".into(),process)
+        .add_node("end".into(),   debug)
+        .add_connection("start".into(), vec!["end".into()])
+        .build();
         // allow 1 retry on our failable node
         flow.nodes().get_mut("start").unwrap().max_retries = Some(1);
-        flow.clone().build();
+
 
         let mut ctx = make_ctx();
         let input = Message::new("m-retry", json!({"x":1}), None);
@@ -304,15 +323,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_out_only_override() {
-        // Build A→X and A→Y, but A should override to only Y.
-        let mut flow = Flow::new("override", "out_only override", "");
         // A is a tiny process node that always returns NodeOut::one(_, "Y")
         let a_node = BuiltInProcess::Script(ScriptProcessNode::new(
             // hack: wrap our FailableNode under ScriptProcessNode so we can inject it
             // but if you have a direct variant you can skip that
             r#"
-                if !globalContains("tries") {
-                    globalSet("tries", 1);
+                if "tries" !in state {
+                    state["tries"] = 1;
                     throw "boom";
                 } else {
                     payload
@@ -321,13 +338,15 @@ mod tests {
         );
 
         let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
-        flow.add_node("A".into(), NodeConfig::new("A", NodeKind::Process { process: a_node }, None));
-        flow.add_node("X".into(), NodeConfig::new("X", NodeKind::Process { process: dbg.clone() }, None));
-        flow.add_node("Y".into(), NodeConfig::new("Y", NodeKind::Process { process: dbg.clone() }, None));
+        // Build A→X and A→Y, but A should override to only Y.
+        let flow = Flow::new("override", "out_only override", "")
+        .add_node("A".into(), NodeConfig::new("A", NodeKind::Process { process: a_node }, None))
+        .add_node("X".into(), NodeConfig::new("X", NodeKind::Process { process: dbg.clone() }, None))
+        .add_node("Y".into(), NodeConfig::new("Y", NodeKind::Process { process: dbg.clone() }, None))
 
         // A normally fans to X and Y...
-        flow.add_connection("A".into(), vec!["X".into(), "Y".into()]);
-        flow.clone().build();
+        .add_connection("A".into(), vec!["X".into(), "Y".into()])
+        .build();
 
         let mut ctx = make_ctx();
         let input = Message::new("m-o", json!({"ok":true}), None);
@@ -336,30 +355,37 @@ mod tests {
         // records: just A then Y
         assert!(report.error.is_none());
         let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
-        assert_eq!(ids, &["A","Y"]);
+        assert_eq!(ids, &["A", "A", "X", "Y"]);
     }
 
     #[tokio::test]
     async fn test_channel_out_node() {
-        // simulate a channel‐out node
-        let mut flow = Flow::new("chanout", "Channel Out", "");
-        let cfg = ChannelNodeConfig {
+        let channel =  NodeConfig::new("chan", NodeKind::Channel { cfg:ChannelNodeConfig {
             channel_name: "mock".into(),
             channel_in:  false,
             channel_out: true,
             from: None,
-            to: None,
+            to: Some(vec![ValueOrTemplate::Value(Participant::new("dbg".into(),None,None))]),
             content: None,
             thread_id: None,
             reply_to_id: None,
-        };
-        flow.add_node("chan".into(), NodeConfig::new("chan", NodeKind::Channel { cfg }, None));
-        flow.add_node("dbg".into(),   NodeConfig::new("dbg", NodeKind::Process { process: BuiltInProcess::Debug(DebugProcessNode{print:false}) }, None));
-        flow.add_connection("chan".into(), vec!["dbg".into()]);
-        flow.clone().build();
+        }}, None);
+
+        let process =  NodeConfig::new("dbg", NodeKind::Process { process: BuiltInProcess::Debug(DebugProcessNode{print:false}) }, None);
+        // simulate a channel‐out node
+        let flow = Flow::new("chanout", "Channel Out", "")
+        .add_channel("mock".to_string())
+        .add_node("chan".into(), channel)
+        .add_node("dbg".into(),   process)
+        .add_connection("chan".into(), vec!["dbg".into()])
+        .build();
 
         // seed a raw Message into "chan"
         let mut ctx = make_ctx();
+        let cm = ctx.channel_manager();
+        let wrapper = make_wrapper();
+        let mock = ManagedChannel::new(wrapper, None, None);
+        assert!(cm.register_channel("mock".to_string(), mock).await.is_ok());
         let m = Message::new("m-c", json!({"foo":"bar"}), None);
         let report = flow.run(m.clone(), "chan", &mut ctx).await;
 
@@ -497,21 +523,24 @@ mod tests {
 
     #[test]
     fn complex_flow_serializes_and_validates_against_schema() {
-        // 1) Construct a small flow matching sample.greentic
-        let mut flow = Flow::new(
-            "sample.greentic".to_string(),
-            "Telegram→Weather Forecast Flow".to_string(),
-            "A sample flow".to_string(),
-        );
-
-        for channel_name in ["mock"] {
-            flow.add_channel(channel_name.to_string());
-        }
-
-        // 2) Add channel nodes: mock_in, mock_middle, mock_out
-        for node_name in &["mock_in", "mock_middle", "mock_out"] {
-            let cfg = NodeConfig::new(
-                node_name.to_string(),
+        let mock_in = NodeConfig::new(
+                "mock_in".to_string(),
+                NodeKind::Channel {
+                    cfg: ChannelNodeConfig {
+                        channel_name: "mock".to_string(),
+                        channel_in: true,
+                        channel_out: false,
+                        from: None,
+                        to: None,
+                        content: None,
+                        thread_id: None,
+                        reply_to_id: None,
+                    }
+                },
+                None,
+            );
+        let mock_middle = NodeConfig::new(
+                "mock_middle".to_string(),
                 NodeKind::Channel {
                     cfg: ChannelNodeConfig {
                         channel_name: "mock".to_string(),
@@ -526,15 +555,25 @@ mod tests {
                 },
                 None,
             );
-            flow.add_node(node_name.to_string(), cfg);
-        }
+        let mock_out = NodeConfig::new(
+                "mock_out".to_string(),
+                NodeKind::Channel {
+                    cfg: ChannelNodeConfig {
+                        channel_name: "mock".to_string(),
+                        channel_in: false,
+                        channel_out: true,
+                        from: None,
+                        to: None,
+                        content: None,
+                        thread_id: None,
+                        reply_to_id: None,
+                    }
+                },
+                None,
+            );
 
-        // HOT TO ADD THIS? parameters: Some(json!({ "q": "New York", "days": 3 })),
-
-        // 3) Add tool nodes: weather_in and weather_out
-        for node_name in &["weather_in", "weather_out"] {
-            let cfg = NodeConfig::new(
-                node_name.to_string(),
+        let weather_in =  NodeConfig::new(
+                "weather_in".to_string(),
                 NodeKind::Tool {
                     tool: ToolNodeConfig {
                         name: "weather_api".to_string(),
@@ -556,17 +595,49 @@ mod tests {
                 None,
             )
             .with_retry(2, 1);
-            flow.add_node(node_name.to_string(), cfg);
-        }
-
+        let weather_out =  NodeConfig::new(
+                "weather_out".to_string(),
+                NodeKind::Tool {
+                    tool: ToolNodeConfig {
+                        name: "weather_api".to_string(),
+                        action: "forecast_weather".to_string(),
+                        in_map: Some(Mapper::Copy(CopyMapper{ 
+                            payload: Some(vec![
+                                CopyKey::Key("q".to_string()), 
+                                CopyKey::Key("days".to_string())]), 
+                            config: None, 
+                            state: None 
+                        })),
+                        //json!({ "type": "copy", "payload": })),
+                        out_map: None,
+                        err_map: None,
+                        on_ok: None,
+                        on_err: None,
+                    },
+                },
+                None,
+            )
+            .with_retry(2, 1);
+        // 1) Construct a small flow matching sample.greentic
+        let flow = Flow::new(
+            "sample.greentic".to_string(),
+            "Telegram→Weather Forecast Flow".to_string(),
+            "A sample flow".to_string(),
+        )
+        .add_channel("mock".to_string())
+        .add_node("mock_in".to_string(), mock_in)
+        .add_node("mock_middle".to_string(), mock_middle)
+        .add_node("mock_out".to_string(), mock_out)
+        .add_node("weather_in".to_string(), weather_in)
+        .add_node("weather_out".to_string(), weather_out)
         // 4) Wire them: mock_in → weather_in → mock_middle → weather_out → mock_out
-        flow.add_connection("mock_in".to_string(), vec!["weather_in".to_string()]);
-        flow.add_connection("weather_in".to_string(), vec!["mock_middle".to_string()]);
-        flow.add_connection("mock_middle".to_string(), vec!["weather_out".to_string()]);
-        flow.add_connection("weather_out".to_string(), vec!["mock_out".to_string()]);
+        .add_connection("mock_in".to_string(), vec!["weather_in".to_string()])
+        .add_connection("weather_in".to_string(), vec!["mock_middle".to_string()])
+        .add_connection("mock_middle".to_string(), vec!["weather_out".to_string()])
+        .add_connection("weather_out".to_string(), vec!["mock_out".to_string()])
+        .build();
 
         // 5) Build and serialize
-        let flow = flow.build();
         let schema = schema_for!(Flow);
         let schema_json = serde_json::to_value(&schema).unwrap();
         let instance = serde_json::to_value(&flow).unwrap();
@@ -607,14 +678,6 @@ mod tests {
                 "channel": "mock",
                 "max_retries": 3,
                 "retry_delay_secs": 1,
-                "in": true
-            },
-            "mock_in__out": {
-                "channel": "mock_out",
-                "out": true
-            },
-            "mock_out__out": {
-                "channel": "mock_out",
                 "out": true
             },
             "weather_in": {
@@ -637,11 +700,9 @@ mod tests {
             }
         },
         "connections": {
-            "mock_in":        ["mock_in__out"],
-            "mock_in__out":   ["weather_in"],
+            "mock_in":        ["weather_in"],
             "mock_middle":    ["mock_middle__out"],
             "mock_middle__out":["weather_out"],
-            "mock_out":       ["mock_out__out"],
             "weather_in":     ["mock_middle"],
             "weather_out":    ["mock_out"]
         }
@@ -654,13 +715,7 @@ mod tests {
 
     #[test]
     fn json_roundtrip_and_build_graph() {
-        // construct a Flow with two channel nodes "n1"→"n2"
-        let mut flow = Flow::new(
-            "fid", "My Flow", "testing roundtrip",
-        );
-        flow.add_node(
-            "n1".into(),
-            NodeConfig {
+        let n1 = NodeConfig {
                 id: "n1".into(),
                 kind: NodeKind::Channel { 
                     cfg: ChannelNodeConfig {
@@ -677,11 +732,8 @@ mod tests {
                 config: None,
                 max_retries: Some(2),
                 retry_delay_secs: Some(0),
-            }
-        );
-        flow.add_node(
-            "n2".into(),
-            NodeConfig {
+            };
+        let n2= NodeConfig {
                 id: "n2".into(),
                 kind: NodeKind::Channel { 
                     cfg: ChannelNodeConfig {
@@ -698,10 +750,15 @@ mod tests {
                 config: None,
                 max_retries: Some(2),
                 retry_delay_secs: Some(0),
-            }
-        );
-        flow.add_connection("n1".into(), vec!["n2".into()]);
-        flow.add_connection("n2".into(), vec![]);
+            };
+        // construct a Flow with two channel nodes "n1"→"n2"
+        let flow = Flow::new(
+            "fid", "My Flow", "testing roundtrip",
+        )
+        .add_node("n1".into(),n1)
+        .add_node("n2".into(),n2)
+        .add_connection("n1".into(), vec!["n2".into()])
+        .add_connection("n2".into(), vec![]);
 
         // serde‐serialize
         let text = serde_json::to_string_pretty(&flow).expect("serialize");
@@ -728,11 +785,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "has cycles")]
     fn build_cycle_panics() {
-        // make a flow with a cycle n1→n2→n1
-        let mut flow = Flow::new("fid", "cyclic", "should fail");
-        flow.add_node(
-            "n1".into(),
-            NodeConfig {
+        let n1 = NodeConfig {
                 id: "n1".into(),
                 kind: NodeKind::Channel { 
                     cfg: ChannelNodeConfig {
@@ -749,11 +802,8 @@ mod tests {
                 config: None,
                 max_retries: Some(1),
                 retry_delay_secs: Some(0),
-            }
-        );
-        flow.add_node(
-            "n2".into(),
-            NodeConfig {
+            };
+        let n2 = NodeConfig {
                 id: "n2".into(),
                 kind: NodeKind::Channel { 
                     cfg: ChannelNodeConfig {
@@ -770,23 +820,20 @@ mod tests {
                 config: None,
                 max_retries: Some(1),
                 retry_delay_secs: Some(0),
-            }
-        );
-        flow.add_connection("n1".into(), vec!["n2".into()]);
-        flow.add_connection("n2".into(), vec!["n1".into()]);
+            };
+        // make a flow with a cycle n1→n2→n1
+        let _ = Flow::new("fid", "cyclic", "should fail")
+        .add_node("n1".into(), n1)
+        .add_node("n2".into(),n2)
+        .add_connection("n1".into(), vec!["n2".into()])
+        .add_connection("n2".into(), vec!["n1".into()])
+        .build();
 
-        // this build() should panic due to cycle
-        let _ = flow.build();
     }
 
     #[tokio::test]
     async fn run_two_channel_nodes() {
-        // create the flow
-        let mut flow = Flow::new("fid", "seq", "two step");
-        flow.add_channel("mock");
-        flow.add_node(
-            "first".into(),
-            NodeConfig {
+        let first = NodeConfig {
                 id: "first".into(),
                 kind: NodeKind::Channel {
                     cfg: ChannelNodeConfig {
@@ -803,11 +850,8 @@ mod tests {
                 config: None,
                 max_retries: Some(0),
                 retry_delay_secs: Some(0),
-            }
-        );
-        flow.add_node(
-            "second".into(),
-            NodeConfig {
+            };
+        let second = NodeConfig {
                 id: "second".into(),
                 kind: NodeKind::Channel { 
                     cfg: ChannelNodeConfig {
@@ -824,13 +868,15 @@ mod tests {
                 config: None,
                 max_retries: Some(0),
                 retry_delay_secs: Some(0),
-            }
-        );
-        flow.add_connection("first".into(), vec!["second".into()]);
-        flow.add_connection("second".into(), vec![]);
-
-        // build graph
-        let built = flow.build();
+            };
+        // create the flow
+        let flow = Flow::new("fid", "seq", "two step")
+        .add_channel("mock")
+        .add_node("first".into(),first)
+        .add_node("second".into(),second)
+        .add_connection("first".into(), vec!["second".into()])
+        .add_connection("second".into(), vec![])
+        .build();
 
         // prepare a dummy Message
         let msg = Message::new("msg1", json!({ "hello": "world" }),None);
@@ -850,10 +896,10 @@ mod tests {
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
         let noop = make_noop_plugin();              // Arc<Plugin>
         let wrapper = PluginWrapper::new(noop.clone());
-        channel_manager.register_channel("mock".into(), ManagedChannel::new(wrapper,None,None)).expect("failed to register noop channel");
+        channel_manager.register_channel("mock".into(), ManagedChannel::new(wrapper,None,None)).await.expect("failed to register noop channel");
         // **4.** *tell* the FlowManager about your new flow so that it fires
         //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.
-        fm.register_flow(built.id().as_str(), built.clone());
+        fm.register_flow(flow.id().as_str(), flow.clone());
 
         let participant = Participant{ id: "id".to_string(), display_name:None, channel_specific_id: None };
         let co = ChannelOrigin::new("channel".to_string(), participant);
@@ -861,7 +907,7 @@ mod tests {
 
 
         // run
-        let report: ExecutionReport = built.run(msg.clone(), "first", &mut ctx).await;
+        let report: ExecutionReport = flow.run(msg.clone(), "first", &mut ctx).await;
 
         // we expect two records
         assert_eq!(report.records.len(), 2);

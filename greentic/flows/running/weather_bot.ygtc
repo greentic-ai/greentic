@@ -75,7 +75,6 @@ connections:
 
   # Once QA finishes, go call weather_api
   ask_location_and_days:
-    - telegram_out
     - forecast_weather
 
   # Then render & send back

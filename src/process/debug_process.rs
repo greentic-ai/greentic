@@ -78,8 +78,8 @@ mod debug_tests {
         assert_eq!(node, node2);
 
         // YAML round‐trip
-        let y = serde_yaml::to_string(&node).expect("serialize to YAML");
-        let node3: DebugProcessNode = serde_yaml::from_str(&y).expect("deserialize YAML");
+        let y = serde_yaml_bw::to_string(&node).expect("serialize to YAML");
+        let node3: DebugProcessNode = serde_yaml_bw::from_str(&y).expect("deserialize YAML");
         assert_eq!(node, node3);
 
         // Schema contains "debug"
@@ -138,7 +138,7 @@ mod debug_tests {
             process: BuiltInProcess::Debug(DebugProcessNode{print: true}),
         };
         // serialize to YAML
-        let yaml = serde_yaml::to_string(&kind).unwrap();
+        let yaml = serde_yaml_bw::to_string(&kind).unwrap();
         // print it so you can see exactly the shape
         println!("\n>> debug‐node YAML:\n{}", yaml);
     }

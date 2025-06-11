@@ -2,7 +2,7 @@ use std::{fs, path::{Path, PathBuf}};
 use anyhow::{Result, bail, Context};
 use tracing::info;
 use serde_json::Value as JsonValue;
-use serde_yaml::Value as YamlValue;
+use serde_yaml_bw::Value as YamlValue;
 
 /// Validate that the provided file is a valid YAML or JSON flow definition.
 pub fn validate_flow_file(path: PathBuf) -> Result<()> {
@@ -18,7 +18,7 @@ pub fn validate_flow_file(path: PathBuf) -> Result<()> {
             .with_context(|| format!("Invalid JSON in file: {}", path.display()))?;
         info!("✅ Valid JSON flow: {}", path.display());
     } else if path.extension().and_then(|s| s.to_str()) == Some("ygtc") {
-        serde_yaml::from_str::<YamlValue>(&content)
+        serde_yaml_bw::from_str::<YamlValue>(&content)
             .with_context(|| format!("Invalid YAML in file: {}", path.display()))?;
         info!("✅ Valid YAML flow: {}", path.display());
     } else {
@@ -37,7 +37,7 @@ pub fn deploy_flow_file(path: PathBuf, root: PathBuf) -> Result<()> {
     let json: JsonValue = if path.extension().and_then(|s| s.to_str()) == Some("jgtc") {
         serde_json::from_str(&content)?
     } else {
-        let yaml: YamlValue = serde_yaml::from_str(&content)?;
+        let yaml: YamlValue = serde_yaml_bw::from_str(&content)?;
         serde_json::to_value(yaml)?
     };
 

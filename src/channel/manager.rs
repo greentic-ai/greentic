@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap, ffi::{c_char, c_void, CStr}, fmt, path::PathBuf, sync::{Arc, Mutex},
 };
-use anyhow::{bail, Error, Result};
+use anyhow::{Error, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use tokio::task::JoinHandle;
@@ -70,8 +70,7 @@ impl ChannelManager {
     }
 
     /// Load & start a channel plugin immediately.
-    pub fn register_channel(&self, name: String, mut wrapper: ManagedChannel) -> Result<(), PluginError> {
-        wrapper.wrapper.start()?;
+    pub async fn register_channel(&self, name: String, wrapper: ManagedChannel) -> Result<(), PluginError> {
         self.channels.insert(name, wrapper);
         Ok(())
     }
@@ -79,18 +78,20 @@ impl ChannelManager {
     /// Unload & stop a channel by name.
     pub async fn unload_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some((_, mut wrapper)) = self.channels.remove(name) {
-            wrapper.wrapper.stop()?;
+            wrapper.wrapper.stop().await?;
         }
         Ok(())
     }
 
+    
     /// Start (or restart) a currently‐loaded channel.
     pub async fn start_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some(mut entry) = self.channels.get_mut(name) {
-            entry.value_mut().wrapper.start()?;
+            entry.value_mut().wrapper.start().await?;
         }
         Ok(())
     }
+    
 
     /// Get a channel.
     pub fn channel(&self, name: &str) -> Option<PluginWrapper> {
@@ -105,20 +106,20 @@ impl ChannelManager {
     /// Stop (but keep loaded) a channel.
     pub async fn stop_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some(mut entry) = self.channels.get_mut(name) {
-            entry.value_mut().wrapper.stop()?;
+            entry.value_mut().wrapper.stop().await?;
         }
         Ok(())
     }
 
     /// Send a message into a running plugin.  
     /// Returns Err if the plugin isn't loaded or send() fails.
-    pub fn send_to_channel(
+    pub async fn send_to_channel(
         &self,
         name: &str,
         msg: ChannelMessage,
     ) -> Result<(), PluginError> {
         if let Some(mut wrapper) = self.channels.get_mut(name) {
-            wrapper.wrapper.send(msg)
+            wrapper.wrapper.send_message(msg).await
         } else {
             Err(PluginError::Other(format!("channel `{}` not loaded", name)))
         }
@@ -189,7 +190,7 @@ impl PluginEventHandler for ChannelManager {
             old_plugin.cancel.as_ref().map(|tok| tok.cancel());
             // wait for it to actually stop
             old_plugin.poller.as_ref().map(|poller| poller.abort());
-            if let Err(e) = old_plugin.wrapper.stop() {
+            if let Err(e) = old_plugin.wrapper.stop().await {
                 info!("Could not stop existing plugin `{}`: {:?}", name, e);
             }
             // Now remove it from the map
@@ -227,14 +228,20 @@ impl PluginEventHandler for ChannelManager {
         }
         wrapper.set_secrets(sec_map);
 
-        // 3) Start it
-        match wrapper.start() {
-            Err(e)=>{error!("Could not start plugin `{}`: {:?}",name,e);bail!(e)},
-            Ok(_) => {info!("Plugin {} started",name)}
-        };
+    
+        // 3) Start it **on its own thread** with its own runtime
+        let mut wrapper_cloned = wrapper.clone();
+        let plugin_name = name.to_string();
 
+    
+        // run start() under that runtime
+        
+        match wrapper_cloned.start().await {
+            Ok(()) => tracing::info!("Plugin `{}` started", plugin_name),
+            Err(e) => tracing::error!("Failed to start `{}`: {:?}", plugin_name, e),
+        }
 
-
+        
         // 5) Spawn its polling loop
         let caps = wrapper.capabilities();
         if caps.supports_receiving {
@@ -249,15 +256,15 @@ impl PluginEventHandler for ChannelManager {
 
             let poller = tokio::spawn(async move {
                 // run this entire loop inside a single blocking thread:
-                // that way there's exactly one `.poll()` in flight at a time.
+                // that way there's exactly one `.receive_message()` in flight at a time.
                 loop {
                     // check for cancellation _before_ we block again
                     if poller_cancel.is_cancelled() {
                          break;
                     }
 
-                    let w = poller_wrapper.clone();
-                    let poll_result = w.poll();
+                    let mut w = poller_wrapper.clone();
+                    let poll_result = w.receive_message().await;
 
                     match poll_result {
                         Ok(mut msg) => {
@@ -279,7 +286,7 @@ impl PluginEventHandler for ChannelManager {
                             }
                         }
                         Err(err) => {
-                            tracing::warn!(%channel_name, ?err, "plugin.poll() returned error");
+                            tracing::warn!(%channel_name, ?err, "plugin.receive_message() returned error");
                             // you might want a small backoff here to avoid a busy loop
                         }
                     }
@@ -314,7 +321,7 @@ impl PluginEventHandler for ChannelManager {
             
             // wait for it to actually stop
             old_plugin.poller().as_ref().map(|poller| poller.abort());
-            if let Err(e) = old_plugin.wrapper.stop() {
+            if let Err(e) = old_plugin.wrapper.stop().await {
                 info!("Could not stop existing plugin `{}`: {:?}", name, e);
             }
             // Now remove it from the map
@@ -433,7 +440,8 @@ pub mod tests {
     use crate::{config::MapConfigManager, secret::EmptySecretsManager,};
 
     use super::*;
-    use std::{path::PathBuf, sync::Arc, time::SystemTime};
+    use std::{ffi::CString, path::PathBuf, sync::Arc, time::SystemTime};
+    use async_ffi::{BorrowingFfiFuture, FfiFuture};
     use channel_plugin::{
         message::{ChannelCapabilities, ChannelMessage},
         plugin::ChannelState,
@@ -459,12 +467,29 @@ pub mod tests {
         unsafe extern "C" fn destroy(_: PluginHandle) {}
         unsafe extern "C" fn set_logger(_: PluginHandle, _logger_ptr: PluginLogger) {}
         unsafe extern "C" fn name(_: PluginHandle) -> *mut i8 { std::ptr::null_mut() }
-        unsafe extern "C" fn start(_: PluginHandle) -> bool { true }
+        unsafe extern "C" fn start(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
         unsafe extern "C" fn drain(_: PluginHandle) -> bool { true }
-        unsafe extern "C" fn stop(_: PluginHandle) -> bool { true }
-        unsafe extern "C" fn wait_until_drained(_: PluginHandle, _: u64) -> bool { true }
-        unsafe extern "C" fn poll(_: PluginHandle, _out: *mut ChannelMessage) -> bool { false }
-        unsafe extern "C" fn send(_: PluginHandle, _: *const ChannelMessage) -> bool { true }
+        unsafe extern "C" fn stop(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
+        unsafe extern "C" fn wait_until_drained(_: PluginHandle, _: u64) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
+        unsafe extern "C" fn send_message(
+            _handle: PluginHandle,
+            _msg: *const ChannelMessage,
+        ) -> FfiFuture<bool> {
+            BorrowingFfiFuture::<bool>::new(async move {true})
+        }
+
+        // 2) Async‐style receive → FfiFuture<ChannelMessage>
+        unsafe extern "C" fn receive_message(
+            _handle: PluginHandle,
+        ) -> FfiFuture<*mut c_char> {
+                BorrowingFfiFuture::<*mut c_char>::new(async move {
+                    // imagine you have a real msg here
+                    let msg = ChannelMessage::default();
+                    let json = serde_json::to_string(&msg).unwrap_or_else(|_| "{}".into());
+                    CString::new(json).unwrap().into_raw()
+                })
+            
+        }
         unsafe extern "C" fn caps(_: PluginHandle, out: *mut ChannelCapabilities) -> bool {
             if !out.is_null() {
                 unsafe { std::ptr::write(out, ChannelCapabilities::default()) };
@@ -492,8 +517,8 @@ pub mod tests {
             drain,
             stop,
             wait_until_drained,
-            poll,
-            send,
+            receive_message,
+            send_message,
             caps,
             state,
             set_config,
@@ -519,7 +544,7 @@ pub mod tests {
         let plugin = make_noop_plugin();
         let mut wrapper = PluginWrapper::new(plugin.clone());
         wrapper.set_logger(ffi_logger);
-        mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).unwrap();
+        mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);
         mgr.unload_channel("foo").await.unwrap();
         assert!(mgr.list_channels().is_empty());

@@ -1,4 +1,5 @@
 
+use async_trait::async_trait;
 // plugin_api/src/lib.rs
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,7 @@ pub enum LogLevel {
 /// Plain‐old‐data FFI logger handle.
 /// Plugins will call `log_fn(ctx, level, context, message)` when they want to log.
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct PluginLogger {
     /// opaque pointer you get back in your callback
     pub ctx: *mut c_void,
@@ -70,7 +72,8 @@ unsafe impl Sync for PluginLogger {}
 pub type PluginSetLogger = unsafe extern "C" fn(PluginHandle, PluginLogger);
 
 /// The one trait plugin authors implement.
-pub trait ChannelPlugin: Send + Sync {
+#[async_trait]
+pub trait ChannelPlugin {//: Send + Sync {
     /// The name of the plugin
     fn name(&self) -> String;
 
@@ -78,17 +81,13 @@ pub trait ChannelPlugin: Send + Sync {
     /// Plugins should store this in their struct and use it in place of
     /// any direct calls to `tracing::info!`.
     fn set_logger(&mut self, logger: PluginLogger);
+    fn get_logger(&self) -> Option<PluginLogger>;
 
     /// Called by host to push a message out.
-    /// If the to is left blank but the msg.session_id is set
-    /// the message should be send back to the user who started
-    /// the original converation (poll(session_id)).
-    fn send(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError>;
+    async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError>;
 
-    /// Block until next message (or Err if stopped).
-    /// The session_id can be used to link internal identifier like
-    /// a chat_id in Telegrm to a session
-    fn poll(&self) -> anyhow::Result<ChannelMessage,PluginError>;
+    /// Called by the host to receive an incoming message
+    async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError>;
 
     /// Metadata about this channel.
     fn capabilities(&self) -> ChannelCapabilities;
@@ -109,16 +108,16 @@ pub trait ChannelPlugin: Send + Sync {
     fn state(&self) -> ChannelState;
 
     /// Start up underlying connections.
-    fn start(&mut self) -> Result<(),PluginError>;
+    async fn start(&mut self) -> Result<(),PluginError>;
 
     /// Stop taking new messages.
     fn drain(&mut self) -> Result<(),PluginError>;
 
     /// Block until all in-flight messages are done or PluginError if timeout is reached.
-    fn wait_until_drained(&mut self, timeout_ms: u64) -> Result<(),PluginError>;
+    async fn wait_until_drained(&mut self, timeout_ms: u64) -> Result<(),PluginError>;
 
     /// Kill immediately.
-    fn stop(&mut self) -> Result<(),PluginError>;
+    async fn stop(&mut self) -> Result<(),PluginError>;
 }
 
 /// Errors that a ChannelPlugin implementation can return.

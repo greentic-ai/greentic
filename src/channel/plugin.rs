@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelState, PluginLogger}, PluginHandle};
 use libloading::{Library, Symbol};
 use tracing::{error, info, warn};
-
+use async_ffi::FfiFuture;
 use crate::watcher::{DirectoryWatcher, WatchedType};
 
 
@@ -13,18 +13,18 @@ type PluginCreate           = unsafe extern "C" fn() -> PluginHandle;
 type PluginDestroy          = unsafe extern "C" fn(PluginHandle);
 type PluginSetLogger        = unsafe extern "C" fn(PluginHandle, PluginLogger);
 type PluginName             = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
-type PluginStart            = unsafe extern "C" fn(PluginHandle) -> bool;
+type PluginStart            = unsafe extern "C" fn(PluginHandle) -> FfiFuture<bool>;
 type PluginDrain            = unsafe extern "C" fn(PluginHandle) -> bool;
-type PluginStop             = unsafe extern "C" fn(PluginHandle) -> bool;
-type PluginWaitUntilDrained = unsafe extern "C" fn(PluginHandle, u64) -> bool;
-type PluginPoll             = unsafe extern "C" fn(PluginHandle, *mut ChannelMessage) -> bool;
-type PluginSend             = unsafe extern "C" fn(PluginHandle, *const ChannelMessage) -> bool;
+type PluginStop             = unsafe extern "C" fn(PluginHandle) -> FfiFuture<bool>;
+type PluginWaitUntilDrained = unsafe extern "C" fn(PluginHandle, u64) -> FfiFuture<bool>;
 type PluginCaps             = unsafe extern "C" fn(PluginHandle, *mut ChannelCapabilities) -> bool;
 type PluginState            = unsafe extern "C" fn(PluginHandle) -> ChannelState;
 type PluginConfig           = unsafe extern "C" fn(PluginHandle, *const c_char);
 type PluginSecrets          = unsafe extern "C" fn(PluginHandle, *const c_char);
 type PluginList             = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
 type PluginFreeString       = unsafe extern "C" fn(*mut c_char);
+type PluginSendMessage      = unsafe extern "C" fn(PluginHandle, *const ChannelMessage) -> FfiFuture<bool>;
+type PluginReceiveMessage   = unsafe extern "C" fn(PluginHandle) -> FfiFuture<*mut c_char>;
 
 /// We keep the `Library` alive so that the symbol pointers remain valid.
 #[derive(Debug)]
@@ -40,8 +40,6 @@ pub struct Plugin {
     pub drain:   PluginDrain,
     pub stop:    PluginStop,
     pub wait_until_drained: PluginWaitUntilDrained,
-    pub poll:               PluginPoll,
-    pub send:               PluginSend,
     pub caps:               PluginCaps,
     pub state:              PluginState,
     pub set_secrets:        PluginSecrets,
@@ -49,6 +47,8 @@ pub struct Plugin {
     pub list_secrets:       PluginList,
     pub list_config:        PluginList,
     pub free_string:        PluginFreeString,
+    pub send_message:       PluginSendMessage,
+    pub receive_message:    PluginReceiveMessage,
     /// track last modification so we can reload
     pub last_modified: SystemTime,
     pub path: PathBuf,
@@ -101,14 +101,6 @@ impl Plugin {
         .context("missing `plugin_wait_until_drained`")?;
         let wait_until_drained = *wait_sym;
 
-        let poll_sym: Symbol<PluginPoll> =
-            unsafe { lib.get(b"plugin_poll") }.context("missing `plugin_poll`")?;
-        let poll = *poll_sym;
-
-        let send_sym: Symbol<PluginSend> =
-            unsafe { lib.get(b"plugin_send") }.context("missing `plugin_send`")?;
-        let send = *send_sym;
-
         let caps_sym: Symbol<PluginCaps> =
             unsafe { lib.get(b"plugin_capabilities") }.context("missing `plugin_capabilities`")?;
         let caps = *caps_sym;
@@ -137,6 +129,17 @@ impl Plugin {
             unsafe { lib.get(b"plugin_free_string") }.context("missing `plugin_free_string`")?;
         let free_string = *free_string_sym;
 
+        // new async entrypoints
+       let send_msg_sym: Symbol<PluginSendMessage> =
+           unsafe { lib.get(b"plugin_send_message") }
+           .context("missing `plugin_send_message`")?;
+       let send_message = *send_msg_sym;
+
+       let recv_msg_sym: Symbol<PluginReceiveMessage> =
+           unsafe { lib.get(b"plugin_receive_message") }
+           .context("missing `plugin_receive_message`")?;
+       let receive_message = *recv_msg_sym;
+
         // 3) actually construct the plugin instance
         let handle = unsafe { create() };
 
@@ -150,8 +153,6 @@ impl Plugin {
             drain,
             stop,
             wait_until_drained,
-            poll,
-            send,
             caps,
             state,
             set_secrets,
@@ -159,6 +160,8 @@ impl Plugin {
             list_secrets,
             list_config,
             free_string,
+            send_message,
+            receive_message,
             last_modified: mtime,
             path,
         })
@@ -353,15 +356,152 @@ impl crate::watcher::WatchedType for PluginWatcher {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::{channel::manager::tests::make_noop_plugin, watcher::WatchedType};
 
     use super::*;
     use std::{
-        fs::{self, File},
-        path::PathBuf,
+        collections::VecDeque, fs::{self, File}, path::PathBuf, sync::Condvar,
     };
+    use channel_plugin::plugin::{ChannelPlugin, PluginError};
     use tempfile::TempDir;
+    //use tokio::sync::Notify;
+
+    pub struct MockChannel {
+        // queue for incoming
+        messages: Arc<Mutex<VecDeque<ChannelMessage>>>,
+        // condvar to wake up pollers
+        cvar: Arc<Condvar>,
+        outgoing: Arc<Mutex<Vec<ChannelMessage>>>,
+        state: Arc<Mutex<ChannelState>>,
+        config: Arc<Mutex<HashMap<String, String>>>,
+        secrets: Arc<Mutex<HashMap<String, String>>>,
+        //notify: Arc<Notify>,
+        logger: Option<PluginLogger>,
+    }
+
+    impl MockChannel {
+        pub fn new() -> Self {
+                Self {
+                    messages: Arc::new(Mutex::new(VecDeque::new())),
+                    cvar: Arc::new(Condvar::new()),
+                    outgoing: Arc::new(Mutex::new(vec![])),
+                    state: Arc::new(Mutex::new(ChannelState::Starting)),
+                    config: Arc::new(Mutex::new(HashMap::new())),
+                    secrets: Arc::new(Mutex::new(HashMap::new())),
+                    //notify: Arc::new(Notify::new()),
+                    logger: None,
+                }
+            }
+
+        /// Inject an incoming message and wake any pollers.
+        pub fn inject(&self, msg: ChannelMessage) {
+            let mut q = self.messages.lock().unwrap();
+            q.push_back(msg);
+            // notify anyone blocked in `poll()`
+            self.cvar.notify_one();
+        }
+
+        pub fn drain(&self) -> Vec<ChannelMessage> {
+            let mut q = self.messages.lock().unwrap();
+            q.drain(..).collect()
+        }
+
+        pub fn sent_messages(&self) -> Vec<ChannelMessage> {
+            self.messages.lock().unwrap().iter().cloned().collect()
+        }
+
+    }
+
+    #[async_trait]
+    impl ChannelPlugin for MockChannel {
+        fn name(&self) -> String {
+            "mock".into()
+        }
+        fn set_logger(&mut self, logger: PluginLogger) {
+            self.logger = Some(logger);
+        }
+
+        fn get_logger(&self) -> Option<PluginLogger> {
+            self.logger
+        }
+
+        fn capabilities(&self) -> ChannelCapabilities {
+            ChannelCapabilities {
+                name: "mock".to_string(),
+                supports_sending: true,
+                supports_receiving: true,
+                supports_text: true,
+                supports_files: false,
+                supports_media: false,
+                supports_events: false,
+                supports_typing: false,
+                supports_threading: false,
+                supports_reactions: false,
+                supports_call: false,
+                supports_buttons: false,
+                supports_links: false,
+                supports_custom_payloads: false,
+                supported_events: vec![],
+            }
+        }
+
+        fn set_config(&mut self, config: HashMap<String, String>) {
+            *self.config.lock().unwrap() = config;
+        }
+
+        fn list_config(&self) -> Vec<String> {
+            vec![]
+        }
+
+        fn set_secrets(&mut self, secrets: HashMap<String, String>) {
+            *self.secrets.lock().unwrap() = secrets;
+        }
+
+        fn list_secrets(&self) -> Vec<String> {
+            vec![]
+        }
+
+        fn state(&self) -> ChannelState {
+            *self.state.lock().unwrap()
+        }
+
+        async fn start(&mut self) -> Result<(), PluginError> {
+            *self.state.lock().unwrap() = ChannelState::Running;
+            Ok(())
+        }
+
+        fn drain(&mut self) -> Result<(), PluginError> {
+            *self.state.lock().unwrap() = ChannelState::Draining;
+            Ok(())
+        }
+
+        async fn wait_until_drained(&mut self, _timeout_ms: u64) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        async fn stop(&mut self) -> Result<(), PluginError> {
+            *self.state.lock().unwrap() = ChannelState::Stopped;
+            Ok(())
+        }
+        
+        async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError>{
+            self.outgoing.lock().unwrap().push(msg);
+            Ok(())
+        }
+        
+        async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError>{
+            // grab the lock
+            let mut guard = self.messages.lock().unwrap();
+            // wait while empty
+            while guard.is_empty() {
+                guard = self.cvar.wait(guard).unwrap();
+            }
+            // at least one message—pop & return
+            Ok(guard.pop_front().unwrap())
+        }
+
+    }
 
     #[test]
     fn plugin_name_extracts_stem() {

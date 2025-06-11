@@ -189,7 +189,7 @@ impl NodeType for ChannelNode {
                 }
                 
             }
-            plugin.send(cm)
+            plugin.send_message(cm).await
         } else {
             // fallback: wrap raw JSON as text
             let text = input.payload().to_string();
@@ -209,7 +209,7 @@ impl NodeType for ChannelNode {
                 content:   Some(MessageContent::Text(text)),
                 ..Default::default()
             };
-            plugin.send(cm)
+            plugin.send_message(cm).await
         };
 
         if let Err(e) = send_result {

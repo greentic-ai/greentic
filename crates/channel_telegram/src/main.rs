@@ -24,13 +24,13 @@ async fn main() -> anyhow::Result<()> {
     plugin.set_secrets(secrets);
 
     // Start the plugin (spawns the dispatcher)
-    plugin.start().map_err(|e| anyhow::anyhow!("Failed to start plugin: {:?}", e))?;
+    plugin.start().await.map_err(|e| anyhow::anyhow!("Failed to start plugin: {:?}", e))?;
     println!("Bot started, waiting for messages...");
 
     // Event loop: poll for incoming messages and echo them back
     loop {
 
-        let incoming: ChannelMessage = plugin.poll().map_err(|e| anyhow::anyhow!("Poll error: {:?}", e))?;
+        let incoming: ChannelMessage = plugin.receive_message().await.map_err(|e| anyhow::anyhow!("Poll error: {:?}", e))?;
 
         // Only handle text messages
         if let Some(MessageContent::Text(text)) = incoming.content.clone() {
@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             // Send the reply
-            plugin.send(reply).map_err(|e| anyhow::anyhow!("Send error: {:?}", e))?;
+            plugin.send_message(reply).await.map_err(|e| anyhow::anyhow!("Send error: {:?}", e))?;
         }
     }
 }

@@ -86,7 +86,7 @@ pub fn resolve_root_dir() -> PathBuf {
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse(); 
     match cli.command.unwrap_or(Commands::Run(RunArgs {
@@ -270,11 +270,14 @@ r#"
 
     // wait for CTRL‐C
     tokio::signal::ctrl_c().await?;
+
     println!("\nShutting down…");
     info!("Greentic runtime shutting down");
 
     app.shutdown().await;
 
     println!("Goodbye!");
+
     process::exit(0);
+
 }

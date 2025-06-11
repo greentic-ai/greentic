@@ -13,6 +13,7 @@ members = [
     "crates/channel_telegram",
     "crates/channel_mock_inout", 
     "crates/channel_mock_middle", 
+    "crates/channel_ws",
     "crates/xtask", "tests/wasm/mock_tool",
 ]
 
@@ -63,9 +64,13 @@ opentelemetry-appender-tracing = "0.30.0"
 thiserror = "2.0.12"
 ollama-rs = "0.3.1"
 url = { version="2.5.4", features = ["serde"] }
-serde_yaml = "0.9.33"
+serde_yaml_bw = "1.0.7"
 rhai = { version="1.22.2", features = ["serde"] }
 regex = "1.11.1"
 tokio-util = "0.7.15"
+async-ffi = "0.5.0"
+
+[dev-dependencies]
+url = "2.5.4"
 
 

@@ -1,18 +1,13 @@
 // channel_telegram/src/lib.rs
 
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Condvar, Mutex,},
-    time::{Duration, Instant},
-};
-
+use std::{collections::{HashMap}, convert::Infallible};
+use async_trait::async_trait;
 use chrono::Utc;
 use once_cell::sync::OnceCell;
 use teloxide::{
     prelude::*,
     types::{MediaKind, Message as TelegramMessage},
 };
-
 use channel_plugin::{
     export_plugin,
     message::{
@@ -20,9 +15,7 @@ use channel_plugin::{
     },
     plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger},
 };
-use tokio::{runtime::Handle, task};
-
-
+use tokio::{runtime::Handle, sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}};
 
 /// Extract `MessageContent` from a Telegram SDK message
 fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
@@ -162,19 +155,27 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
 
 /// Our plugin struct holds just the minimal shared state.
 pub struct TelegramPlugin {
+    /// Incoming queue for async receive_message
+    incoming_tx: UnboundedSender<ChannelMessage>,
+    incoming_rx: UnboundedReceiver<ChannelMessage>,
     state:   ChannelState,
     config:  HashMap<String,String>,
     secrets: HashMap<String,String>,
-    queue:   Arc<(Mutex<VecDeque<ChannelMessage>>, Condvar)>,
     bot:     Option<Bot>,
-    logger: Option<Arc<PluginLogger>>,
+    logger: Option<PluginLogger>,
 }
 
 impl Default for TelegramPlugin {
     fn default() -> Self {
-        // each plugin gets a brand-new queue
-        let queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
-        TelegramPlugin { state: ChannelState::Stopped, config: HashMap::new(), secrets: HashMap::new(),queue, bot:None, logger: None}
+        let (tx, rx) = unbounded_channel();
+        TelegramPlugin { 
+            incoming_tx: tx,
+            incoming_rx: rx,
+            state: ChannelState::Stopped, 
+            config: HashMap::new(), 
+            secrets: HashMap::new(),
+            bot:None, 
+            logger: None}
     }
 }
 
@@ -182,203 +183,117 @@ impl Default for TelegramPlugin {
 /// We also assume that when sending a message the participant id is the same as the chat_id.
 impl TelegramPlugin {
     /// Spawn a background dispatcher if not already running.
-    fn init_dispatcher(&mut self) {
+    async fn init_dispatcher(&mut self) {
         static STARTED: OnceCell<()> = OnceCell::new();
         if STARTED.set(()).is_ok() {
-            // ensure queue exists
-            let q = Arc::clone(&self.queue);
-            let token = self.secrets.get("TELEGRAM_TOKEN").cloned().unwrap_or_default();
-            let bot = Bot::new(
-                token
-            );
+            // 1) Grab the token & build the Bot
+            let token = self
+                .secrets
+                .get("TELEGRAM_TOKEN")
+                .cloned()
+                .unwrap_or_default();
+            let bot = Bot::new(token);
             self.bot = Some(bot.clone());
-            let bot_clone = bot.clone();
-            let logger_clone = self.logger.as_ref().unwrap().clone();
-            let queue_clone = Arc::clone(&self.queue);
 
-            if tokio::runtime::Handle::try_current().is_ok() {
-                tokio::spawn(async move {
-                    Dispatcher::builder(bot_clone, Update::filter_message().endpoint(
-                        move | bot: Bot, msg: Message| {
-                            let chat_id = msg.chat.id;
-                            let session_id = format!("{}",chat_id);
-                            // this closure now only does an Arc::clone and calls `handle_update`
-                            handle_update(session_id, bot, msg, queue_clone.clone(), logger_clone.clone())
-                        }
-                    ))
-                    .build()
-                    .dispatch()
-                    .await;
-                });
-            } else {
-                std::thread::spawn(move || {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(async move {
-                        Dispatcher::builder(bot_clone, Update::filter_message().endpoint(
-                            move |bot: Bot, msg: Message| {
-                                let chat_id = msg.chat.id;
-                                let session_id = format!("{}",chat_id);
-                                handle_update(session_id, bot, msg, queue_clone.clone(), logger_clone.clone())
+            // 2) Clone our plugin‐inbound channel & logger
+            let tx = self.incoming_tx.clone();
+            let log = self.logger.clone().unwrap();
+
+            // 3) Build a dptree handler that fires on Message updates
+            let handler = Update::filter_message()
+                .endpoint(move |bot: Bot, msg: Message| {
+                    let tx = tx.clone();
+                    let log = log.clone();
+                    async move {
+                        if let Some(content) = extract_content(bot, &msg) {
+                            let session = msg.chat.id.to_string();
+                            let cm = ChannelMessage {
+                                channel:    "telegram".into(),
+                                session_id: Some(session.clone()),
+                                direction:  MessageDirection::Incoming,
+                                from: Participant {
+                                    id:                 session.clone(),
+                                    display_name:       msg.from.clone().map(|u| u.full_name()),
+                                    channel_specific_id: msg.from.and_then(|u| u.username.clone()),
+                                },
+                                content:    Some(content),
+                                id:         msg.id.to_string(),
+                                timestamp:  Utc::now(),
+                                to:         Vec::new(),
+                                thread_id:  None,
+                                reply_to_id:None,
+                                metadata:   Default::default(),
+                            };
+                            if let Err(e) = tx.send(cm) {
+                                log.log(LogLevel::Error, "telegram", &format!("queue send error: {}", e));
                             }
-                        ))
-                        .build()
-                        .dispatch()
-                        .await;
-                    });
+                        }
+                        // dptree requires an Ok(()) return
+                        Ok::<(), Infallible>(())
+                    }
                 });
-            }
 
-            self.queue = q;
+            // 4) Spawn the dispatcher on the Tokio runtime
+            let handle: Handle = Handle::current();
+            handle.spawn(async move {               
+                Dispatcher::builder(bot, handler)
+                .build()
+                .dispatch()
+                .await;
+            });
         }
+            
     }
 }
 
-async fn handle_update(
-    session_id: String,
-    bot: Bot,
-    msg: TelegramMessage,
-    queue:   Arc<(Mutex<VecDeque<ChannelMessage>>, Condvar)>,
-    logger: Arc<PluginLogger>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        logger.log(LogLevel::Debug, "telegram", "extracting content");
-                                
-        if let Some(content) = extract_content(bot,&msg) {
-            let abstract_msg = ChannelMessage {
-                id:        msg.id.to_string(),
-                session_id: Some(session_id),
-                direction: MessageDirection::Incoming,
-                timestamp: Utc::now(),
-                channel:   "telegram".into(),
-                from: Participant {
-                    id:                 msg.from.as_ref().map(|u| u.id.to_string()).unwrap_or_default(),
-                    display_name:       msg.from.as_ref().map(|u| u.full_name()),
-                    channel_specific_id: msg.from.as_ref().and_then(|u| u.username.clone()),
-                },
-                to:           vec![],
-                content:      Some(content),
-                thread_id:    None,
-                reply_to_id:  None,
-                metadata:     Default::default(),
-            };
-            
-            let (lock, cvar) = &*queue;
-            let mut guard = lock.lock().unwrap();
-            guard.push_back(abstract_msg);
-            cvar.notify_one();
-            
-        }
-    Ok(())
-}
 
-fn send_msg(msg: ChannelMessage, chat_id: String, bot: Option<Bot>, log: &Arc<PluginLogger>)  -> anyhow::Result<(),PluginError> {
-
-
-    // 3) Extract text content
+async fn send_msg(msg: ChannelMessage, chat_id: String, bot: Option<Bot>, log: PluginLogger)  -> anyhow::Result<(),PluginError> {
+    // 1) Extract text content
     let text = match &msg.content {
         Some(MessageContent::Text(t)) => t.clone(),
-        _ => return Err(PluginError::Other("only Text messages supported".into())),
+        _ => {
+            log.log(LogLevel::Error, "telegram", "only Text messages supported");
+            return Err(PluginError::Other("only Text messages supported".into()));
+        }
     };
 
-
-
-    // 4) Grab the Bot
+    // 2) Grab the Bot handle
     let bot = bot
-        .clone()
+        .as_ref()
         .ok_or_else(|| PluginError::Other("Bot not initialized".into()))?
         .clone();
 
-    // 5) Perform the async send under a runtime
-    let req = bot.send_message(chat_id, text);
+    log.log(LogLevel::Debug, "telegram", "sending message…");
 
-    // Now run that Future to completion in whichever runtime we have:
-    let send_fut = req.send();
+    // 3) Perform the async send
+    let result = bot
+        .send_message(chat_id.clone(), text)
+        .send()             // this returns a Future
+        .await
+        .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))?;
 
-    log.log(LogLevel::Debug, "telegram", "send fut");
-    let res = if Handle::try_current().is_ok() {
-            log.log(LogLevel::Debug, "telegram", "current");
-        // We're inside Tokio already, so block in place rather than spawn a new runtime
-        task::block_in_place(|| {
-            Handle::current().block_on(send_fut)
-        })
-    } else {
-    
-        // No runtime, so spin one up
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| PluginError::Other(format!("failed to start runtime: {}", e)))?;
-        rt.block_on(send_fut)
-    };
-
-    // 6) Map errors into PluginError
-    res.map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))?;
+    log.log(
+        LogLevel::Info,
+        "telegram",
+        &format!("message sent to {}: message_id={}", chat_id, result.id),
+    );
 
     Ok(())
 }
-
+#[async_trait]
 impl ChannelPlugin for TelegramPlugin {
     fn name(&self) -> String {
         "telegram".to_string()
     }
 
     fn set_logger(&mut self, logger: PluginLogger) {
-        self.logger = Some(Arc::new(logger));
+        self.logger = Some(logger);
+    }
+
+    fn get_logger(&self) -> Option<PluginLogger> {
+        self.logger
     }
     
-
-    fn send(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
-        let log = &self.logger.clone().expect("Logger was not set up for Telegram plugin");
-        if self.state != ChannelState::Running {
-            return Err(PluginError::InvalidState);
-        }
-
-
-        log.log(LogLevel::Info, "telegram", "send a message");
-        // 1) pull off the Vec<Participant> and the Option<String> by cloning them:
-        let to_list = msg.to.clone();
-
-        // 2) now you can still use `msg` freely; whenever you call send_msg, clone `msg`:
-        if to_list.is_empty() {
-            let error = "sending to empty participant is not possible";
-            log.log(
-                    LogLevel::Error,
-                    "telegram",
-                    error,
-                );
-
-            return Err(PluginError::Other(error.to_string()));
-        } else {
-            for participant in to_list {
-                // clone the chat_id string
-                let chat_id = participant.id.clone();
-
-                return send_msg(msg.clone(), chat_id, self.bot.clone(), log);
-            }
-        }
-        Ok(())
-    }
-
-    fn poll(&self) -> Result<ChannelMessage, PluginError> {
-        if let Some(log) = &self.logger {
-            log.log(LogLevel::Info, "telegram", "got a message poll");
-        }
-
-        let (lock, cvar) = &*self.queue;
-        // lock + wait until queue is non-empty or state changes
-        let mut guard = lock.lock().unwrap();
-        guard = cvar
-            .wait_while(guard, |q| q.is_empty())// && self.state == ChannelState::Running)
-            .unwrap();
-
-        // pop or error
-        guard
-            .pop_front()
-            .ok_or_else(|| PluginError::Other("channel stopped or drained".into()))
-
-    }
-
-
     fn capabilities(&self) -> ChannelCapabilities {
         ChannelCapabilities {
             name:                    "telegram".into(),
@@ -419,11 +334,11 @@ impl ChannelPlugin for TelegramPlugin {
         self.state.clone()
     }
 
-    fn start(&mut self) -> Result<(),PluginError> {
+    async fn start(&mut self) -> Result<(),PluginError> {
         if let Some(log) = &self.logger {
             log.log(LogLevel::Info, "telegram", "start called");
         }
-        self.init_dispatcher();
+        self.init_dispatcher().await;
         self.state = ChannelState::Running;
         Ok(())
     }
@@ -436,24 +351,69 @@ impl ChannelPlugin for TelegramPlugin {
         Ok(())
     }
 
-    fn wait_until_drained(&mut self, timeout_ms: u64)  -> Result<(),PluginError> {
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        let (lock, cvar) = &*self.queue;
-        loop {
-            if Instant::now() >= deadline { return Err(PluginError::Timeout(timeout_ms));}
-            if self.state != ChannelState::Draining { return Ok(()); }
-            let guard = lock.lock().unwrap();
-            if guard.is_empty() { return Ok(()); }
-            let _ = cvar.wait_timeout(guard, Duration::from_millis(50)).unwrap();
-        }
+    async fn wait_until_drained(&mut self, _timeout_ms: u64)  -> Result<(),PluginError> {
+        // Since we use an unbounded channel for incoming messages, and
+        // our send_message never blocks, there's nothing to wait for on drain.
+        // If you had an outbound queue, you'd await that here.
+        Ok(())
     }
 
-    fn stop(&mut self)  -> Result<(),PluginError> {
+    async fn stop(&mut self)  -> Result<(),PluginError> {
         if let Some(log) = &self.logger {
             log.log(LogLevel::Info, "telegram", "stop called");
         }
         self.state = ChannelState::Stopped;
         Ok(())
+    }
+    
+    async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(), PluginError> {
+        let log = self
+            .logger
+            .as_ref()
+            .ok_or_else(|| PluginError::InvalidState)?;
+
+        log.log(LogLevel::Info, "telegram", "send a message");
+        // 1) pull off the Vec<Participant> and the Option<String> by cloning them:
+        let to_list = msg.to.clone();
+
+        // 2) now you can still use `msg` freely; whenever you call send_msg, clone `msg`:
+        if to_list.is_empty() {
+            let error = "sending to empty participant is not possible";
+            log.log(
+                    LogLevel::Error,
+                    "telegram",
+                    error,
+                );
+
+            return Err(PluginError::Other(error.to_string()));
+        } else {
+            for participant in to_list {
+                // clone the chat_id string
+                let chat_id = participant.id.clone();
+
+                send_msg(msg.clone(), chat_id.clone(), self.bot.clone(), log.clone())
+                    .await
+                    .map_err(|e| {
+                        log.log(
+                            LogLevel::Error,
+                            "telegram",
+                            &format!("failed to send to {}: {}", chat_id, e),
+                        );
+                        e
+                    })?;
+            }
+        }
+        Ok(())
+    }
+    
+    async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError> {
+        if let Some(log) = &self.logger {
+            log.log(LogLevel::Info, "telegram", "receive message called");
+        }
+        self.incoming_rx
+            .recv()
+            .await
+            .ok_or_else(|| PluginError::Other("receive_message channel closed".into()))
     }
 }
 
@@ -461,19 +421,19 @@ impl ChannelPlugin for TelegramPlugin {
 
 export_plugin!(TelegramPlugin);
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use channel_plugin::message::{ChannelMessage, MessageDirection};
+    use channel_plugin::message::{ChannelMessage, MessageContent, Participant, MessageDirection};
+    use channel_plugin::plugin::{ChannelState, PluginLogger, LogLevel};
     use std::collections::HashMap;
     use chrono::Utc;
 
     extern "C" fn test_log_fn(
-        _ctx: *mut c_void, 
-        level: LogLevel, 
-        tag: *const i8, 
-        msg: *const i8
+        _ctx: *mut std::ffi::c_void,
+        level: LogLevel,
+        tag: *const i8,
+        msg: *const i8,
     ) {
         // Convert C strings to Rust &str
         let tag = unsafe {
@@ -497,121 +457,128 @@ mod tests {
         println!("[{:?}] {}: {}", level, tag, msg);
     }
 
-    /// Helper to push a fake message into the global queue.
-    fn push_msg(queue: Arc<(Mutex<VecDeque<ChannelMessage>>, Condvar)>,msg: ChannelMessage) {
-        let (lock, cvar) = &*queue;
-        let mut guard = lock.lock().unwrap();
-        guard.push_back(msg);
-        cvar.notify_one();
-    }
-
-    #[test]
-    fn test_state_transitions() {
+    #[tokio::test]
+    async fn test_state_transitions_async() {
         let mut p = TelegramPlugin::default();
-        let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-        p.set_logger(logger);
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+
         assert_eq!(p.state(), ChannelState::Stopped);
 
-        p.start().expect("could not start");
+        p.start().await.expect("start failed");
         assert_eq!(p.state(), ChannelState::Running);
 
-        p.drain().expect("could not drain");
+        p.drain().expect("drain failed");
         assert_eq!(p.state(), ChannelState::Draining);
 
-        p.stop().expect("could not stop");
+        p.stop().await.expect("stop failed");
         assert_eq!(p.state(), ChannelState::Stopped);
     }
 
-    #[test]
-    fn test_capabilities_fields() {
+    #[tokio::test]
+    async fn test_capabilities() {
         let mut p = TelegramPlugin::default();
-        let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-        p.set_logger(logger);
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
         let caps = p.capabilities();
-        assert_eq!(&caps.name, "telegram");
+        assert_eq!(caps.name, "telegram");
         assert!(caps.supports_text);
         assert!(caps.supports_media);
         assert!(!caps.supports_call);
     }
 
-    #[test]
-    fn test_send_without_content_errors() {
+    #[tokio::test]
+    async fn test_send_without_content_errors_async() {
         let mut p = TelegramPlugin::default();
-        let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-        p.set_logger(logger);
-        p.start().expect("could not start");
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.start().await.expect("start");
 
-        // default ChannelMessage has content = None
+        // default msg has no content
         let mut msg = ChannelMessage::default();
-        msg.to = vec![Participant{ 
-            id: "test".to_string(), 
-            display_name: None, 
-            channel_specific_id: None }
-        ];
-        p.send(msg).expect_err("did not err");
+        msg.to = vec![ Participant { id:"123".into(), display_name:None, channel_specific_id:None } ];
 
+        p.send_message(msg).await.expect_err("should error without text");
     }
 
-   #[test]
-    fn test_poll_blocks_until_message() {
+    #[tokio::test]
+    async fn test_send_and_receive_roundtrip_async() {
         let mut p = TelegramPlugin::default();
-        let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-        p.set_logger(logger);
-        p.start().expect("could not start");
-
-        // spawn a helper thread which will push a message after a brief delay
-        let queue = p.queue.clone();
-        let push_handle = std::thread::spawn(move || {
-            // give poll() a moment to go to sleep on the condvar
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let mut fake = ChannelMessage::default();
-            fake.id = "xyz".into();
-            fake.direction = MessageDirection::Incoming;
-            fake.timestamp = Utc::now();
-            fake.channel = "Telegram".into();
-            push_msg(queue,fake);
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.set_secrets({
+            let mut m = HashMap::new();
+            m.insert("TELEGRAM_TOKEN".into(), "fake".into());
+            m
         });
+        p.start().await.expect("start");
 
-        // this will block until the helper thread pushes the message
-        let got = p.poll().expect("poll should return once a message is available");
-        assert_eq!(got.id, "xyz");
+        // Simulate an incoming Telegram message
+        let incoming = ChannelMessage {
+            id: "in1".into(),
+            session_id: Some("chat42".into()),
+            direction: MessageDirection::Incoming,
+            timestamp: Utc::now(),
+            channel: "telegram".into(),
+            from: Participant { id:"chat42".into(), display_name:None, channel_specific_id:None },
+            to: vec![],
+            content: Some(MessageContent::Text("hello".into())),
+            thread_id: None,
+            reply_to_id: None,
+            metadata: Default::default(),
+        };
 
-        // make sure our helper thread has finished
-        push_handle.join().unwrap();
+        // Manually push into the plugin's incoming channel
+        let _ = p.incoming_tx.send(incoming.clone());
+
+        // receive it
+        let got = p.receive_message().await.expect("receive");
+        assert_eq!(got.id, "in1");
+        assert_eq!(got.content, Some(MessageContent::Text("hello".into())));
+
+        // Test send_message paths (won't actually call Telegram)
+        let outgoing = ChannelMessage {
+            id: "out1".into(),
+            session_id: Some("chat42".into()),
+            direction: MessageDirection::Outgoing,
+            timestamp: Utc::now(),
+            channel: "telegram".into(),
+            from: Participant { id:"bot".into(), display_name:None, channel_specific_id:None },
+            to: vec![ Participant { id:"chat42".into(), display_name:None, channel_specific_id:None } ],
+            content: Some(MessageContent::Text("reply".into())),
+            thread_id: None,
+            reply_to_id: None,
+            metadata: Default::default(),
+        };
+
+        let err = p.send_message(outgoing).await.expect_err("send_message should fail fast on bad token");
+        assert!(
+            format!("{}", err).contains("telegram send error"),
+            "unexpected error: {:?}",
+            err
+        );
     }
 
-    #[test]
-    fn test_wait_until_drained_timeout() {
+    #[tokio::test]
+    async fn test_wait_until_drained_async() {
         let mut p = TelegramPlugin::default();
-        let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-        p.set_logger(logger);
-        p.start().expect("could not start");
-        p.drain().expect("could not drain");
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.start().await.expect("start");
+        p.drain().expect("drain");
 
-        // Ensure there's something in the queue so it cannot drain immediately
-        let fake = ChannelMessage {
-            id: "wait".into(), .. ChannelMessage::default() };
-        push_msg(p.queue.clone(),fake);
-
-        // Should time out (we passed zero ms)
-        p.wait_until_drained(0).expect_err("could not drain");
-        // After timeout, state is still Draining
-        assert_eq!(p.state(), ChannelState::Draining);
+        // Since we have no backlog, this should return immediately
+        p.wait_until_drained(10).await.expect("drained without backlog");
     }
 
-    #[test]
-    fn test_set_config_and_secrets() {
+    #[tokio::test]
+    async fn test_set_config_and_secrets_async() {
         let mut p = TelegramPlugin::default();
-        let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-        p.set_logger(logger);
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+
         let mut cfg = HashMap::new();
-        cfg.insert("telegram_chat_id".into(), "123".into());
+        cfg.insert("foo".into(), "bar".into());
         p.set_config(cfg.clone());
-        assert_eq!(p.config.get("telegram_chat_id"), Some(&"123".into()));
+        assert_eq!(p.config.get("foo"), Some(&"bar".into()));
 
         let mut sec = HashMap::new();
-        sec.insert("TELEGRAM_TOKEN".into(), "tok".into());
+        sec.insert("TELEGRAM_TOKEN".into(), "token".into());
         p.set_secrets(sec.clone());
-        assert_eq!(p.secrets.get("TELEGRAM_TOKEN"), Some(&"tok".into()));
+        assert_eq!(p.secrets.get("TELEGRAM_TOKEN"), Some(&"token".into()));
     }
 }

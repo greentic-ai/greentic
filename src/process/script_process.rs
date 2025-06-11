@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::{
     message::Message,
-    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType},
+    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, state::StateValue,
 };
 
 /// A Rhai script process node
@@ -128,9 +128,13 @@ impl NodeType for ScriptProcessNode {
         input: Message,
         context: &mut NodeContext,
     ) -> Result<NodeOut, NodeErr> {
+       
         let engine = Engine::new();
-        let mut scope = Scope::new();
 
+        let mut scope = Scope::new();
+        if let Ok(dyn_state) = to_dynamic(&serde_json::to_value(context.get_all_state()).unwrap_or_default()) {
+            scope.push_dynamic("state", dyn_state.clone());
+        }
 
         // Convert msg, payload, and state into Dynamic so Rhai can access properties
         if let Ok(dyn_msg) = to_dynamic(&serde_json::to_value(&input).unwrap_or_default()) {
@@ -141,24 +145,42 @@ impl NodeType for ScriptProcessNode {
             scope.push_dynamic("payload", dyn_payload);
         }
 
-        if let Ok(dyn_state) = to_dynamic(&serde_json::to_value(context.get_all_state()).unwrap_or_default()) {
-            scope.push_dynamic("state", dyn_state);
-        }
-
-        match engine.eval_with_scope::<rhai::Dynamic>(&mut scope, &self.script) {
+       match engine.eval_with_scope::<rhai::Dynamic>(&mut scope, &self.script) {
             Ok(result) => {
-                let dynamic_result = rhai::serde::to_dynamic(result);
-                let payload = match dynamic_result {
-                    Ok(dynamic) => match rhai::serde::from_dynamic(&dynamic) {
-                        Ok(val) => val,
-                        Err(_) => json!({"error": "Failed to convert Rhai result to JSON"}),
-                    },
-                    Err(_) => json!({"error": "Failed to convert Rhai output to Dynamic"}),
+                // Read back the updated state and apply it
+                if let Some(new_state) = scope.get_value::<rhai::Map>("state") {
+                    for (k, v) in new_state {
+                        if let Ok(json_value) = rhai::serde::from_dynamic::<serde_json::Value>(&v) {
+                            if let Ok(state_val) = StateValue::try_from(json_value) {
+                                context.set_state(&k, state_val);
+                            }
+                        }
+                    }
+                }
+
+                let payload = match rhai::serde::to_dynamic(result)
+                    .and_then(|dyn_val| rhai::serde::from_dynamic(&dyn_val)) {
+                    Ok(val) => val,
+                    Err(_) => json!({"error": "Failed to convert Rhai result to JSON"}),
                 };
+
                 let msg = Message::new(&input.id(), json!({"output": payload}), input.session_id());
                 Ok(NodeOut::all(msg))
-            },
-            Err(err) => Err(NodeErr::all(NodeError::InvalidInput(format!("Script error: {}", err))))
+            }
+            Err(err) => {
+                // Read back the updated state and apply it
+                if let Some(new_state) = scope.get_value::<rhai::Map>("state") {
+                    for (k, v) in new_state {
+                        if let Ok(json_value) = rhai::serde::from_dynamic::<serde_json::Value>(&v) {
+                            if let Ok(state_val) = StateValue::try_from(json_value) {
+                                context.set_state(&k, state_val);
+                            }
+                        }
+                    }
+                }
+                Err(NodeErr::all(NodeError::InvalidInput(format!(
+                "Script error: {}", err
+            ))))},
         }
     }
 

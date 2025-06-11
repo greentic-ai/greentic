@@ -8,6 +8,7 @@ fn main() {
         "channel_telegram",
         "channel_mock_inout",
         "channel_mock_middle",
+        "channel_ws",
         // add more as needed…
     ];
 
