@@ -274,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn test_plain_ws_roundtrip() {
         // find free port
-        let tmp = TcpListener::bind("127.0.0.1:0").unwrap();
+        let tmp = TcpListener::bind("127.0.0.1:8888").unwrap();
         let port = tmp.local_addr().unwrap().port();
         drop(tmp);
 
