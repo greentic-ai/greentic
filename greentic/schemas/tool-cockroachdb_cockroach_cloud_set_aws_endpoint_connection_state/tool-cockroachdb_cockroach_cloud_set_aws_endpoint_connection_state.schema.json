@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Set the AWS Endpoint Connection state",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_set_aws_endpoint_connection_state`]",
+      "properties": {
+        "cluster_id": {
+          "description": "cluster_id is the ID for the cluster.",
+          "type": "string"
+        },
+        "endpoint_id": {
+          "description": "endpoint_id is the ID for the VPC endpoint on the customer's side.",
+          "type": "string"
+        },
+        "set_aws_endpoint_connection_state_request": {
+          "$ref": "#/definitions/SetAwsEndpointConnectionStateRequest"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "endpoint_id",
+        "set_aws_endpoint_connection_state_request"
+      ],
+      "title": "CockroachCloudSetAwsEndpointConnectionStateParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_set_aws_endpoint_connection_state",
+  "type": "object"
+}

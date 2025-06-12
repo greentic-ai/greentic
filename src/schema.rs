@@ -1,6 +1,6 @@
 // src/schema.rs
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::Error;
 use schemars::schema_for;
@@ -74,6 +74,7 @@ fn write_tools_schema(executor: Arc<Executor>, out_dir: &PathBuf) -> anyhow::Res
         props.insert("parameters".to_string(), params_schema);
 
         // secrets subschema, if any
+        
         let mut required = Vec::new();
         let secret_keys = tool.secrets();
         if !secret_keys.is_empty() {
@@ -89,6 +90,16 @@ fn write_tools_schema(executor: Arc<Executor>, out_dir: &PathBuf) -> anyhow::Res
                     required.push(Value::String(sk.name.clone()));
                 }
             }
+            // de-duplicaet secrets
+            let mut seen = HashSet::new();
+            required.retain(|v| {
+                if let Value::String(s) = v {
+                    seen.insert(s.clone())
+                } else {
+                    true
+                }
+            });
+
             let mut sec_schema = serde_json::Map::new();
             sec_schema.insert("type".into(), json!("object"));
             sec_schema.insert("properties".into(), Value::Object(sec_props));

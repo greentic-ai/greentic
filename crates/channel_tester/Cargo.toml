@@ -1,0 +1,24 @@
+[package]
+name = "channel_tester"
+version = "0.1.2"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib","cdylib"]
+
+[dependencies]
+channel_plugin = { version = "0.1.2", path = "../channel_plugin" }
+anyhow = "1.0.98"
+serde_json = "1.0.140"
+tracing = "0.1.41"
+async-trait = "0.1.88"
+async-ffi = "0.5.0"
+tokio = { version = "1.45.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time", "fs", "io-util"] }
+serde_yaml_bw = "1.0.7"
+notify = "8.0.0"
+serde = "1.0.219"
+chrono = "0.4.41"
+uuid = { version = "1.17.0", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.20.0"

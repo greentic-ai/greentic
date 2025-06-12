@@ -12,7 +12,8 @@ members = [
     "crates/channel_plugin", 
     "crates/channel_telegram",
     "crates/channel_mock_inout", 
-    "crates/channel_mock_middle", 
+    "crates/channel_mock_middle",
+    "crates/channel_tester", 
     "crates/channel_ws",
     "crates/xtask", "tests/wasm/mock_tool",
 ]

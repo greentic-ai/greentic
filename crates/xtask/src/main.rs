@@ -9,6 +9,7 @@ fn main() {
         "channel_mock_inout",
         "channel_mock_middle",
         "channel_ws",
+        "channel_tester",
         // add more as needed…
     ];
 

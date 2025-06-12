@@ -55,6 +55,10 @@ impl Default for WsPlugin {
 }
 
 impl WsPlugin {
+
+    pub fn address(&self) -> String {
+        self.addr.clone()
+    }
     /// manager task: runs single-threaded, no locks needed for map
     async fn manager_loop(
         mut cmd_rx: UnboundedReceiver<Command>,
@@ -90,6 +94,7 @@ impl WsPlugin {
             let session = peer.to_string();
             match accept_async(stream).await {
                     Ok(ws_stream) => {
+                        println!("@@@ GOT HERE 7");
                     let (mut write, mut read) = ws_stream.split();
                     // channel for outbound frames
                     let (tx_out, mut rx_out) = unbounded_channel();
@@ -100,6 +105,7 @@ impl WsPlugin {
                             // inbound
                             msg = read.next() => match msg {
                                 Some(Ok(WsMsg::Text(txt))) => {
+                                    println!("@@@ GOT HERE 8");
                                     let _ = write.send(WsMsg::Text(txt.clone())).await;
 
                                     log.log(LogLevel::Info, "ws", &format!("recv {}: {}", session, txt));
@@ -119,7 +125,10 @@ impl WsPlugin {
                             },
                             // outbound
                             frame = rx_out.recv() => match frame {
-                                Some(frame) => { let _ = write.send(frame).await; }
+                                Some(frame) => { 
+                                    println!("@@@ GOT HERE 9");
+                                    let _ = write.send(frame).await; 
+                                }
                                 None => break,
                             }
                         }
@@ -156,18 +165,23 @@ impl ChannelPlugin for WsPlugin {
     async fn start(&mut self) -> Result<(),PluginError> {
         // Use the current runtime’s handle:
         let (cmd_tx, cmd_rx) = unbounded_channel();
+        println!("@@@ GOT HERE 1");
         self.cmd_tx = Some(cmd_tx.clone());
         let handle = Handle::current();
         handle.spawn(WsPlugin::manager_loop(cmd_rx));
+        println!("@@@ GOT HERE 2");
         let log =self.logger.clone().expect("Logger was not passed to channel ws");
         let incoming_tx = self.incoming_tx.clone();
         // spawn accept loop on Tokio runtime
         let handle2 = handle.clone();
         let addr = self.addr.clone();
         let conn_handle = handle2.clone();
+        println!("@@@ GOT HERE 3");
         handle2.spawn(async move {
             let listener = TcpListener::bind(addr).await.unwrap();
+            println!("@@@ GOT HERE 4");
             while let Ok((stream, peer)) = listener.accept().await {
+                println!("@@@ GOT HERE 5");
                 WsPlugin::spawn_connection(
                     conn_handle.clone(),
                     cmd_tx.clone(),
@@ -182,12 +196,14 @@ impl ChannelPlugin for WsPlugin {
         Ok(())
     }
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
+        println!("@@@ REMOVE: SEND MESSAGE");
         if let Some(txt) = msg.content.as_ref().and_then(|c| match c { MessageContent::Text(t) => Some(t.clone()), _=>None }) {
             let _ = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone().unwrap(), msg: WsMsg::Text(txt.into()) });
         }
         Ok(())
     }
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError> {
+        println!("@@@ REMOVE: SEND MESSAGE");
         self.msg_rx.recv().await.ok_or_else(||PluginError::Other("receive closed".into()))
     }
     fn drain(&mut self)->Result<(),PluginError>{ Ok(()) }
@@ -273,48 +289,59 @@ mod tests {
 
     #[tokio::test]
     async fn test_plain_ws_roundtrip() {
-        // find free port
-        let tmp = TcpListener::bind("127.0.0.1:8888").unwrap();
-        let port = tmp.local_addr().unwrap().port();
-        drop(tmp);
+        // 1) Bind a TCP listener on an ephemeral port
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .expect("bind");
+        let port = listener.local_addr().unwrap().port();
 
+        // 2) Configure and start our plugin
         let mut plugin = WsPlugin::default();
         let mut cfg = HashMap::new();
         cfg.insert("address".into(), "127.0.0.1".into());
-        cfg.insert("port".into(), port.to_string());
+        //cfg.insert("port".into(), port.to_string());
+        cfg.insert("port".into(),"8888".to_string());
         plugin.set_config(cfg);
         let logger = PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn };
         plugin.set_logger(logger);
-        // no TLS
-        plugin.start().await.expect("start failed");
-        // allow server startup
-        sleep(Duration::from_millis(100));
 
-        // connect client
+        plugin.start().await.expect("start failed");
+
+        // Give the server a moment to bind and begin listening
+        sleep(Duration::from_millis(200000));
+
+        // 3) Connect a test client
         let url = format!("ws://127.0.0.1:{}", port);
         let (mut socket, _) = connect_async(&url).await.expect("Can't connect");
 
-        // send ping (frame)
+        // 4) Send a ping frame
         socket.send(WsMsg::Text("ping".into())).await.unwrap();
 
-        // echo back – <— use read_message(), not read()
-        let msg = socket.next().await
-        .expect("should get a frame")
-        .expect("no error on read");
+        // 5) The server echoes back
+        let msg = socket.next()
+            .await
+            .expect("expected a frame")
+            .expect("frame error");
         assert_eq!(msg, WsMsg::Text("ping".into()));
 
-        // plugin should receive polled message
-        let cm = plugin.receive_message().await.expect("plugin poll");
-        assert_eq!(cm.content, Some(MessageContent::Text("ping".into())));
+        // 6) Plugin should have received it
+        let cm = plugin.receive_message().await.expect("receive_message");
+        assert_eq!(
+            cm.content,
+            Some(MessageContent::Text("ping".into()))
+        );
 
-        // test plugin.send => client receives
-        plugin.send_message(cm.clone()).await.unwrap();
+        // 7) Now send from plugin -> client
+        plugin.send_message(cm.clone())
+            .await
+            .expect("send_message");
 
-        // and again, read the frame
-        let msg2 = socket.next().await
-        .expect("should get a frame")
-        .expect("no error on read");
+        // 8) Client sees it again
+        let msg2 = socket.next()
+            .await
+            .expect("expected a frame")
+            .expect("frame error");
         assert_eq!(msg2, WsMsg::Text("ping".into()));
-    }
 
+        
+    }
 }

@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Get a SCIM resource type by ID",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_resource_type`]",
+      "properties": {
+        "attributes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "excluded_attributes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resource_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource_id"
+      ],
+      "title": "CockroachCloudGetResourceTypeParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_resource_type",
+  "type": "object"
+}
