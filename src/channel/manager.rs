@@ -181,7 +181,6 @@ impl PluginEventHandler for ChannelManager {
     /// Called when a `.so`/`.dll` is added or changed.
     async fn plugin_added_or_reloaded(&self, name: &str, plugin: Arc<Plugin>) -> Result<(), Error> {
         info!("Channel plugin added/reloaded: {}", name);
-        println!("@@@ REMOVE channel");
         // If already present, tear down the old one:
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
             // stopping the channel
@@ -318,7 +317,6 @@ impl PluginEventHandler for ChannelManager {
 
     /// Called when a `.so`/`.dll` is removed.
     async fn plugin_removed(&self, name: &str) -> Result<(), Error> {
-        println!("@@@ REMOVE - stopping channel {} from {:?}",name,self.channels().clone());
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
             // stopping the channel
             let mut wrapper = old_plugin.wrapper().clone();

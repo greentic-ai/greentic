@@ -212,6 +212,7 @@ impl ChannelPlugin for PluginWrapper {
     #[tracing::instrument(name = "channel_receive_message_async", skip(self))]
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
         // Call the FFI shim that returns an FfiFuture<ChannelMessage>
+        println!("@@@ REMOVE before ffi");
         let fut: FfiFuture<*mut c_char> = unsafe {
             (self.inner.receive_message)(self.inner.handle)
         };

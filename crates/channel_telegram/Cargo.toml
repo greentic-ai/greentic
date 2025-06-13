@@ -20,6 +20,8 @@ dotenvy = "0.15.7"
 async-trait = "0.1.88"
 async-ffi = "0.5.0"
 dashmap = "6.1.0"
+reqwest = "0.12.20"
+crossbeam = "0.8.4"
 
 [[bin]]
 name = "channel_telegram"    # or "echo_bot", whatever you like

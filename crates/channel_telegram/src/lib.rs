@@ -1,22 +1,24 @@
 // channel_telegram/src/lib.rs
-
-use std::convert::Infallible;
+use crossbeam::channel::{unbounded, Receiver, Sender};
+use tokio::runtime::Runtime;
+use std::{convert::Infallible, thread};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use chrono::Utc;
+use reqwest::Url;
 use once_cell::sync::OnceCell;
+use serde_json::json;
 use teloxide::{
     prelude::*,
-    types::{MediaKind, Message as TelegramMessage},
+    types::{InputFile, MediaKind, Message as TelegramMessage},
 };
 use channel_plugin::{
     export_plugin,
     message::{
-        ChannelCapabilities, ChannelMessage, Event, FileMetadata, MediaMetadata, MediaType, MessageContent, MessageDirection, Participant
+        ChannelCapabilities, ChannelMessage, Event, EventType, FileMetadata, MediaMetadata, MediaType, MessageContent, MessageDirection, Participant
     },
     plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger},
 };
-use tokio::{sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}};
 
 /// Extract `MessageContent` from a Telegram SDK message
 fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
@@ -51,7 +53,7 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
                         .as_ref()
                         .map(|m| m.to_string())
                         .unwrap_or_else(|| "video/mp4".into()),
-                    url: format!("https://api.telegram.org/file/bot<your-token>/{}", video.video.file.id),
+                    url: format!("https://api.telegram.org/file/bot{}/{}",bot.token(), video.video.file.id),
                     size_bytes: Some(video.video.file.size as u64),
                 },
             })),
@@ -61,7 +63,7 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
                 file: FileMetadata {
                     file_name: "voice.ogg".into(),
                     mime_type: "audio/ogg".into(),
-                    url: format!("https://api.telegram.org/file/bot<your-token>/{}", voice.voice.file.id),
+                    url: format!("https://api.telegram.org/file/bot{}/{}", bot.token(),voice.voice.file.id),
                     size_bytes: Some(voice.voice.file.size as u64),
                 },
             })),
@@ -73,7 +75,7 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
                     mime_type: audio.audio.mime_type.as_ref()
                         .map(|m| m.to_string())
                         .unwrap_or_else(|| "video/mp4".into()),
-                    url: format!("https://api.telegram.org/file/bot<your-token>/{}", audio.audio.file.id),
+                    url: format!("https://api.telegram.org/file/bot{}/{}", bot.token(), audio.audio.file.id),
                     size_bytes: Some(audio.audio.file.size as u64),
                 },
             })),
@@ -83,7 +85,7 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
                 mime_type: doc.document.mime_type.as_ref()
                         .map(|m| m.to_string())
                         .unwrap_or_else(|| "video/mp4".into()),
-                url: format!("https://api.telegram.org/file/bot<your-token>/{}", doc.document.file.id),
+                url: format!("https://api.telegram.org/file/bot{}/{}",bot.token(), doc.document.file.id),
                 size_bytes: Some(doc.document.file.size as u64),
             })),
 
@@ -92,7 +94,7 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
                 file: FileMetadata {
                     file_name: "sticker.webp".into(),
                     mime_type: "image/webp".into(),
-                    url: format!("https://api.telegram.org/file/bot<your-token>/{}", sticker.sticker.file.id),
+                    url: format!("https://api.telegram.org/file/bot{}/{}",bot.token(), sticker.sticker.file.id),
                     size_bytes: Some(sticker.sticker.file.size as u64),
                 },
             })),
@@ -102,7 +104,7 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
                 file: FileMetadata {
                     file_name: "video_note.mp4".into(),
                     mime_type: "video/mp4".into(),
-                    url: format!("https://api.telegram.org/file/bot<your-token>/{}", video_note.video_note.file.id),
+                    url: format!("https://api.telegram.org/file/bot{}/{}", bot.token(),video_note.video_note.file.id),
                     size_bytes: Some(video_note.video_note.file.size as u64),
                 },
             })),
@@ -114,7 +116,7 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
                     mime_type: anim.animation.mime_type.as_ref()
                         .map(|m| m.to_string())
                         .unwrap_or_else(|| "video/mp4".into()),
-                    url: format!("https://api.telegram.org/file/bot<your-token>/{}", anim.animation.file.id),
+                    url: format!("https://api.telegram.org/file/bot{}/{}", bot.token(),anim.animation.file.id),
                     size_bytes: Some(anim.animation.file.size as u64),
                 },
             })),
@@ -157,8 +159,9 @@ fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
 /// Our plugin struct holds just the minimal shared state.
 pub struct TelegramPlugin {
     /// Incoming queue for async receive_message
-    incoming_tx: UnboundedSender<ChannelMessage>,
-    incoming_rx: UnboundedReceiver<ChannelMessage>,
+    incoming_tx: Sender<ChannelMessage>,
+    incoming_rx: Receiver<ChannelMessage>,
+    runtime: Runtime,
     state:   ChannelState,
     config:  DashMap<String,String>,
     secrets: DashMap<String,String>,
@@ -168,9 +171,14 @@ pub struct TelegramPlugin {
 
 impl Default for TelegramPlugin {
     fn default() -> Self {
-        let (tx, rx) = unbounded_channel();
+        let (tx, rx) = unbounded();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build runtime");
         TelegramPlugin { 
             incoming_tx: tx,
+            runtime,
             incoming_rx: rx,
             state: ChannelState::Stopped, 
             config: DashMap::new(), 
@@ -194,11 +202,9 @@ impl TelegramPlugin {
             };
             let bot = Bot::new(token);
             self.bot = Some(bot.clone());
-
             // 2) Clone our plugin‐inbound channel & logger
             let tx = self.incoming_tx.clone();
             let log = self.logger.clone().unwrap();
-
             // 3) Build a dptree handler that fires on Message updates
             let handler = Update::filter_message()
                 .endpoint(move |bot: Bot, msg: Message| {
@@ -232,53 +238,28 @@ impl TelegramPlugin {
                         Ok::<(), Infallible>(())
                     }
                 });
-
             // 4) Spawn the dispatcher on the Tokio runtime
-            tokio::spawn(async move {               
-                Dispatcher::builder(bot, handler)
-                .build()
-                .dispatch()
-                .await;
+            thread::spawn( move || {    
+                let rt = Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build Tokio runtime for Telegram");           
+                rt.block_on(async move {
+                    Dispatcher::builder(bot, handler)
+                        .build()
+                        .dispatch()
+                        .await;
+                    eprintln!("⚠️ Telegram dispatcher exited");
+                });
             });
         }
             
     }
+
+    
 }
 
 
-async fn send_msg(msg: ChannelMessage, chat_id: String, bot: Option<Bot>, log: PluginLogger)  -> anyhow::Result<(),PluginError> {
-    // 1) Extract text content
-    let text = match &msg.content {
-        Some(MessageContent::Text(t)) => t.clone(),
-        _ => {
-            log.log(LogLevel::Error, "telegram", "only Text messages supported");
-            return Err(PluginError::Other("only Text messages supported".into()));
-        }
-    };
-
-    // 2) Grab the Bot handle
-    let bot = bot
-        .as_ref()
-        .ok_or_else(|| PluginError::Other("Bot not initialized".into()))?
-        .clone();
-
-    log.log(LogLevel::Debug, "telegram", "sending message…");
-
-    // 3) Perform the async send
-    let result = bot
-        .send_message(chat_id.clone(), text)
-        .send()             // this returns a Future
-        .await
-        .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))?;
-
-    log.log(
-        LogLevel::Info,
-        "telegram",
-        &format!("message sent to {}: message_id={}", chat_id, result.id),
-    );
-
-    Ok(())
-}
 #[async_trait]
 impl ChannelPlugin for TelegramPlugin {
     fn name(&self) -> String {
@@ -308,8 +289,53 @@ impl ChannelPlugin for TelegramPlugin {
             supports_call:           false,
             supports_buttons:        false,
             supports_links:          true,
-            supports_custom_payloads:false,
-            supported_events:        Vec::new(),
+            supports_custom_payloads:false,    
+            supported_events: vec![
+                EventType {
+                    event_type:     "ContactShared".into(),
+                    description:    "User shared a contact".into(),
+                    payload_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "name":         { "type": "string" },
+                            "phone_number": { "type": "string" }
+                        },
+                        "required": ["name", "phone_number"]
+                    })),
+                },
+                EventType {
+                    event_type:     "LocationShared".into(),
+                    description:    "User shared a location".into(),
+                    payload_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "latitude":  { "type": "number" },
+                            "longitude": { "type": "number" }
+                        },
+                        "required": ["latitude", "longitude"]
+                    })),
+                },
+                EventType {
+                    event_type:     "VenueShared".into(),
+                    description:    "User shared a venue".into(),
+                    payload_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "title":   { "type": "string" },
+                            "address": { "type": "string" },
+                            "location": {
+                                "type": "object",
+                                "properties": {
+                                    "lat": { "type": "number" },
+                                    "lon": { "type": "number" }
+                                },
+                                "required": ["lat", "lon"]
+                            }
+                        },
+                        "required": ["title", "address", "location"]
+                    })),
+                },
+            ],
         }
     }
 
@@ -374,7 +400,7 @@ impl ChannelPlugin for TelegramPlugin {
         log.log(LogLevel::Info, "telegram", "send a message");
         // 1) pull off the Vec<Participant> and the Option<String> by cloning them:
         let to_list = msg.to.clone();
-
+        let runtime_handle = self.runtime.handle().clone();
         // 2) now you can still use `msg` freely; whenever you call send_msg, clone `msg`:
         if to_list.is_empty() {
             let error = "sending to empty participant is not possible";
@@ -389,17 +415,83 @@ impl ChannelPlugin for TelegramPlugin {
             for participant in to_list {
                 // clone the chat_id string
                 let chat_id = participant.id.clone();
+                let bot_clone = self.bot.as_ref().cloned().ok_or(PluginError::InvalidState)?;
+                let log         = self.logger.as_ref().cloned().ok_or(PluginError::InvalidState)?;
+                let msg_clone = msg.clone();
+                let rt           = runtime_handle.clone();
+                rt.spawn(async move {
+                        // Pull out your bot handle and the content
+                        let result = match msg_clone.content {
+                            Some(MessageContent::Text(text)) => {
+                                log.log(LogLevel::Debug, "telegram", "sending text…");
+                                bot_clone.send_message(chat_id.clone(), text).send().await
+                                    .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                            }
 
-                send_msg(msg.clone(), chat_id.clone(), self.bot.clone(), log.clone())
-                    .await
-                    .map_err(|e| {
-                        log.log(
-                            LogLevel::Error,
-                            "telegram",
-                            &format!("failed to send to {}: {}", chat_id, e),
-                        );
-                        e
-                    })?;
+                            Some(MessageContent::File(fm)) => {
+                                log.log(LogLevel::Debug, "telegram", "sending document…");
+                                let url = Url::parse(&fm.url)
+                                    .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
+                                    .expect("url not correctly formatted");
+                                let input = InputFile::url(url).file_name(fm.file_name.clone());
+                                bot_clone.send_document(chat_id.clone(), input).send().await
+                                    .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                            }
+
+                            Some(MessageContent::Media(mm)) => {
+                                match mm.kind {
+                                    MediaType::Image => {
+                                        log.log(LogLevel::Debug, "telegram", "sending photo…");
+                                        let url = Url::parse(&mm.file.url)
+                                            .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
+                                            .expect("url not correctly formatted");
+                                        let input = InputFile::url(url).file_name(mm.file.file_name.clone());
+                                        bot_clone.send_photo(chat_id.clone(), input).send().await
+                                            .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                                    }
+                                    MediaType::Video => {
+                                        log.log(LogLevel::Debug, "telegram", "sending video…");
+                                        let url = Url::parse(&mm.file.url)
+                                            .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
+                                            .expect("url not correctly formatted");
+                                        let input = InputFile::url(url).file_name(mm.file.file_name.clone());
+                                        bot_clone.send_video(chat_id.clone(), input).send().await
+                                            .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                                    }
+                                    MediaType::Audio | MediaType::Binary => {
+                                        log.log(LogLevel::Debug, "telegram", "sending audio…");
+                                        // parse the String into a Url
+                                        let url = Url::parse(&mm.file.url)
+                                            .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
+                                            .expect("url not correctly formatted");
+                                        let input = InputFile::url(url).file_name(mm.file.file_name.clone());
+                                       bot_clone.send_audio(chat_id.clone(), input).send().await
+                                            .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                                    }
+                                }
+                            }
+
+                            Some(MessageContent::Event(ev)) => {
+                                // You’ll need to decide how to represent your Event on Telegram;
+                                // here’s a simple JSON dump fallback:
+                                log.log(LogLevel::Debug, "telegram", "sending event…");
+                                let body = serde_json::to_string_pretty(&ev)
+                                    .unwrap_or_else(|_| format!("Event: {}", ev.event_type));
+                                bot_clone.send_message(chat_id.clone(), body).send().await
+                                    .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                            }
+
+                            None => 
+                                Err(PluginError::Other("No content to send".into())),
+                    
+                        };
+                        match result {
+                            Ok(sent) => {log.log(LogLevel::Info, "telegram", &format!("text sent: id={}", sent.id));},
+                            Err(e) => {log.log(LogLevel::Error, "telegram", &format!("text send error: {:?}", e));},
+                        };
+                
+                                                   
+                });
             }
         }
         Ok(())
@@ -409,10 +501,11 @@ impl ChannelPlugin for TelegramPlugin {
         if let Some(log) = &self.logger {
             log.log(LogLevel::Info, "telegram", "receive message called");
         }
-        self.incoming_rx
+        let result = self.incoming_rx
             .recv()
-            .await
-            .ok_or_else(|| PluginError::Other("receive_message channel closed".into()))
+            .map_err(|_| PluginError::Other("receive_message channel closed".into()));
+
+        result
     }
 }
 

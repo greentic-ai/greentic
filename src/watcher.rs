@@ -127,7 +127,6 @@ impl DirectoryWatcher {
                         paths,
                         ..
                     }) => {
-                        println!("@@@ REMOVE remove {:?}",paths);
                         for path in paths {
                             if watcher_clone.is_relevant(&path)
                                 || path
@@ -149,10 +148,7 @@ impl DirectoryWatcher {
                         warn!(?e, "Watcher error");
                     }
                  
-                    event => {
-
-                        println!("@@@ REMOVE ME: watcher events not caught: {:?}",event);
-                    }
+                    _ => {}
                 }
             }
         });
