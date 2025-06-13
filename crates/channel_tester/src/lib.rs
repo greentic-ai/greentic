@@ -1,7 +1,6 @@
 // src/lib.rs
-use std::{
-    collections::HashMap, path::Path, sync::Arc, time::Duration
-};
+use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
+use dashmap::DashMap;
 use async_trait::async_trait;
 use chrono::Utc;
 use notify::{event::{CreateKind, ModifyKind}, Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
@@ -37,7 +36,7 @@ pub struct TesterPlugin {
     logger:    Option<PluginLogger>,
     state:     ChannelState,
     watcher: Option<PollWatcher>,
-    config: HashMap<String,String>,
+    config: DashMap<String,String>,
 
     /// “Incoming” → host calls receive_message()  
     incoming_tx:   broadcast::Sender<ChannelMessage>,  
@@ -57,7 +56,7 @@ impl Default for TesterPlugin {
         TesterPlugin {
             logger:     None,
             state:      ChannelState::Stopped,
-            config: HashMap::new(),
+            config:     DashMap::new(),
             incoming_tx,
             reply_tx,
             watcher: None,
@@ -87,7 +86,7 @@ impl ChannelPlugin for TesterPlugin {
         }
     }
 
-    fn set_config(&mut self, cfg: HashMap<String, String>) { 
+    fn set_config(&mut self, cfg: DashMap<String, String>) { 
         self.config = cfg;
     }
 
@@ -95,7 +94,7 @@ impl ChannelPlugin for TesterPlugin {
         vec!["GREENTIC_DIR".to_string()]
      }
 
-    fn set_secrets(&mut self, _s: HashMap<String, String>) { }
+    fn set_secrets(&mut self, _s: DashMap<String, String>) { }
 
     fn list_secrets(&self) -> Vec<String> { vec![] }
 
@@ -105,7 +104,11 @@ impl ChannelPlugin for TesterPlugin {
         let (tx, mut rx) = mpsc::unbounded_channel();
     println!("@@@ REMOVE 1");
         // spawn a filesystem watcher in a blocking task
-        let greentic_dir = Path::new(self.config.get("GREENTIC_DIR").map(String::as_str).unwrap_or("./"));
+        let greentic_dir = self
+            .config
+            .get("GREENTIC_DIR")
+            .map(|e| PathBuf::from(e.value().clone()))
+            .unwrap_or_else(|| PathBuf::from("./"));
         let tests_dir = greentic_dir.join("./greentic/tests");
 
         // 0) BOOTSTRAP: on startup, scan for existing *.test files
@@ -125,14 +128,21 @@ impl ChannelPlugin for TesterPlugin {
         move |res: notify::Result<Event>| {
             if let Ok(event) = res {
                     println!("@@@ REMOVE 2: {:?}", event);
-                if let EventKind::Create(CreateKind::Any) | EventKind::Modify(ModifyKind::Data(_)) = event.kind {
-                    for path in event.paths {
-                         println!("@@@ REMOVE 2.5: {:?}", path);
-                        if path.extension().and_then(|s| s.to_str()) == Some("test") {
+                match event.kind {
+                    EventKind::Create(CreateKind::Any)|EventKind::Modify(ModifyKind::Data(_))=>
+                    {
+                        for path in event.paths{
+                            println!("@@@ REMOVE 2.5: {:?}",path);
+                            if path.extension().and_then(|s|s.to_str())==Some("test")
+                            {
                                 println!("@@@ REMOVE 3");
-                            let _ = tx.send(path.clone());
+                                let _= tx.send(path.clone());
+                            }
                         }
                     }
+                    event => {
+                        println!("@@@ REMOVE ME {:?}",event);
+                    },
                 }
             }
         }, cfg,)
@@ -292,7 +302,7 @@ mod tests {
     use tokio::fs;
     use tokio::time::{self, Duration};
     use tokio::io::AsyncWriteExt;
-    use std::collections::HashMap;
+    use dashmap::DashMap;
     use std::env;
     use std::ffi::CStr;
     use std::path::PathBuf;
@@ -511,7 +521,7 @@ connections:
 
         // 5) Start the plugin
         let mut plugin = TesterPlugin::default();
-        let mut config = HashMap::<String,String>::new();
+        let config = DashMap::<String,String>::new();
         config.insert("GREENTIC_DIR".to_string(),tmp.path().to_string_lossy().into());
         plugin.set_config(config);
         // give it a no‐op logger so it won't panic

@@ -1,8 +1,9 @@
 // src/ws_plugin.rs
 
-use std::{collections::HashMap, net::SocketAddr};
+use std::net::SocketAddr;
+use dashmap::DashMap;
 use async_trait::async_trait;
-use tokio::{net::{TcpListener, TcpStream}, runtime::Handle, sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}};
+use tokio::{net::{TcpListener, TcpStream}, sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}};
 use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 use futures_util::{StreamExt, SinkExt};
 use channel_plugin::{
@@ -63,7 +64,7 @@ impl WsPlugin {
     async fn manager_loop(
         mut cmd_rx: UnboundedReceiver<Command>,
     ) {
-        let mut map: HashMap<String, UnboundedSender<WsMsg>> = HashMap::new();
+        let map: DashMap<String, UnboundedSender<WsMsg>> = DashMap::new();
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 Command::Register { session, sender } => {
@@ -83,14 +84,13 @@ impl WsPlugin {
 
     /// Spawn a handler for each connection
     fn spawn_connection(
-        handle: Handle,
         cmd_tx: UnboundedSender<Command>,
         msg_tx: UnboundedSender<ChannelMessage>,
         stream: TcpStream,
         peer: SocketAddr,
         log: PluginLogger,
     ) {
-        handle.spawn(async move {
+        tokio::spawn(async move {
             let session = peer.to_string();
             match accept_async(stream).await {
                     Ok(ws_stream) => {
@@ -118,7 +118,7 @@ impl WsPlugin {
                                         content:Some(MessageContent::Text(txt.to_string())),
                                         id:Uuid::new_v4().to_string(),
                                         timestamp:Utc::now(),
-                                        to:Vec::new(),thread_id:None,reply_to_id:None,metadata:HashMap::new(),
+                                        to:Vec::new(),thread_id:None,reply_to_id:None,metadata:DashMap::new(),
                                     });
                                 }
                                 _ => break,
@@ -148,13 +148,17 @@ impl ChannelPlugin for WsPlugin {
     fn name(&self) -> String { "ws".into() }
     fn set_logger(&mut self, lg: PluginLogger) { self.logger = Some(lg); }
     fn get_logger(&self) -> Option<PluginLogger> { self.logger  }
-    fn set_config(&mut self, cfg: HashMap<String,String>) { 
-        let address: &str = cfg.get("address")
-            .map(String::as_str)
-            .unwrap_or("0.0.0.0");
-        let port: &str = cfg.get("port")
-            .map(String::as_str)
-            .unwrap_or("8888");
+    fn set_config(&mut self, cfg: DashMap<String,String>) { 
+        let address: String = cfg
+            .get("address")                          // Option<Ref<_, String, String>>
+            .map(|e| e.value().clone())              // Option<String>
+            .unwrap_or_else(|| "0.0.0.0".to_string());
+
+        // port as a String
+        let port: String = cfg
+            .get("port")
+            .map(|e| e.value().clone())
+            .unwrap_or_else(|| "8888".to_string());
         let addr = format!("{}:{}", address, port);
         self.addr = addr;
     }
@@ -167,23 +171,19 @@ impl ChannelPlugin for WsPlugin {
         let (cmd_tx, cmd_rx) = unbounded_channel();
         println!("@@@ GOT HERE 1");
         self.cmd_tx = Some(cmd_tx.clone());
-        let handle = Handle::current();
-        handle.spawn(WsPlugin::manager_loop(cmd_rx));
+        tokio::spawn(WsPlugin::manager_loop(cmd_rx));
         println!("@@@ GOT HERE 2");
         let log =self.logger.clone().expect("Logger was not passed to channel ws");
         let incoming_tx = self.incoming_tx.clone();
         // spawn accept loop on Tokio runtime
-        let handle2 = handle.clone();
         let addr = self.addr.clone();
-        let conn_handle = handle2.clone();
         println!("@@@ GOT HERE 3");
-        handle2.spawn(async move {
+        //tokio::spawn(async move {
             let listener = TcpListener::bind(addr).await.unwrap();
             println!("@@@ GOT HERE 4");
             while let Ok((stream, peer)) = listener.accept().await {
                 println!("@@@ GOT HERE 5");
                 WsPlugin::spawn_connection(
-                    conn_handle.clone(),
                     cmd_tx.clone(),
                     incoming_tx.clone(), // pass the sender
                     stream,
@@ -191,7 +191,7 @@ impl ChannelPlugin for WsPlugin {
                     log,
                 );
             }
-        });
+       // });
         self.state = ChannelState::Running;
         Ok(())
     }
@@ -210,7 +210,7 @@ impl ChannelPlugin for WsPlugin {
     async fn wait_until_drained(&mut self,_u:u64)->Result<(),PluginError>{Ok(())}
     async fn stop(&mut self)->Result<(),PluginError>{ Ok(()) }
     fn state(&self)->ChannelState{ChannelState::Running}
-    fn set_secrets(&mut self,_s:HashMap<String,String>){ }
+    fn set_secrets(&mut self,_s:DashMap<String,String>){ }
     fn list_secrets(&self)->Vec<String>{ vec![] }
 }
 
@@ -223,7 +223,7 @@ mod tests {
     use super::*;
     use std::ffi::c_void;
     use std::net::TcpListener;
-    use std::collections::HashMap;
+    use dashmap::DashMap;
     use std::thread::sleep;
     use std::time::Duration;
     use channel_plugin::plugin::PluginLogger;
@@ -279,7 +279,7 @@ mod tests {
             to:         vec![],
             thread_id:  None,
             reply_to_id:None,
-            metadata:   HashMap::new(),
+            metadata:   DashMap::new(),
         };
         plugin.inject(cm.clone());
         let polled = plugin.receive_message().await.expect("poll should return message");
@@ -296,7 +296,7 @@ mod tests {
 
         // 2) Configure and start our plugin
         let mut plugin = WsPlugin::default();
-        let mut cfg = HashMap::new();
+        let cfg = DashMap::new();
         cfg.insert("address".into(), "127.0.0.1".into());
         //cfg.insert("port".into(), port.to_string());
         cfg.insert("port".into(),"8888".to_string());

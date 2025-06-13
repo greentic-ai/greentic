@@ -1,7 +1,7 @@
 // src/channel/manager.rs
 
 use std::{
-    collections::HashMap, ffi::{c_char, c_void, CStr}, fmt, path::PathBuf, sync::{Arc, Mutex},
+ ffi::{c_char, c_void, CStr}, fmt, path::PathBuf, sync::{Arc, Mutex},
 };
 use anyhow::{Error, Result};
 use async_trait::async_trait;
@@ -57,7 +57,7 @@ impl ChannelManager {
     }
 
     /// Simple diagnostics: channel name → state
-    pub fn diagnostics(&self) -> HashMap<String, ChannelState> {
+    pub fn diagnostics(&self) -> DashMap<String, ChannelState> {
         self.channels
             .iter()
             .map(|kv| (kv.key().clone(), kv.value().wrapper.state()))
@@ -181,12 +181,16 @@ impl PluginEventHandler for ChannelManager {
     /// Called when a `.so`/`.dll` is added or changed.
     async fn plugin_added_or_reloaded(&self, name: &str, plugin: Arc<Plugin>) -> Result<(), Error> {
         info!("Channel plugin added/reloaded: {}", name);
-
+        println!("@@@ REMOVE channel");
         // If already present, tear down the old one:
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
             // stopping the channel
             // signal its poller to exit
             // signal its poller to exit
+            let mut wrapper = old_plugin.wrapper().clone();
+            if wrapper.stop().await.is_err() {
+                info!("Could not stop the existing plugin {} ",name);
+            }
             old_plugin.cancel.as_ref().map(|tok| tok.cancel());
             // wait for it to actually stop
             old_plugin.poller.as_ref().map(|poller| poller.abort());
@@ -209,7 +213,7 @@ impl PluginEventHandler for ChannelManager {
         wrapper.set_logger(ffi_logger);
 
         // 1) Config values
-        let mut cfg_map = HashMap::new();
+        let cfg_map = DashMap::new();
         for key in wrapper.list_config() {
             if let Some(val) = self.config.0.get(&key).await {
                 cfg_map.insert(key.clone(), val.clone());
@@ -218,7 +222,7 @@ impl PluginEventHandler for ChannelManager {
         wrapper.set_config(cfg_map);
 
         // 2) Secrets
-        let mut sec_map = HashMap::new();
+        let sec_map = DashMap::new();
         for key in wrapper.list_secrets() {
             if let Some(tok) = self.secrets.0.get(&key) {
                 if let Ok(Some(secret)) = self.secrets.0.reveal(tok).await {
@@ -264,8 +268,9 @@ impl PluginEventHandler for ChannelManager {
                     }
 
                     let mut w = poller_wrapper.clone();
+                    println!("@@@@ REMOVE receive message before");
                     let poll_result = w.receive_message().await;
-
+                    println!("@@@@ REMOVE receive message after");
                     match poll_result {
                         Ok(mut msg) => {
                             // got a real message
@@ -313,9 +318,13 @@ impl PluginEventHandler for ChannelManager {
 
     /// Called when a `.so`/`.dll` is removed.
     async fn plugin_removed(&self, name: &str) -> Result<(), Error> {
-
+        println!("@@@ REMOVE - stopping channel {} from {:?}",name,self.channels().clone());
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
             // stopping the channel
+            let mut wrapper = old_plugin.wrapper().clone();
+            if wrapper.stop().await.is_err() {
+                info!("Could not stop the existing plugin {} ",name);
+            }
             // signal its poller to exit
             old_plugin.cancel().as_ref().map(|tok| tok.cancel());
             
@@ -335,7 +344,7 @@ impl PluginEventHandler for ChannelManager {
         Ok(())
     }
 }
-
+#[derive(Debug)]
 pub struct ManagedChannel {
     wrapper: PluginWrapper,
     cancel:  Option<CancellationToken>,

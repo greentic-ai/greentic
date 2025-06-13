@@ -1,8 +1,9 @@
-use std::{collections::HashMap};
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ChannelMessage {
@@ -17,7 +18,8 @@ pub struct ChannelMessage {
     pub content: Option<MessageContent>, // Text or attachment
     pub thread_id: Option<String>,       // For threading support
     pub reply_to_id: Option<String>,     // If replying to another message
-    pub metadata: HashMap<String, Value>, // Channel-specific or custom data
+    #[schemars(with = "HashMap<String, String>")]  // same for secrets
+    pub metadata: DashMap<String, Value>, // Channel-specific or custom data
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub enum MessageDirection {

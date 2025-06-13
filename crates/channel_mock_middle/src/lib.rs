@@ -1,15 +1,16 @@
-use std::{collections::{HashMap, VecDeque}, sync::{Arc, Condvar, Mutex}};
+use std::{collections::VecDeque, sync::{Arc, Condvar, Mutex}};
 
 use async_trait::async_trait;
 // my_plugin/src/lib.rs
 use channel_plugin::{export_plugin, message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
+use dashmap::DashMap;
 
 // Your real plugin type:
 #[derive(Default)]
 pub struct MockPlugin {
     state: ChannelState,
-    config: HashMap<String,String>,
-    secrets: HashMap<String,String>,
+    config: DashMap<String,String>,
+    secrets: DashMap<String,String>,
     logger: Option<PluginLogger>,
     queue: Arc<(Mutex<VecDeque<ChannelMessage>>, Condvar)>,
 }
@@ -37,8 +38,8 @@ impl ChannelPlugin for MockPlugin {
             ..Default::default()
         }
     }
-    fn set_config(&mut self, config: std::collections::HashMap<String, String>) { self.config = config; }
-    fn set_secrets(&mut self, secrets: std::collections::HashMap<String, String>) { self.secrets = secrets; }
+    fn set_config(&mut self, config: DashMap<String, String>) { self.config = config; }
+    fn set_secrets(&mut self, secrets: DashMap<String, String>) { self.secrets = secrets; }
 
     fn state(&self) -> ChannelState { self.state.clone() }
     async fn start(&mut self) -> Result<(),PluginError> { self.state = ChannelState::Running; Ok(()) }

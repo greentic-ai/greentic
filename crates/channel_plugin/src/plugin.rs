@@ -1,9 +1,10 @@
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 // plugin_api/src/lib.rs
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, ffi::{c_char, c_void, CString}};
+use std::{ffi::{c_char, c_void, CString}};
 use thiserror::Error;
 use crate::{message::{ChannelCapabilities, ChannelMessage}, PluginHandle};
 
@@ -93,13 +94,13 @@ pub trait ChannelPlugin {//: Send + Sync {
     fn capabilities(&self) -> ChannelCapabilities;
 
     /// Receive the full configuration map.
-    fn set_config(&mut self, config: HashMap<String, String>);
+    fn set_config(&mut self, config: DashMap<String, String>);
 
     /// Lists the configs required
     fn list_config(&self) -> Vec<String>;
 
     /// Receive the full secrets map.
-    fn set_secrets(&mut self, secrets: HashMap<String, String>);
+    fn set_secrets(&mut self, secrets: DashMap<String, String>);
 
     /// Lists the secrets required
     fn list_secrets(&self) -> Vec<String>;

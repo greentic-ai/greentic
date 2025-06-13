@@ -1,4 +1,5 @@
-use std::{collections::HashMap, ffi::{c_char, CStr, CString}, sync::Arc};
+use std::{ffi::{c_char, CStr, CString}, sync::Arc};
+use dashmap::DashMap;
 use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger}};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{schema::{Metadata}, schema_for};
@@ -85,13 +86,13 @@ impl ChannelPlugin for PluginWrapper {
         if ok { caps } else { ChannelCapabilities::default() }
     }
 
-    fn set_config(&mut self, config: HashMap<String, String>) {
+    fn set_config(&mut self, config: DashMap<String, String>) {
         let json = serde_json::to_string(&config).unwrap_or_default();
         let c = CString::new(json).unwrap();
         unsafe { (self.inner.set_config)(self.inner.handle, c.as_ptr()) };
     }
 
-    fn set_secrets(&mut self, secrets: HashMap<String, String>) {
+    fn set_secrets(&mut self, secrets: DashMap<String, String>) {
         let json = serde_json::to_string(&secrets).unwrap_or_default();
         let c = CString::new(json).unwrap();
         unsafe { (self.inner.set_secrets)(self.inner.handle, c.as_ptr()) };
@@ -215,7 +216,9 @@ impl ChannelPlugin for PluginWrapper {
             (self.inner.receive_message)(self.inner.handle)
         };
         // 2) Await it
+        println!("@@@ REMOVE await fut before");
         let ptr = fut.await;
+        println!("@@@ REMOVE await fut after");
         if ptr.is_null() {
             return Err(PluginError::Other("receive_message returned null".into()).into());
         }
@@ -243,7 +246,7 @@ pub mod tests {
     use channel_plugin::message::{ChannelMessage, ChannelCapabilities};
     use channel_plugin::plugin::{ChannelState, LogLevel, PluginLogger};
     use channel_plugin::PluginHandle;
-    use std::collections::HashMap;
+    use dashmap::DashMap;
     use std::ffi::c_void;
     use std::os::raw::c_char;
     use std::path::PathBuf;
@@ -488,10 +491,10 @@ pub mod tests {
     #[test]
     fn test_config_and_secrets() {
         let mut w = make_wrapper();
-        let mut cfg = HashMap::new();
+        let cfg = DashMap::new();
         cfg.insert("k".into(), "v".into());
         w.set_config(cfg);
-        let mut sec = HashMap::new();
+        let sec = DashMap::new();
         sec.insert("s".into(), "t".into());
         w.set_secrets(sec);
     }

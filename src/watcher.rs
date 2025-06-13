@@ -127,6 +127,7 @@ impl DirectoryWatcher {
                         paths,
                         ..
                     }) => {
+                        println!("@@@ REMOVE remove {:?}",paths);
                         for path in paths {
                             if watcher_clone.is_relevant(&path)
                                 || path
@@ -136,11 +137,11 @@ impl DirectoryWatcher {
                             {
                                 let path_clone = path.clone();
                                 let watcher_inner = watcher_clone.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = watcher_inner.on_remove(&path_clone).await {
-                                        warn!(?path_clone, ?e, "Failed to handle removal");
-                                    }
-                                });
+                                //tokio::spawn(async move {
+                                if let Err(e) = watcher_inner.on_remove(&path_clone).await {
+                                    warn!(?path_clone, ?e, "Failed to handle removal");
+                                }
+                               // });
                             }
                         }
                     }
@@ -148,7 +149,10 @@ impl DirectoryWatcher {
                         warn!(?e, "Watcher error");
                     }
                  
-                    _ => {}
+                    event => {
+
+                        println!("@@@ REMOVE ME: watcher events not caught: {:?}",event);
+                    }
                 }
             }
         });

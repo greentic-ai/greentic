@@ -1,7 +1,8 @@
-use std::{collections::HashMap, ffi::{c_char, CStr, OsStr}, fs, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::SystemTime};
+use std::{ffi::{c_char, CStr, OsStr}, fs, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::SystemTime};
 use anyhow::{Context, Error};
 use async_trait::async_trait;
 use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelState, PluginLogger}, PluginHandle};
+use dashmap::DashMap;
 use libloading::{Library, Symbol};
 use tracing::{error, info, warn};
 use async_ffi::FfiFuture;
@@ -186,14 +187,15 @@ pub trait PluginEventHandler: Send + Sync + 'static {
 /// Holds all currently‐loaded plugins and knows how to reload them.
 pub struct PluginWatcher {
     dir: PathBuf,
-    pub plugins: Mutex<HashMap<String, Arc<Plugin>>>,
+    pub plugins: DashMap<String, Arc<Plugin>>,
     subscribers: Mutex<Vec<Arc<dyn PluginEventHandler>>>,
+    path_to_name: DashMap<String,String>,
 }
 
 impl PluginWatcher {
     pub fn new(dir: PathBuf) -> Self {
         // pre-load everything on startup
-        let mut map = HashMap::new();
+        let map = DashMap::new();
         for entry in std::fs::read_dir(&dir).unwrap() {
             let p = entry.unwrap().path();
             if let Some(ext) = p.extension().and_then(OsStr::to_str) {
@@ -208,8 +210,9 @@ impl PluginWatcher {
 
         PluginWatcher {
             dir,
-            plugins: Mutex::new(map),
+            plugins: map,
             subscribers: Mutex::new(Vec::new()),
+            path_to_name: DashMap::new(),
         }
     }
 
@@ -223,10 +226,9 @@ impl PluginWatcher {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<Plugin>> {
-        if let Some(plugin) = self.plugins.lock().unwrap().get(name) {
-             return Some(Arc::clone(plugin));
-        }
-        None
+        self.plugins
+            .get(name)                     // returns Option<Ref<'_, String, Arc<Plugin>>>
+            .map(|entry| entry.value().clone())
     }
 
     /// Subscribe for plugin add/reload/remove events.
@@ -238,13 +240,16 @@ impl PluginWatcher {
         }
 
         // Then notify it of all existing plugins
-        let guard = self.plugins.lock().unwrap();
-        for (name, plugin) in guard.iter() {
-            let result = handler
-                .plugin_added_or_reloaded(name, Arc::clone(plugin))
-                .await;
-            if result.is_err() {
-                warn!("Could not load plugin {}",name);
+        for entry in self.plugins.iter() {
+            // entry.key()  -> &String
+            // entry.value() -> &Arc<Plugin>
+            let name = entry.key();                         // borrow key
+            let plugin = Arc::clone(entry.value());         // clone the Arc so you own one
+            if let Err(err) = handler
+                .plugin_added_or_reloaded(name, plugin)
+                .await
+            {
+                warn!("Could not load plugin {}: {:?}", name, err);
             }
         }
     }
@@ -324,11 +329,11 @@ impl crate::watcher::WatchedType for PluginWatcher {
                 let plugin_name = get_name(&plugin);
                 let plugin_arc = Arc::new(plugin);
                 {
-                    let mut guard = self.plugins.lock().unwrap();
-                    // replace old plugin if present
-                    guard.insert(plugin_name.clone(), plugin_arc.clone());
+                    self.plugins.insert(plugin_name.clone(), plugin_arc.clone());
                 }
                 // now notify outside the lock
+                let path_str = path.to_string_lossy().to_string();
+                self.path_to_name.insert(path_str,plugin_name.clone());
                 self.notify_add_or_reload(&plugin_name, plugin_arc).await;
             }
             Err(err) => {
@@ -339,17 +344,13 @@ impl crate::watcher::WatchedType for PluginWatcher {
     }
 
     async fn on_remove(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(name) = Self::plugin_name(path) {
+        let path_str = path.to_string_lossy();
+        if let Some(name_ref) = self.path_to_name.get(&path_str.to_string()) {
             // Synchronously remove under the lock, record whether we actually removed something:
-            let did_remove = {
-                let mut guard = self.plugins.lock().unwrap();
-                guard.remove(&name).is_some()
-            };
-            // Now that the lock is dropped, it’s safe to await
-            if did_remove {
-                info!("Unloading plugin `{}`", name);
-                self.notify_removal(&name).await;
-            }
+            let plugin_name = name_ref.value().clone();
+            self.plugins.remove(&plugin_name);
+            info!("Unloading plugin `{}`", plugin_name);
+            self.notify_removal(&plugin_name).await;
         }
         Ok(())
     }
@@ -374,8 +375,8 @@ pub mod tests {
         cvar: Arc<Condvar>,
         outgoing: Arc<Mutex<Vec<ChannelMessage>>>,
         state: Arc<Mutex<ChannelState>>,
-        config: Arc<Mutex<HashMap<String, String>>>,
-        secrets: Arc<Mutex<HashMap<String, String>>>,
+        config: DashMap<String, String>,
+        secrets: DashMap<String, String>,
         //notify: Arc<Notify>,
         logger: Option<PluginLogger>,
     }
@@ -387,8 +388,8 @@ pub mod tests {
                     cvar: Arc::new(Condvar::new()),
                     outgoing: Arc::new(Mutex::new(vec![])),
                     state: Arc::new(Mutex::new(ChannelState::Starting)),
-                    config: Arc::new(Mutex::new(HashMap::new())),
-                    secrets: Arc::new(Mutex::new(HashMap::new())),
+                    config: DashMap::new(),
+                    secrets: DashMap::new(),
                     //notify: Arc::new(Notify::new()),
                     logger: None,
                 }
@@ -446,16 +447,16 @@ pub mod tests {
             }
         }
 
-        fn set_config(&mut self, config: HashMap<String, String>) {
-            *self.config.lock().unwrap() = config;
+        fn set_config(&mut self, config: DashMap<String, String>) {
+            self.config = config;
         }
 
         fn list_config(&self) -> Vec<String> {
             vec![]
         }
 
-        fn set_secrets(&mut self, secrets: HashMap<String, String>) {
-            *self.secrets.lock().unwrap() = secrets;
+        fn set_secrets(&mut self, secrets: DashMap<String, String>) {
+            self.secrets = secrets;
         }
 
         fn list_secrets(&self) -> Vec<String> {
@@ -505,7 +506,7 @@ pub mod tests {
 
     #[test]
     fn plugin_name_extracts_stem() {
-        let p = PathBuf::from("/foo/bar/libbaz.so");
+        let p = PathBuf::from("/foo/bar/baz.so");
         let name = PluginWatcher::plugin_name(&p);
         assert_eq!(name, Some("libbaz".into()));
 
@@ -544,8 +545,7 @@ pub mod tests {
         // Since `a.so` isn't a real library, Plugin::load will fail and skip it,
         // so watcher.plugins should be empty.
         let watcher = PluginWatcher::new(dir);
-        let guard = watcher.plugins.lock().unwrap();
-        assert!(guard.is_empty());
+        assert!(watcher.plugins.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -562,8 +562,7 @@ pub mod tests {
         watcher.on_create_or_modify(&so).await.unwrap();
 
         // since load failed, the map remains empty
-        let guard = watcher.plugins.lock().unwrap();
-        assert!(guard.is_empty());
+        assert!(watcher.plugins.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -576,10 +575,9 @@ pub mod tests {
         File::create(&so).unwrap();
         // Simulate a plugin in the map
         {
-            let mut guard = watcher.plugins.lock().unwrap();
             // create a dummy Plugin with a real file path
             let fake = make_noop_plugin();
-            guard.insert("dummy".into(), fake);
+            watcher.plugins.insert("dummy".into(), fake);
         }
 
         // remove a non-existent file – must not panic
@@ -593,7 +591,6 @@ pub mod tests {
         watcher.on_remove(&p).await.unwrap();
 
         // map is now empty
-        let guard2 = watcher.plugins.lock().unwrap();
-        assert!(guard2.is_empty());
+        assert!(watcher.plugins.is_empty());
     }
 }

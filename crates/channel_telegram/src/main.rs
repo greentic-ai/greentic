@@ -1,7 +1,6 @@
 // main.rs
 // An example main program that uses the TelegramPlugin to echo incoming messages.
 
-use std::collections::HashMap;
 use std::ffi::{c_void, CStr};
 use std::path::Path;
 use channel_telegram::TelegramPlugin;
@@ -10,6 +9,7 @@ use tokio;
 use channel_plugin::plugin::{ChannelPlugin, LogLevel, PluginLogger};
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
 use dotenvy::from_path;
+use dashmap::DashMap;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let mut plugin = TelegramPlugin::default();
     let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
     plugin.set_logger(logger);
-    let mut secrets = HashMap::new();
+    let secrets = DashMap::new();
     secrets.insert("TELEGRAM_TOKEN".to_string(), std::env::var("TELEGRAM_TOKEN").expect("TELEGRAM_TOKEN was not set"));
     plugin.set_secrets(secrets);
 

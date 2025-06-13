@@ -1,6 +1,7 @@
 // src/main.rs
 
-use std::{collections::HashMap, ffi::c_void};
+use std::ffi::c_void;
+use dashmap::DashMap;
 use channel_plugin::plugin::{ChannelPlugin, PluginLogger, LogLevel};
 use channel_ws::WsPlugin;
 
@@ -21,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     // 1) Create and configure the plugin
     let mut plugin = WsPlugin::default();
 
-    let mut cfg = HashMap::new();
+    let cfg = DashMap::new();
     cfg.insert("address".into(), "0.0.0.0".into());
     cfg.insert("port".into(), "8888".into());
     plugin.set_config(cfg);

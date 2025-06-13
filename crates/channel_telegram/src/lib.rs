@@ -1,7 +1,8 @@
 // channel_telegram/src/lib.rs
 
-use std::{collections::{HashMap}, convert::Infallible};
+use std::convert::Infallible;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use chrono::Utc;
 use once_cell::sync::OnceCell;
 use teloxide::{
@@ -15,7 +16,7 @@ use channel_plugin::{
     },
     plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger},
 };
-use tokio::{runtime::Handle, sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}};
+use tokio::{sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}};
 
 /// Extract `MessageContent` from a Telegram SDK message
 fn extract_content(bot: Bot, msg: &TelegramMessage) -> Option<MessageContent> {
@@ -159,8 +160,8 @@ pub struct TelegramPlugin {
     incoming_tx: UnboundedSender<ChannelMessage>,
     incoming_rx: UnboundedReceiver<ChannelMessage>,
     state:   ChannelState,
-    config:  HashMap<String,String>,
-    secrets: HashMap<String,String>,
+    config:  DashMap<String,String>,
+    secrets: DashMap<String,String>,
     bot:     Option<Bot>,
     logger: Option<PluginLogger>,
 }
@@ -172,8 +173,8 @@ impl Default for TelegramPlugin {
             incoming_tx: tx,
             incoming_rx: rx,
             state: ChannelState::Stopped, 
-            config: HashMap::new(), 
-            secrets: HashMap::new(),
+            config: DashMap::new(), 
+            secrets: DashMap::new(),
             bot:None, 
             logger: None}
     }
@@ -187,11 +188,10 @@ impl TelegramPlugin {
         static STARTED: OnceCell<()> = OnceCell::new();
         if STARTED.set(()).is_ok() {
             // 1) Grab the token & build the Bot
-            let token = self
-                .secrets
-                .get("TELEGRAM_TOKEN")
-                .cloned()
-                .unwrap_or_default();
+            let token = match self.secrets.get("TELEGRAM_TOKEN") {
+                Some(entry) => entry.value().clone(),
+                None         => String::new(),
+            };
             let bot = Bot::new(token);
             self.bot = Some(bot.clone());
 
@@ -234,8 +234,7 @@ impl TelegramPlugin {
                 });
 
             // 4) Spawn the dispatcher on the Tokio runtime
-            let handle: Handle = Handle::current();
-            handle.spawn(async move {               
+            tokio::spawn(async move {               
                 Dispatcher::builder(bot, handler)
                 .build()
                 .dispatch()
@@ -314,7 +313,7 @@ impl ChannelPlugin for TelegramPlugin {
         }
     }
 
-    fn set_config(&mut self, config: std::collections::HashMap<String, String>) { 
+    fn set_config(&mut self, config: DashMap<String, String>) { 
         self.config = config; 
     }
 
@@ -322,7 +321,7 @@ impl ChannelPlugin for TelegramPlugin {
         Vec::new()
     }  
 
-    fn set_secrets(&mut self, secrets: std::collections::HashMap<String, String>) { 
+    fn set_secrets(&mut self, secrets: DashMap<String, String>) { 
         self.secrets = secrets; 
     }
 
@@ -426,8 +425,8 @@ mod tests {
     use super::*;
     use channel_plugin::message::{ChannelMessage, MessageContent, Participant, MessageDirection};
     use channel_plugin::plugin::{ChannelState, PluginLogger, LogLevel};
-    use std::collections::HashMap;
     use chrono::Utc;
+    use dashmap::DashMap;
 
     extern "C" fn test_log_fn(
         _ctx: *mut std::ffi::c_void,
@@ -503,7 +502,7 @@ mod tests {
         let mut p = TelegramPlugin::default();
         p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
         p.set_secrets({
-            let mut m = HashMap::new();
+            let m = DashMap::new();
             m.insert("TELEGRAM_TOKEN".into(), "fake".into());
             m
         });
@@ -570,15 +569,20 @@ mod tests {
     async fn test_set_config_and_secrets_async() {
         let mut p = TelegramPlugin::default();
         p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        {
+            let cfg = DashMap::new();
+            cfg.insert("foo".into(), "bar".into());
+            p.set_config(cfg.clone());
+            let entry = p.config.get("foo").expect("`foo` must exist");
+            assert_eq!(entry.value(), "bar");
+        }
 
-        let mut cfg = HashMap::new();
-        cfg.insert("foo".into(), "bar".into());
-        p.set_config(cfg.clone());
-        assert_eq!(p.config.get("foo"), Some(&"bar".into()));
-
-        let mut sec = HashMap::new();
+        let sec = DashMap::new();
         sec.insert("TELEGRAM_TOKEN".into(), "token".into());
         p.set_secrets(sec.clone());
-        assert_eq!(p.secrets.get("TELEGRAM_TOKEN"), Some(&"token".into()));
+        {
+            let entry = p.secrets.get("TELEGRAM_TOKEN").expect("telegra token not set");
+            assert_eq!(entry.value(), "token");
+        }
     }
 }
