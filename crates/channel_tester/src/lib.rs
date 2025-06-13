@@ -6,9 +6,8 @@ use chrono::Utc;
 use notify::{event::{CreateKind, ModifyKind}, Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_yaml_bw;
-use tokio::{
-    fs, sync::{broadcast, mpsc, Mutex}, task, time
-};
+use tokio::{ fs, sync::{mpsc, Mutex}, task, };
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use channel_plugin::{
     export_plugin,
     message::{ChannelCapabilities, ChannelMessage, MessageContent},
@@ -38,27 +37,30 @@ pub struct TesterPlugin {
     watcher: Option<PollWatcher>,
     config: DashMap<String,String>,
 
-    /// “Incoming” → host calls receive_message()  
-    incoming_tx:   broadcast::Sender<ChannelMessage>,  
+    /// Incoming  → host calls receive_message()
+    incoming_tx: Sender<ChannelMessage>,
+    incoming_rx: Receiver<ChannelMessage>,
 
-
-    /// “Outgoing” → host calls our send_message()  
-    reply_tx:      broadcast::Sender<String>, 
+    /// Outgoing → host calls send_message()
+    reply_tx:   Sender<String>,
+    reply_rx:   Receiver<String>,
 
 
 }
 
 impl Default for TesterPlugin {
     fn default() -> Self {
-       let (incoming_tx, _) = broadcast::channel(32);
-        let (reply_tx,    _) = broadcast::channel(32);
+        let (incoming_tx, incoming_rx) = unbounded();
+        let (reply_tx,    reply_rx   ) = unbounded();
         
         TesterPlugin {
             logger:     None,
             state:      ChannelState::Stopped,
             config:     DashMap::new(),
             incoming_tx,
+            incoming_rx,
             reply_tx,
+            reply_rx,
             watcher: None,
         }
     }
@@ -170,14 +172,21 @@ impl ChannelPlugin for TesterPlugin {
         // only in `cargo test` do we auto-echo back into send_message()
         #[cfg(test)]
         {
-            let mut echo_rx = self.incoming_tx.subscribe();
+            let echo_rx = self.incoming_rx.clone();
             let mut echo_plugin = self.clone_inner();
-            tokio::task::spawn(async move {
-                while let Ok(cm) = echo_rx.recv().await {
-                    println!("@@@ REMOVE TEST");
-                    let _ = echo_plugin.send_message(cm).await;
-                }
-            });
+            tokio::spawn(async move {
+                    loop {
+                        // Block in place to wait for the next test message:
+                        let cm = tokio::task::block_in_place(|| {
+                            echo_rx.recv()
+                        })
+                        .expect("tester incoming channel closed");
+
+                        println!("@@@ REMOVE TEST");
+                        // Now hand it back through your async send_message
+                        let _ = echo_plugin.send_message(cm).await;
+                    }
+                });
         }
 
         Ok(())
@@ -211,10 +220,8 @@ impl ChannelPlugin for TesterPlugin {
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
             println!("@@@ REMOVE 8");
         // each call to receive_message() should get its own subscriber:
-        let mut rx = self.incoming_tx.subscribe();
-        let result = rx.recv().await.map_err(|_| PluginError::Other("tester rx closed".into()));
-        println!("@@@ REMOVE 8.5:{:?}",result);
-        result
+        let rx = self.incoming_rx.clone();
+        rx.recv().map_err(|_| PluginError::Other("tester rx closed".into()))
     }
 }
 impl TesterPlugin {
@@ -222,12 +229,14 @@ impl TesterPlugin {
     /// we want an `Arc<Mutex<TesterPlugin>>`.
     fn clone_inner(&self) -> TesterPlugin {
         TesterPlugin {
-            logger:     self.logger.clone(),
-            state:      self.state.clone(),
-            config:     self.config.clone(),
+            logger:      self.logger.clone(),
+            state:       self.state.clone(),
+            config:      self.config.clone(),
             incoming_tx: self.incoming_tx.clone(),
+            incoming_rx: self.incoming_rx.clone(),
             reply_tx:    self.reply_tx.clone(),
-            watcher:    None,
+            reply_rx:    self.reply_rx.clone(),
+            watcher:     None,
         }
     }
 
@@ -259,13 +268,13 @@ impl TesterPlugin {
             cm.direction  = /* incoming */ channel_plugin::message::MessageDirection::Incoming;
             self.incoming_tx.send(cm).ok();
     println!("@@@ REMOVE 12");
-            // now wait for the flow to reply via our `send_message` hook...
-            let mut reply_sub = self.reply_tx.subscribe();
-            let got = time::timeout(Duration::from_millis(test.timeout), async {
-                reply_sub.recv().await.map(Some).unwrap_or(None)
-            })
-            .await
-            .unwrap_or(None);
+            // wait for the flow to reply via our send_message hook…
+            let got = self
+                .reply_rx               // an owned Receiver<String>
+                .clone()                // cloneable receiver: each clone sees all messages
+                .recv_timeout(Duration::from_millis(test.timeout))
+                .ok();                  // Option<String>
+            println!("@@@ REMOVE GOT {:?}", got);
 
             let pass = got.as_deref() == Some(&test.expect);
             results.push(format!("{}: {}", test.name, if pass {"PASS"} else {"FAIL"}));
@@ -275,10 +284,13 @@ impl TesterPlugin {
                 &format!("→ `{}` {} (got {:?})", test.name, if pass {"PASS"} else {"FAIL"}, got),
             );
     println!("@@@ REMOVE 13");
-            // drain any extra replies before next test:
-            while let Ok(Ok(_)) = time::timeout(Duration::from_millis(0), reply_sub.recv()).await {
-                continue;
-            }
+            // Drain any extra replies before next test
+            tokio::task::block_in_place(|| {
+                let rx = self.reply_rx.clone();
+                while let Ok(_) = rx.try_recv() {
+                    // discard
+                }
+            });
         }
 
         // write results
