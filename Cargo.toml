@@ -70,6 +70,7 @@ rhai = { version="1.22.2", features = ["serde"] }
 regex = "1.11.1"
 tokio-util = "0.7.15"
 async-ffi = "0.5.0"
+moka = { version = "0.12.10", features = ["future"] }
 
 [dev-dependencies]
 url = "2.5.4"

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ChannelMessage {
     pub id: String,                      // Unique ID (UUID or channel-provided)
-    pub session_id: Option<String>,              // A UUID uses during the same flow execution by the same user
+    pub session_id: String,              // A UUID uses during the same flow execution by the same user
     pub direction: MessageDirection,     // Incoming or Outgoing
     pub timestamp: DateTime<Utc>,        // When it was sent or received
     pub channel: String,                 // Slack, Telegram, Email, etc.

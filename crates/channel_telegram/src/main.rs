@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
             // Build reply message
             let reply_text = format!("Received: {}", text);
             let reply = ChannelMessage {
-                session_id: Some(chat_id.clone()),
+                session_id: chat_id.clone(),
                 thread_id: Some(chat_id.clone()),
                 direction: MessageDirection::Outgoing,
                 timestamp: Utc::now(),

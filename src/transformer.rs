@@ -153,7 +153,7 @@ mod tests {
     fn test_transformer_execution() {
         let transformer = UppercaseTransformer;
         let context = make_context();
-        let input = Message::new("123", json!({ "text": "hello" }),None);
+        let input = Message::new("123", json!({ "text": "hello" }),"123".to_string());
 
         let output = transformer.transform(&input, &context).unwrap();
         assert_eq!(output.payload()["text"], "HELLO");

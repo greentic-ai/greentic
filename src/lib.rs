@@ -12,7 +12,6 @@ pub mod node;
 pub mod process;
 pub mod schema;
 pub mod secret;
-pub mod state;
 pub mod transformer;
 pub mod util;
 pub mod watcher;

@@ -137,7 +137,7 @@ mod tests {
     use super::*;
     use crate::node::{NodeContext};
     use crate::message::Message;
-    use crate::state::StateValue;
+    use crate::flow::state::StateValue;
     use serde_json::json;
 
 
@@ -156,7 +156,7 @@ mod tests {
             template: "Hello world!".to_string(),
         };
 
-        let msg = Message::new("test_id", json!({}), None);
+        let msg = Message::new("test_id", json!({}), "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();
@@ -171,7 +171,7 @@ mod tests {
             template: "Hi {{msg.id}}, you are {{state.age}} and it's {{payload.weather.temp}}°C.".to_string(),
         };
 
-        let msg = Message::new("abc123", json!({"weather": {"temp": 21}}), Some("sess42".to_string()));
+        let msg = Message::new("abc123", json!({"weather": {"temp": 21}}), "sess42".to_string());
         let mut ctx = dummy_context_with_state();
 
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();
@@ -187,7 +187,7 @@ mod tests {
         };
 
         let json_string = r#"{"weather": {"temp": 17}}"#;
-        let msg = Message::new("abc123", json_string.into(), None);
+        let msg = Message::new("abc123", json_string.into(),  "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();
@@ -202,7 +202,7 @@ mod tests {
             template: "Hello {{state.name}}, temp: {{payload.temp}}".to_string(),
         };
 
-        let msg = Message::new("id", json!({}), None);
+        let msg = Message::new("id", json!({}),  "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();

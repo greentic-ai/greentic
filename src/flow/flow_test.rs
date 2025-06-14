@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     // src/flow_test.rs
-    use std::collections::HashMap;
     use std::ffi::{c_char, CString};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,6 +11,7 @@ mod tests {
     use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
     use channel_plugin::plugin::{ChannelState, PluginLogger};
     use channel_plugin::PluginHandle;
+    use dashmap::DashMap;
     use schemars::schema::RootSchema;
     use serde::{Deserialize, Serialize};
     use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler, ManagedChannel};
@@ -20,11 +20,12 @@ mod tests {
     use crate::channel::wrapper::tests::make_wrapper;
     use crate::channel::PluginWrapper;
     use crate::config::{ConfigManager, MapConfigManager};
+    use crate::flow::session::{InMemorySessionStore, SessionStoreType};
     use crate::mapper::{CopyKey, CopyMapper, Mapper};
     use crate::process::debug_process::DebugProcessNode;
     use crate::process::manager::{BuiltInProcess, ProcessManager};
     use crate::process::script_process::ScriptProcessNode;
-    use crate::state::{InMemoryState, StateValue};
+    use crate::flow::state::{InMemoryState, SessionStateType, StateValue};
     use petgraph::visit::Topo;
     use schemars::{schema_for, JsonSchema};
     use serde_json::json;
@@ -129,8 +130,9 @@ mod tests {
     /// little helper to build a NodeContext with no channel_origin
     fn make_ctx() -> NodeContext {
         NodeContext::new(
-            HashMap::new(),                     // initial flow‐state
-            HashMap::new(),                     // our "local" state
+            "123".to_string(),
+            InMemoryState::new(),                     // initial flow‐state
+            DashMap::new(),                     // our "local" state
             Executor::dummy(),
             ChannelManager::dummy(),
             ProcessManager::dummy(),
@@ -199,7 +201,7 @@ mod tests {
         .build();
 
         let mut ctx = make_ctx();
-        let msg = Message::new("m1", json!({"foo":"bar"}), None);
+        let msg = Message::new("m1", json!({"foo":"bar"}), "123".to_string());
         let report = flow.clone().run(msg.clone(), "start", &mut ctx).await;
 
         // Should have three records, no error:
@@ -246,7 +248,7 @@ mod tests {
         .build();
 
         let mut ctx = make_ctx();
-        let input = Message::new("m2", json!({"val":123}), None);
+        let input = Message::new("m2", json!({"val":123}), "123".to_string());
         let report = flow.clone().run(input.clone(), "A", &mut ctx).await;
 
         // Should have four records (A,B,C,D) in that topo order:
@@ -305,7 +307,7 @@ mod tests {
 
 
         let mut ctx = make_ctx();
-        let input = Message::new("m-retry", json!({"x":1}), None);
+        let input = Message::new("m-retry", json!({"x":1}), "123".to_string());
         let report = flow.run(input.clone(), "start", &mut ctx).await;
 
         // we should see two attempts of the "start" node, then one of "end"
@@ -349,7 +351,7 @@ mod tests {
         .build();
 
         let mut ctx = make_ctx();
-        let input = Message::new("m-o", json!({"ok":true}), None);
+        let input = Message::new("m-o", json!({"ok":true}), "123".to_string());
         let report = flow.run(input.clone(), "A", &mut ctx).await;
 
         // records: just A then Y
@@ -386,7 +388,7 @@ mod tests {
         let wrapper = make_wrapper();
         let mock = ManagedChannel::new(wrapper, None, None);
         assert!(cm.register_channel("mock".to_string(), mock).await.is_ok());
-        let m = Message::new("m-c", json!({"foo":"bar"}), None);
+        let m = Message::new("m-c", json!({"foo":"bar"}), "123".to_string());
         let report = flow.run(m.clone(), "chan", &mut ctx).await;
 
         // Should have two records (chan and dbg)
@@ -436,8 +438,9 @@ mod tests {
         let tempdir = TempDir::new().unwrap();
         let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
         let ctx = NodeContext::new(
-            HashMap::new(),
-            HashMap::new(),
+            "123".to_string(),
+            InMemoryState::new(),
+            DashMap::new(),
             executor.clone(),
             channel_mgr.clone(),
             Arc::new(process_mgr.clone()),
@@ -459,7 +462,7 @@ mod tests {
         let result = cfg.create_out_msg(
             &ctx,
             "id1".into(),
-            None,
+            "123".to_string(),
             json!("payload"),
             MessageDirection::Outgoing,
         );
@@ -477,16 +480,17 @@ mod tests {
         let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), host_logger)
             .await
             .expect("channel manager");
-        let mut state: HashMap<String, StateValue> = HashMap::new();
+        let state = InMemoryState::new();
         // Provide participant JSON in state
         let part_json = json!({ "id": "p1", "display_name": "Alice", "channel_specific_id": "a1" });
         let part_val: StateValue = serde_json::from_value(part_json.clone()).unwrap();
-        state.insert("recipient".into(), part_val);
+        state.set("recipient".into(), part_val);
         let tempdir = TempDir::new().unwrap();
         let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
         let ctx = NodeContext::new(
-            state,
-            HashMap::new(),
+            "123".to_string(),
+            state, 
+            DashMap::new(),
             executor.clone(),
             channel_mgr.clone(),
             Arc::new(process_mgr.clone()),
@@ -508,7 +512,7 @@ mod tests {
         let msg = cfg.create_out_msg(
             &ctx,
             "id2".into(),
-            None,
+            "123".to_string(),
             json!("ignored"),
             MessageDirection::Outgoing,
         ).expect("message can be produced");
@@ -879,7 +883,7 @@ mod tests {
         .build();
 
         // prepare a dummy Message
-        let msg = Message::new("msg1", json!({ "hello": "world" }),None);
+        let msg = Message::new("msg1", json!({ "hello": "world" }),"123".to_string());
 
         // dummy context
         let executor = make_executor();
@@ -891,7 +895,9 @@ mod tests {
         let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
 
         // **3.** create a FlowManager and a ChannelsRegistry that auto‐registers any Channel nodes
-        let fm = FlowManager::new(InMemoryState::new(), executor.clone(), channel_manager.clone(), Arc::new(process_mgr.clone()), secrets.clone());
+        let store = Arc::new(InMemorySessionStore::new(30));
+
+        let fm = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), Arc::new(process_mgr.clone()), secrets.clone());
         let registry = ChannelsRegistry::new(fm.clone(),channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
         let noop = make_noop_plugin();              // Arc<Plugin>
@@ -903,7 +909,7 @@ mod tests {
 
         let participant = Participant{ id: "id".to_string(), display_name:None, channel_specific_id: None };
         let co = ChannelOrigin::new("channel".to_string(), participant);
-        let mut ctx = NodeContext::new(HashMap::new(), HashMap::new(), executor, channel_manager, Arc::new(process_mgr), secrets, Some(co));
+        let mut ctx = NodeContext::new("123".to_string(), store.get_or_create("123").await, DashMap::new(), executor, channel_manager, Arc::new(process_mgr), secrets, Some(co));
 
 
         // run

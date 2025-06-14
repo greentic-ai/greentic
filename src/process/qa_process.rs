@@ -12,7 +12,7 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, state::StateValue, util::render_handlebars};
+use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, flow::state::StateValue, util::render_handlebars};
 /// QAProcessNode
 ///
 /// A “stateful” question‐and‐answer node that guides a user through a series of prompts,
@@ -169,19 +169,15 @@ impl NodeType for QAProcessNode {
     async fn process(&self, msg: Message, ctx: &mut NodeContext)
       -> Result<NodeOut, NodeErr>
     {
-        let session = msg.session_id()
-                       .expect("channels must set session");
+        let session = msg.session_id();
 
          // read (or default) our little counter
         let idx = ctx
             .get_state("qa.current_question")
-            .and_then(StateValue::as_number)
-            .map(|n| n as usize)
-            .unwrap_or(0);
-        
+            .unwrap_or(StateValue::Number(0.0));
 
         // 1) first‐time visitor?
-        if idx == 0 {
+        if idx == StateValue::Number(0.0) {
             // clear out any previous answers
             for q in &self.config.questions {
                 ctx.delete_state(&q.state_key);
@@ -191,14 +187,16 @@ impl NodeType for QAProcessNode {
         }
 
         // if we haven't asked this question yet, ask it
-        if idx < self.config.questions.len() {
+        let pos = idx.as_number().unwrap() as usize;
+        if pos < self.config.questions.len() {
             // prompt
-            let qcfg = &self.config.questions[idx];
+            
+            let qcfg = &self.config.questions.get(pos).unwrap();
             let prompt = render_handlebars(&qcfg.prompt, &ctx.get_all_state());
             let out = Message::new(
                 &msg.id(),
                 json!({ "text": prompt }),
-                Some(session.to_string()),
+                session.to_string(),
             );
             return Ok(NodeOut::reply(out));
         }
@@ -209,17 +207,17 @@ impl NodeType for QAProcessNode {
         //  but you can also interleave: ask → receive → store → ask → …)
 
         // 2) Validate & store answer to question idx-1
-        let last_q = &self.config.questions[idx - 1];
+        let last_q = &self.config.questions[pos - 1];
         let payload_val = msg.payload();
         let raw = payload_val.as_str().unwrap_or("");
-        match parse_and_validate(raw, &last_q.answer_type, last_q.validate.as_ref()) {
+        match parse_and_validate(raw, &last_q.answer_type, last_q.validate.clone()) {
             Err(err) => {
                 // re‐ask the same question
                 let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
                 let out = Message::new(
                     &msg.id(),
                     json!({ "text": format!("I didn’t understand: {}\n{}", err, prompt) }),
-                    Some(session.to_string()),
+                    session.to_string(),
                 );
                 return Ok(NodeOut::all(out));
             }
@@ -234,38 +232,39 @@ impl NodeType for QAProcessNode {
                 ctx.set_state(&last_q.state_key, state_val);
 
                 // bump counter to idx+1
+                let q = idx.as_number().unwrap()+1.0;
                 ctx.set_state(
                     "qa.current_question",
-                    StateValue::Number((idx + 1) as f64),
+                    StateValue::Number(q),
                 );
             }
         }
 
         // 3) Are there more questions?
-        let new_idx = idx;
-        if new_idx < self.config.questions.len() {
-            let next_q = &self.config.questions[new_idx];
+        let num: usize = idx.as_number().unwrap() as usize;
+        if num < self.config.questions.len() {
+            let next_q = &self.config.questions.get(num).unwrap();
             let prompt = render_handlebars(&next_q.prompt, &ctx.get_all_state());
             let out = Message::new(
                 &msg.id(),
                 json!({ "text": prompt }),
-                Some(session.to_string()),
+                session.to_string(),
             );
             return Ok(NodeOut::all(out));
         }
 
         // 4) All done! run routing rules against ctx.state
         let answers = ctx.get_all_state();
-        let json_answers: HashMap<String, JsonValue> = answers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.to_json()))
-            .collect();
+
+        let mut json_answers = serde_json::Map::new();
+        for (k, v) in &answers {
+            json_answers.insert(k.clone(), v.to_json());
+        }
+
         for rule in &self.config.routing {
             if rule.matches(&json_answers) {
-                let payload = JsonValue::Object(
-                    answers.into_iter().map(|(k, v)| (k, v.to_json())).collect()
-                );
-                // wrap that JSON in a Message, preserving the same session:
+                let payload = JsonValue::Object(json_answers.clone());
+
                 let out_msg = Message::new(
                     &msg.id(),
                     payload,
@@ -370,7 +369,7 @@ pub struct RoutingRule {
 }
 
 impl RoutingRule {
-    pub fn matches(&self, answers: &HashMap<String, JsonValue>) -> bool {
+    pub fn matches(&self, answers: &serde_json::Map<String, JsonValue>) -> bool {
         match &self.condition {
             None => true,
             Some(cond) => cond.matches(answers),
@@ -379,7 +378,7 @@ impl RoutingRule {
 }
 
 impl Condition {
-    pub fn matches(&self, answers: &HashMap<String, JsonValue>) -> bool {
+    pub fn matches(&self, answers: &serde_json::Map<String, JsonValue>) -> bool {
         match self {
 
             Condition::Equals { question_id, value } => {
@@ -427,13 +426,13 @@ impl Condition {
 pub fn parse_and_validate(
     raw: &str,
     answer_type: &AnswerType,
-    validate: Option<&ValidationRule>,
+    validate: Option<ValidationRule>,
 ) -> Result<JsonValue, String> {
     match answer_type {
         AnswerType::Text => {
             // first apply regex if present
             if let Some(ValidationRule::Regex(re)) = validate {
-                let regex = Regex::new(re)
+                let regex = Regex::new(&re)
                     .map_err(|e| format!("internal regex error: {}", e))?;
                 if !regex.is_match(raw) {
                     return Err(format!("must match /{}/", re));
@@ -446,7 +445,7 @@ pub fn parse_and_validate(
             let v: f64 = raw.trim().parse().map_err(|_| "please enter a number".to_string())?;
             // range check if given
             if let Some(ValidationRule::Range { range: RangeParams{min, max }}) = validate {
-                if v < *min || v > *max {
+                if v < min || v > max {
                     return Err(format!("must be between {} and {}", min, max));
                 }
             }
@@ -604,13 +603,14 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::{channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, flow::manager::Flow, logger::OpenTelemetryLogger, node::ChannelOrigin, process::manager::{BuiltInProcess, ProcessManager}, secret::{EnvSecretsManager, SecretsManager}};
+    use crate::{channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, flow::{manager::Flow, state::InMemoryState}, logger::OpenTelemetryLogger, node::ChannelOrigin, process::manager::{BuiltInProcess, ProcessManager}, secret::{EnvSecretsManager, SecretsManager}};
 
     use super::*;
     use channel_plugin::message::Participant;
+    use dashmap::DashMap;
     use serde_json::json;
     use chrono::Utc;
-    use std::{collections::HashMap, path::Path, sync::Arc};
+    use std::{path::Path, sync::Arc};
     use serde_yaml_bw::Value as YamlValue;
 
     #[test]
@@ -624,14 +624,14 @@ mod tests {
         // only digits
         let vr = parse_and_validate("12345",
             &AnswerType::Text,
-            Some(&ValidationRule::Regex(r"^\d+$".into()))
+            Some(ValidationRule::Regex(r"^\d+$".into()))
         ).unwrap();
         assert_eq!(vr, JsonValue::String("12345".into()));
 
         // fail non-digit
         let err = parse_and_validate("abc",
             &AnswerType::Text,
-            Some(&ValidationRule::Regex(r"^\d+$".into()))
+            Some(ValidationRule::Regex(r"^\d+$".into()))
         ).unwrap_err();
         assert!(err.contains("must match"));
     }
@@ -647,8 +647,8 @@ mod tests {
 
         // with range
         let rule = ValidationRule::Range {range:RangeParams { min: 0.0, max: 10.0 } };
-        assert_eq!(parse_and_validate("5", &AnswerType::Number, Some(&rule)).unwrap(), json!(5.0));
-        assert!(parse_and_validate("-1", &AnswerType::Number, Some(&rule)).is_err());
+        assert_eq!(parse_and_validate("5", &AnswerType::Number, Some(rule.clone())).unwrap(), json!(5.0));
+        assert!(parse_and_validate("-1", &AnswerType::Number, Some(rule)).is_err());
     }
 
     #[test]
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn condition_matches_basic() {
-        let mut answers = HashMap::new();
+        let mut answers = serde_json::Map::new();
         answers.insert("a".to_string(), json!(42));
         answers.insert("b".to_string(), json!("foo"));
 
@@ -694,7 +694,7 @@ mod tests {
             value: json!("foo"),
         };
         assert!(eq.matches(&answers));
-        assert!(!eq.matches(&HashMap::new()));
+        assert!(!eq.matches(&serde_json::Map::new()));
 
         // GreaterThan
         let gt = Condition::GreaterThan { question_id: "a".into(), threshold: 10. };
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn routing_rule_uses_condition() {
-        let mut answers = HashMap::new();
+        let mut answers = serde_json::Map::new();
         answers.insert("score".into(), json!(75));
 
         // route to "pass" if score >= 50, else to "fail"
@@ -946,8 +946,8 @@ connections:
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let secrets = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let executor = Executor::new(secrets.clone(), logger.clone());
-        let state = HashMap::<String, StateValue>::new();
-        let config = HashMap::<String,String>::new();
+        let state = InMemoryState::new();
+        let config = DashMap::<String,String>::new();
         let config_manager = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
@@ -956,7 +956,7 @@ connections:
         let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_send.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
         let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin)),None,None);
         channel_manager.register_channel("mock".to_string(), mock).await.expect("could not load mock channel");
-        let mut ctx = NodeContext::new(state, config, executor, channel_manager, Arc::new(process_manager), secrets, Some(channel_origin));
+        let mut ctx = NodeContext::new("123".to_string(),state, config, executor, channel_manager, Arc::new(process_manager), secrets, Some(channel_origin));
 
         let payload = json!({"q": "London".to_string(), "days": 5});
         let incoming = Message::new_uuid("test", payload);
@@ -965,9 +965,9 @@ connections:
         let report = flow.run(incoming.clone(), "telegram_in", &mut ctx).await;
         println!("Flow report: {:?}", report);
 
-        let state = ctx.get_all_state();
-        assert!(state.contains_key("q"));
-        assert!(state.contains_key("days"));
+
+        assert!(ctx.state_contains_key("q"));
+        assert!(ctx.state_contains_key("days"));
     }
 }
 

@@ -11,7 +11,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::executor::call_result_to_json;
-use crate::state::StateValue;
+use crate::flow::state::StateValue;
 use crate::{
     message::Message,
     node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, ToolNode},
@@ -136,7 +136,7 @@ impl NodeType for OllamaAgent {
                         for item in add {
                             if let (Some(k), Some(v)) = (item.get("key"), item.get("value")) {
                                 if let Some(k) = k.as_str() {
-                                    match StateValue::try_from(v.clone()) {
+                                    match StateValue::try_from(v.clone()){
                                         Ok(state_val) => context.set_state(k, state_val),
                                         Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
                                     }
@@ -391,7 +391,7 @@ mod ollama_agent_tests {
         // no mode => Chat
         let agent = make_agent(None);
         // this will attempt Chat against localhost:11434 and fail
-        let msg = Message::new("id", json!({}), None);
+        let msg = Message::new("id", json!({}), "123".to_string());
         let mut ctx = NodeContext::dummy();
         let err = agent.process(msg, &mut ctx).await.unwrap_err();
         let e = format!("{:?}", err);
@@ -408,7 +408,7 @@ mod ollama_agent_tests {
             "model": "custom-model",
             "text": "hello embed"
         });
-        let msg = Message::new("id", payload.clone(), None);
+        let msg = Message::new("id", payload.clone(), "123".to_string());
         let mut ctx = NodeContext::dummy();
         let res = agent.process(msg, &mut ctx).await;
         // On embedding the *client* will error connecting to host:1,
@@ -427,7 +427,7 @@ mod ollama_agent_tests {
             "model": "custom-model",
             "prompt": "why?"
         });
-        let msg = Message::new("id", payload.clone(), None);
+        let msg = Message::new("id", payload.clone(), "123".to_string());
         let mut ctx = NodeContext::dummy();
         let res = agent.process(msg, &mut ctx).await;
         let err = res.unwrap_err();

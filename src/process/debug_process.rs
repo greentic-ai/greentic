@@ -57,14 +57,15 @@ impl NodeType for DebugProcessNode {
 #[cfg(test)]
 mod debug_tests {
     use super::*;
+    use dashmap::DashMap;
     use serde_json::json;
     use schemars::schema_for;
-    use std::collections::HashMap;
 
     // bring in your dummy constructors:
     use crate::executor::Executor;
     use crate::channel::manager::ChannelManager;
     use crate::flow::manager::NodeKind;
+    use crate::flow::state::InMemoryState;
     use crate::process::manager::{BuiltInProcess, ProcessManager};
     use crate::secret::{EmptySecretsManager, SecretsManager};
 
@@ -103,13 +104,14 @@ mod debug_tests {
         let original = Message::new(
             "msg1",
             json!({ "foo": "bar", "n": 42 }),
-            Some("sess-123".to_string()),
+            "sess-123".to_string(),
         );
 
         // build a minimal NodeContext
         let mut ctx = NodeContext::new(
-            HashMap::new(),
-            HashMap::new(),
+            "123".to_string(),
+            InMemoryState::new(),
+            DashMap::new(),
             Executor::dummy(),
             ChannelManager::dummy(),
             ProcessManager::dummy(),

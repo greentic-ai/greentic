@@ -112,7 +112,7 @@ impl WsPlugin {
                                     
                                     let _ = msg_tx.send(ChannelMessage{
                                         channel:"ws".into(),
-                                        session_id:Some(session.clone()),
+                                        session_id:session.clone(),
                                         direction:MessageDirection::Incoming,
                                         from:Participant{id:session.clone(),display_name:None,channel_specific_id:None},
                                         content:Some(MessageContent::Text(txt.to_string())),
@@ -198,7 +198,7 @@ impl ChannelPlugin for WsPlugin {
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
         println!("@@@ REMOVE: SEND MESSAGE");
         if let Some(txt) = msg.content.as_ref().and_then(|c| match c { MessageContent::Text(t) => Some(t.clone()), _=>None }) {
-            let _ = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone().unwrap(), msg: WsMsg::Text(txt.into()) });
+            let _ = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone(), msg: WsMsg::Text(txt.into()) });
         }
         Ok(())
     }
@@ -270,7 +270,7 @@ mod tests {
         let mut plugin = WsPlugin::default();
         let cm = ChannelMessage {
             channel:    "ws".into(),
-            session_id: Some("test-session".into()),
+            session_id: "test-session".into(),
             direction:  MessageDirection::Incoming,
             from:       Participant { id: "user1".into(), display_name: None, channel_specific_id: None },
             content:    Some(MessageContent::Text("hello".into())),

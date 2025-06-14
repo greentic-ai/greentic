@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::manager::FlowManager, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, state::InMemoryState, watcher::DirectoryWatcher
+    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
 };
 
 pub struct App
@@ -41,6 +41,7 @@ impl App {
     /// Returns (flow_manager, channel_manager).
     pub async fn bootstrap(
         &mut self,
+        session_timeout: u64,
         flows_dir:    PathBuf,
         channels_dir: PathBuf,
         tools_dir:    PathBuf,
@@ -50,7 +51,7 @@ impl App {
         secrets:      SecretsManager,
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
-        let store = InMemoryState::new();
+        let store = Arc::new(InMemorySessionStore::new(session_timeout));
 
         // Process Manager
         match ProcessManager::new(processes_dir)

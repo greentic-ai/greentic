@@ -191,6 +191,9 @@ impl Default for TelegramPlugin {
 /// We assume that the telegram bot token is set via a secret called "telegram_token"
 /// We also assume that when sending a message the participant id is the same as the chat_id.
 impl TelegramPlugin {
+    pub fn shutdown(self) {
+        drop(self.runtime); // Explicit drop, outside of async context
+    }
     /// Spawn a background dispatcher if not already running.
     async fn init_dispatcher(&mut self) {
         static STARTED: OnceCell<()> = OnceCell::new();
@@ -215,7 +218,7 @@ impl TelegramPlugin {
                             let session = msg.chat.id.to_string();
                             let cm = ChannelMessage {
                                 channel:    "telegram".into(),
-                                session_id: Some(session.clone()),
+                                session_id: session.clone(),
                                 direction:  MessageDirection::Incoming,
                                 from: Participant {
                                     id:                 session.clone(),
@@ -604,7 +607,7 @@ mod tests {
         // Simulate an incoming Telegram message
         let incoming = ChannelMessage {
             id: "in1".into(),
-            session_id: Some("chat42".into()),
+            session_id: "chat42".into(),
             direction: MessageDirection::Incoming,
             timestamp: Utc::now(),
             channel: "telegram".into(),
@@ -627,7 +630,7 @@ mod tests {
         // Test send_message paths (won't actually call Telegram)
         let outgoing = ChannelMessage {
             id: "out1".into(),
-            session_id: Some("chat42".into()),
+            session_id: "chat42".into(),
             direction: MessageDirection::Outgoing,
             timestamp: Utc::now(),
             channel: "telegram".into(),

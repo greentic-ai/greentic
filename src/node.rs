@@ -1,6 +1,8 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 use async_trait::async_trait;
 use channel_plugin::message::{MessageDirection, Participant};
+use dashmap::{DashMap};
+use crate::flow::state::{SessionState, StateValue};
 use handlebars::{Handlebars,JsonValue};
 use serde::{Deserialize,  Serialize};
 use tempfile::TempDir;
@@ -8,7 +10,7 @@ use std::fs;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate}, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, state::StateValue, util::extension_from_mime};
+use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::{manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate},}, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, util::extension_from_mime};
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
 
 
@@ -199,7 +201,7 @@ impl ChannelOrigin {
     /// Build a ChannelMessage that “replies” with `payload` to the original sender.
     pub fn reply(&self, 
                  node_id: &str,
-                 session_id: Option<String>,
+                 session_id: String,
                  payload: serde_json::Value,
                  ctx: &NodeContext
     ) -> Result<channel_plugin::message::ChannelMessage, ResolveError> {
@@ -230,8 +232,9 @@ impl ChannelOrigin {
 #[warn(dead_code)]
 #[derive(Clone,Debug)]
 pub struct NodeContext {
-    state: HashMap<String, StateValue>,
-    config: HashMap<String, String>,
+    session_id: String,
+    state: SessionState,
+    config: DashMap<String, String>,
     executor: Arc<Executor>,
     channel_manager: Arc<ChannelManager>,
     process_manager: Arc<ProcessManager>,
@@ -243,36 +246,54 @@ pub struct NodeContext {
 
 impl NodeContext
 {
-    pub fn new(state: HashMap<String, StateValue>, config: HashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
+    pub fn new(session_id: String, state: SessionState, config: DashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
         let hb = make_handlebars();
-        Self { state, config, executor, channel_manager, process_manager, secrets, connections: None, channel_origin, hb,}
+        Self {session_id, state, config, executor, channel_manager, process_manager, secrets, connections: None, channel_origin, hb,}
+    }
+
+    pub fn get_session_id(&self) -> String {
+        self.session_id.clone()
     }
 
     pub fn channel_origin(&self) -> Option<ChannelOrigin> {
         self.channel_origin.clone()
     }
 
-    pub fn get_state(&self, key: &str) -> Option<&StateValue> {
+    pub fn get_state(&self, key: &str) -> Option<StateValue> {
         self.state.get(key)
     }
 
-    pub fn get_all_state(&self) -> HashMap<String, StateValue> {
-        self.state.clone()
+    pub fn save_state<I>(&self, items: I)
+    where
+        I: IntoIterator<Item = (String, StateValue)> + Send
+    {
+        for (k, v) in items {
+            self.state.set(k, v);
+        }
+    }
+
+    pub fn state_contains_key(&self, key: &str) -> bool {
+        self.state.contains(key)
+    }
+
+    pub fn get_all_state(&self) -> Vec<(String, StateValue)> {
+        self.state.all()
     }
 
     pub fn set_state(&mut self, key: &str, value: StateValue) {
-        self.state.insert(key.to_string(), value);
+        self.state.set(key.to_string(), value);
     }
 
     pub fn delete_state(&mut self, key: &str) {
         self.state.remove(key);
     }
 
-    pub fn get_config(&self, key: &str) -> Option<&String> {
-        self.config.get(key)
+    pub fn get_config(&self, key: &str) -> Option<String> {
+        let value = self.config.get(key).map(|r| r.clone());
+        value
     }
 
-    pub fn get_all_config(&self) -> HashMap<String, String> {
+    pub fn get_all_config(&self) -> DashMap<String, String> {
         self.config.clone()
     }
 
@@ -335,46 +356,19 @@ fn make_handlebars() -> Arc<Handlebars<'static>> {
     Arc::new(hb)
 }
 
-fn state_value_to_json(v: &StateValue) -> JsonValue {
-    match v {
-        StateValue::String(s) => JsonValue::String(s.clone()),
-        StateValue::Number(n) => {
-            // serde_json::Number can be built from f64 via `Number::from_f64`
-            JsonValue::Number(
-                serde_json::Number::from_f64(*n).unwrap_or_else(|| serde_json::Number::from(0)),
-            )
-        }
-        StateValue::Boolean(b) => JsonValue::Bool(*b),
-        StateValue::List(list) => {
-            let arr = list.iter().map(|item| state_value_to_json(item)).collect();
-            JsonValue::Array(arr)
-        }
-        StateValue::Map(map) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in map.iter() {
-                obj.insert(k.clone(), state_value_to_json(v));
-            }
-            JsonValue::Object(obj)
-        }
-        StateValue::Null => JsonValue::Null,
-    }
-}
 
-fn state_map_to_json(state: &HashMap<String, StateValue>) -> JsonValue {
+pub fn state_map_to_json(state: &DashMap<String, StateValue>) -> JsonValue {
     let mut obj = serde_json::Map::new();
-    for (k, v) in state.iter() {
-        obj.insert(k.clone(), state_value_to_json(v));
+    for entry in state.iter() {
+        obj.insert(entry.key().clone(), entry.value().to_json());
     }
     JsonValue::Object(obj)
 }
 
 impl TemplateContext for NodeContext {
     fn render_template(&self, template: &str) -> Result<String, String> {
-        // 1) Convert `self.state: HashMap<String, StateValue>` into a serde_json::Value::Object
-        let json_ctx = state_map_to_json(&self.state);
-        // 2) Feed that to Handlebars
         self.hb
-            .render_template(template, &json_ctx)
+            .render_template(template, &self.state.all())
             .map_err(|e| format!("handlebars error: {}", e))
     }
 }
@@ -554,7 +548,7 @@ impl NodeType for ToolNode {
                     self.in_map
                         .as_ref()
                         .unwrap()
-                        .apply_input(&input.payload(), &context.config, &context.state)
+                        .apply_input(&input.payload(), &context.config, context.state.all())
                 } else {
                     input.payload()
                 };
@@ -622,13 +616,13 @@ impl NodeType for ToolNode {
 
                 let mapped = if call_result.is_error.unwrap_or(false)  {
                     if self.use_err_map() {
-                        Some(self.err_map.as_ref().unwrap().apply_result(&output_json, &context.config, &context.state))
+                        Some(self.err_map.as_ref().unwrap().apply_result(&output_json, &context.config, context.state.all()))
                     } else {
                         None
                     }
                 } else {
                     if self.use_out_map() {
-                        Some(self.out_map.as_ref().unwrap().apply_result(&output_json, &context.config, &context.state))
+                        Some(self.out_map.as_ref().unwrap().apply_result(&output_json, &context.config, context.state.all()))
                     } else {
                         None
                     }
@@ -636,7 +630,7 @@ impl NodeType for ToolNode {
 
                 if let Some(mapper_output) = mapped {
                     for (k, v) in mapper_output.state_updates {
-                        context.state.insert(k, v);
+                        context.state.set(k, v);
                     }
                     for (k, v) in mapper_output.config_updates {
                         context.config.insert(k, v);
@@ -679,10 +673,10 @@ impl NodeType for ToolNode {
 }
 
 fn resolve_or_create_storage_dir(
-    config: &HashMap<String, String>,
+    config: &DashMap<String, String>,
 ) -> Result<PathBuf, NodeErr> {
     if let Some(dir_str) = config.get("node_storage_dir") {
-        let path = PathBuf::from(dir_str);
+        let path = PathBuf::from(dir_str.value());
         if !path.exists() {
             fs::create_dir_all(&path)
                 .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to create node_storage_dir: {}", e))))?;
@@ -706,7 +700,7 @@ pub mod tests {
     use crate::logger::{Logger, OpenTelemetryLogger};
     use crate::message::Message;
     use crate::secret::{EmptySecretsManager, SecretsManager};
-    use crate::state::StateValue;
+    use crate::flow::state::{InMemoryState, StateValue};
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -714,8 +708,9 @@ pub mod tests {
         pub fn dummy() -> Self {
             let hb = make_handlebars();
             Self { 
-                state: HashMap::new(), 
-                config: HashMap::new(), 
+                session_id: "123".to_string(),
+                state: InMemoryState::new(), 
+                config: DashMap::new(), 
                 executor: Executor::dummy(), 
                 channel_manager: ChannelManager::dummy(), 
                 process_manager: ProcessManager::dummy(), 
@@ -729,8 +724,9 @@ pub mod tests {
         pub fn mock(result: Result<CallToolResult, ToolError>) -> Self {
             let hb = make_handlebars();
             Self { 
-                state: HashMap::new(), 
-                config: HashMap::new(), 
+                session_id: "123".to_string(),
+                state: InMemoryState::new(), 
+                config: DashMap::new(), 
                 executor: Arc::new(Executor::mock(result)), 
                 channel_manager: ChannelManager::dummy(), 
                 process_manager: ProcessManager::dummy(), 
@@ -791,7 +787,7 @@ pub mod tests {
             }
         });
 
-        let input = Message::new("test", payload, Some("sess1".to_string()));
+        let input = Message::new("test", payload, "sess1".to_string());
         let result = CallToolResult {
             content: vec![Content::Text(TextContent {text:"{\"result\":\"sunny\"}".into(), annotations: None })],
             is_error: Some(false),
@@ -813,7 +809,7 @@ pub mod tests {
     #[tokio::test]
     async fn test_static_tool_config_used_if_no_tool_call() {
         let payload = json!({ "location": "London" });
-        let input = Message::new("static_test", payload.clone(), Some("sess2".to_string()));
+        let input = Message::new("static_test", payload.clone(), "sess2".to_string());
 
         let result = CallToolResult {
             content: vec![Content::Text(TextContent {text:"{\"static\":\"ok\"}".into(), annotations:None})],
@@ -836,7 +832,7 @@ pub mod tests {
             }
         });
 
-        let input = Message::new("err_test", payload, Some("sess3".to_string()));
+        let input = Message::new("err_test", payload, "sess3".to_string());
 
         let node = ToolNode::new(
             "fallback".into(),
@@ -860,7 +856,7 @@ pub mod tests {
             }
         });
 
-        let input = Message::new("missing", payload.clone(), Some("sess4".to_string()));
+        let input = Message::new("missing", payload.clone(), "sess4".to_string());
         let result = CallToolResult {
             content: vec![Content::Text(TextContent {text:"{\"fallback\":\"true\"}".into(), annotations: None })],
             is_error: Some(false),
@@ -876,7 +872,7 @@ pub mod tests {
     #[tokio::test]
     async fn test_node_context_get_set_delete() {
         let temp_dir = TempDir::new().unwrap();
-        let mut config = HashMap::new();
+        let config = DashMap::new();
         config.insert("node_storage_dir".into(), temp_dir.path().to_string_lossy().to_string());
 
         let secrets =SecretsManager(EmptySecretsManager::new());
@@ -886,11 +882,11 @@ pub mod tests {
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
-        let mut ctx = NodeContext::new(HashMap::new(), config, executor,channel_manager, process_manager, secrets, None);
+        let mut ctx = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor,channel_manager, process_manager, secrets, None);
         assert!(ctx.get_state("missing").is_none());
 
         ctx.set_state("key", StateValue::String("value".to_string()));
-        assert_eq!(ctx.get_state("key"), Some(&StateValue::String("value".to_string())));
+        assert_eq!(ctx.get_state("key"), Some(StateValue::String("value".to_string())));
 
         ctx.delete_state("key");
         assert!(ctx.get_state("key").is_none());
@@ -914,7 +910,7 @@ pub mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tool_node_with_text_output() {
         let temp_dir = TempDir::new().unwrap();
-        let mut config = HashMap::new();
+        let config = DashMap::new();
         config.insert("node_storage_dir".into(), temp_dir.path().to_string_lossy().to_string());
 
         let secrets =SecretsManager(EmptySecretsManager::new());
@@ -926,10 +922,10 @@ pub mod tests {
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
-        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, process_manager, secrets, None);
+        let mut context = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor, channel_manager, process_manager, secrets, None);
 
         let node = ToolNode::new("mock_tool".to_string(), "text_output".to_string(),None, None, None, None, None);
-        let msg = Message::new("msg1", json!({"input": "Hello"}),None);
+        let msg = Message::new("msg1", json!({"input": "Hello"}),"123".to_string());
 
         let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();
@@ -940,7 +936,7 @@ pub mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tool_node_saves_binary_and_text() {
         let temp_dir = TempDir::new().unwrap();
-        let mut config = HashMap::new();
+        let config = DashMap::new();
         config.insert("node_storage_dir".into(), temp_dir.path().to_string_lossy().to_string());
 
         let secrets =SecretsManager(EmptySecretsManager::new());
@@ -952,10 +948,10 @@ pub mod tests {
         let host_logger = HostLogger::new();
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
-        let mut context = NodeContext::new(HashMap::new(), config, executor, channel_manager, process_manager, secrets, None);
+        let mut context = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor, channel_manager, process_manager, secrets, None);
 
         let node = ToolNode::new("mock_tool".to_string(), "file_output".to_string(), None, None, None, None, None);
-        let msg = Message::new("msg2", json!({"input": "data"}),None);
+        let msg = Message::new("msg2", json!({"input": "data"}),"123".to_string());
 
         let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();

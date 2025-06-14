@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
 };
 use crate::{
-    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::{manager::{BuiltInProcess, ProcessManager}}, secret::SecretsManager, state::StateStore, watcher::{DirectoryWatcher, WatchedType}
+    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, flow::session::SessionStore, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, watcher::{DirectoryWatcher, WatchedType}
 };
 use anyhow::Error;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
@@ -633,7 +633,7 @@ impl ChannelNodeConfig {
         &self,
         ctx: &NodeContext,
         id: String,
-        session_id: Option<String>,
+        session_id: String,
         payload: Value,
         direction: MessageDirection,
     ) -> Result<ChannelMessage, ResolveError> {
@@ -843,7 +843,7 @@ pub type FlowAddedHandler = Arc<dyn Fn(&str, &Flow) + Send + Sync >;
 #[derive( Clone)]
 pub struct FlowManager {
     flows: DashMap<String, Flow>,
-    store: Arc<dyn StateStore>,
+    store: SessionStore,
     executor: Arc<Executor>,
     channel_manager: Arc<ChannelManager>,
     process_manager: Arc<ProcessManager>,
@@ -852,7 +852,7 @@ pub struct FlowManager {
 }
 
 impl FlowManager {
-    pub fn new(store: Arc<dyn StateStore>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager) -> Arc<Self> {
+    pub fn new(store: SessionStore, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager) -> Arc<Self> {
         let on_added = Arc::new(Mutex::new(Vec::new()));
         Arc::new(FlowManager { flows: DashMap::new(), store, executor, channel_manager, process_manager, secrets, on_added})
     }
@@ -966,11 +966,12 @@ impl FlowManager {
         channel_origin: Option<ChannelOrigin>,
     ) -> Option<ExecutionReport> {
         let flow = self.flows.get(flow_name)?;
-
-
+        let session_id=message.session_id();
+        let state = self.store.get_or_create(&session_id).await;
         let mut ctx = NodeContext::new(
-            self.store.load().await,
-            HashMap::new(),
+            session_id,
+            state.clone(),
+            DashMap::new(),
             self.executor.clone(),
             self.channel_manager.clone(),
             self.process_manager.clone(),
@@ -979,7 +980,7 @@ impl FlowManager {
         );
 
         let report = flow.run(message, node_id, &mut ctx).await;
-        self.store.save(&ctx.get_all_state()).await;
+        state.save(ctx.get_all_state());
         Some(report)
     }
 

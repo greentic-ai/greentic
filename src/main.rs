@@ -41,7 +41,8 @@ struct FlowArgs {
 
 #[derive(Args, Debug)]
 struct RunArgs {
-        
+    #[arg(long, default_value = "1800")]
+    session_timeout: u64,    
     /// Optional log level override (e.g. error, warn, info, debug, trace)
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -90,6 +91,7 @@ pub fn resolve_root_dir() -> PathBuf {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse(); 
     match cli.command.unwrap_or(Commands::Run(RunArgs {
+        session_timeout: 1800,
         log_level: "info".to_string(),
         otel_logs_endpoint: None,
         otel_events_endpoint: None,
@@ -97,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Run(args) => {
             let root = resolve_root_dir();
             run(root,
+                args.session_timeout,
                 args.log_level,
                 args.otel_logs_endpoint,
                 args.otel_events_endpoint,
@@ -163,7 +166,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn run(root: PathBuf, 
+async fn run(root: PathBuf,
+    session_timeout: u64, 
     log_level: String,
     otel_logs_endpoint: Option<String>,
     otel_events_endpoint: Option<String>,
@@ -209,6 +213,7 @@ async fn run(root: PathBuf,
     // bootstrap
     let mut app = App::new();
     let result = app.bootstrap(
+        session_timeout.clone(),
         flows_dir.clone(),
         channels_dir.clone(),
         tools_dir.clone(),

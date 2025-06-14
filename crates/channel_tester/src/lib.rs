@@ -262,7 +262,7 @@ impl TesterPlugin {
             let mut cm = ChannelMessage::default();
             cm.channel    = "tester".into();
             cm.content    = Some(MessageContent::Text(test.send.clone()));
-            cm.session_id = Some("tester".into());
+            cm.session_id = "tester".into();
             cm.id         = Uuid::new_v4().to_string();
             cm.timestamp  = Utc::now();
             cm.direction  = /* incoming */ channel_plugin::message::MessageDirection::Incoming;
@@ -404,7 +404,7 @@ tests:
         test_path
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_run_test_file_pass() {
         let tmp = TempDir::new().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -437,7 +437,7 @@ tests:
             "expected PASS but got: {}", out);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_run_test_file_fail() {
         let tmp = TempDir::new().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -479,7 +479,7 @@ tests:
             "expected FAIL but got: {}", out);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_watcher_picks_up_and_runs() -> anyhow::Result<()> {
         // 1) Create a temporary working dir and cd into it
         let tmp = TempDir::new()?;

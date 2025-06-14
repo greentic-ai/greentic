@@ -228,16 +228,17 @@ mod tests {
     use super::*;
     use crate::channel::manager::{ChannelManager, HostLogger};
     use crate::config::{ConfigManager, MapConfigManager};
+    use crate::flow::session::InMemorySessionStore;
     use crate::process::manager::ProcessManager;
     use crate::{executor::Executor, flow::manager::FlowManager, logger::OpenTelemetryLogger,
-                secret::EmptySecretsManager, state::InMemoryState,};
+                secret::EmptySecretsManager,};
     use crate::secret::SecretsManager;
     use crate::logger::Logger;
     use channel_plugin::message::{ChannelMessage, MessageDirection};
 
     #[tokio::test]
     async fn test_registry_dispatches_safely() {
-        let store = InMemoryState::new();
+        let store = Arc::new(InMemorySessionStore::new(10));
         let secrets = SecretsManager(EmptySecretsManager::new());
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let exec = Executor::new(secrets.clone(), logger);

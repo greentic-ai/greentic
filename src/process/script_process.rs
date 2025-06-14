@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::{
     message::Message,
-    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, state::StateValue,
+    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, flow::state::StateValue,
 };
 
 /// A Rhai script process node
@@ -193,7 +193,7 @@ impl NodeType for ScriptProcessNode {
 mod tests {
     use super::*;
     use crate::{message::Message, node::NodeContext};
-    use crate::state::StateValue;
+    use crate::flow::state::StateValue;
     use serde_json::json;
 
     fn dummy_context_with_state() -> NodeContext {
@@ -209,7 +209,7 @@ mod tests {
             script: "1 + 2 * 3".into(),
         };
 
-        let msg = Message::new("id", json!({}), None);
+        let msg = Message::new("id", json!({}), "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg, &mut ctx).await.unwrap();
@@ -223,7 +223,7 @@ mod tests {
             script: "payload.weather.temp + 1".into(),
         };
 
-        let msg = Message::new("id", json!({ "weather": { "temp": 20 } }), None);
+        let msg = Message::new("id", json!({ "weather": { "temp": 20 } }), "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg, &mut ctx).await.unwrap();
@@ -237,7 +237,7 @@ mod tests {
             script: "state.age + 5".into(),
         };
 
-        let msg = Message::new("id", json!({}), None);
+        let msg = Message::new("id", json!({}), "123".to_string());
         let mut ctx = dummy_context_with_state();
 
         let output = node.process(msg, &mut ctx).await.unwrap();
@@ -255,7 +255,7 @@ mod tests {
             "#.into(),
         };
 
-        let msg = Message::new("id", json!({}), None);
+        let msg = Message::new("id", json!({}), "123".to_string());
         let mut ctx = dummy_context_with_state();
 
         let output = node.process(msg, &mut ctx).await.unwrap();
@@ -275,7 +275,7 @@ mod tests {
             "#.into(),
         };
 
-        let msg = Message::new("id", json!({}), Some("abc".to_string()));
+        let msg = Message::new("id", json!({}), "abc".to_string());
 
         let mut ctx = NodeContext::dummy();
 
@@ -293,7 +293,7 @@ mod tests {
             script: "this_does_not_exist()".into(),
         };
 
-        let msg = Message::new("id", json!({}), None);
+        let msg = Message::new("id", json!({}),"123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let result = node.process(msg, &mut ctx).await;
