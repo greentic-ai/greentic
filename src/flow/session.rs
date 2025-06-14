@@ -15,7 +15,7 @@ pub trait SessionStoreType: Send + Sync + Debug {
     async fn get_or_create(&self, session_id: &str) ->  SessionState;
 
     /// Explicitly removes a session from the store.
-    fn remove(&self, session_id: &str);
+    async fn remove(&self, session_id: &str);
 
     /// Clears all sessions (typically for tests or shutdown).
     fn clear(&self);
@@ -42,8 +42,8 @@ impl InMemorySessionStore {
 impl SessionStoreType for InMemorySessionStore {
 
     /// Forcefully removes a session (e.g. after completion or error).
-    fn remove(&self, session_id: &str) {
-        self.cache.invalidate(session_id);
+    async fn remove(&self, session_id: &str) {
+        self.cache.invalidate(session_id).await;
     }
 
     /// Clears all sessions (used in tests or shutdown).
@@ -92,7 +92,7 @@ mod tests {
         let session = store.get_or_create(session_id).await;
         session.set("foo".to_string(), StateValue::String("bar".into()));
 
-        store.remove(session_id);
+        store.remove(session_id).await;
 
         let session2 = store.get_or_create(session_id).await;
         let val = session2.get("foo");

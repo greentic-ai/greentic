@@ -105,10 +105,13 @@ impl NodeType for TemplateProcessNode {
         // Combine inputs into one context map
         let mut data = serde_json::Map::new();
         data.insert("msg".to_string(), serde_json::to_value(&input).unwrap_or(json!({})));
-        data.insert(
-            "state".to_string(),
-            serde_json::to_value(context.get_all_state()).unwrap_or(json!({})),
-        );
+        let state_map: serde_json::Map<String, JsonValue> = context
+            .get_all_state()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_json()))
+            .collect();
+
+        data.insert("state".to_string(), JsonValue::Object(state_map));
 
         // Parse payload if it's a stringified JSON
         let payload_value = match &input.payload() {

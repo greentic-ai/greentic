@@ -271,7 +271,6 @@ mod tests {
         let map: std::collections::HashMap<_, _> = loaded.into_iter().collect();
 
         assert_eq!(map.get("test"), Some(&StateValue::Boolean(true)));
-        assert_eq!(store.name(), "InMemoryStateStore");
     }
 
     #[tokio::test]

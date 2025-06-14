@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use schemars::{schema::RootSchema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
 use rhai::{serde::to_dynamic, Engine, Scope};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{
     message::Message,
@@ -132,8 +132,14 @@ impl NodeType for ScriptProcessNode {
         let engine = Engine::new();
 
         let mut scope = Scope::new();
-        if let Ok(dyn_state) = to_dynamic(&serde_json::to_value(context.get_all_state()).unwrap_or_default()) {
-            scope.push_dynamic("state", dyn_state.clone());
+        let state_map: serde_json::Map<String, Value> = context
+            .get_all_state()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_json()))
+            .collect();
+
+        if let Ok(dyn_state) = to_dynamic(&Value::Object(state_map)) {
+            scope.push_dynamic("state", dyn_state);
         }
 
         // Convert msg, payload, and state into Dynamic so Rhai can access properties

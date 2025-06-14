@@ -603,7 +603,7 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::{channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, flow::{manager::Flow, state::InMemoryState}, logger::OpenTelemetryLogger, node::ChannelOrigin, process::manager::{BuiltInProcess, ProcessManager}, secret::{EnvSecretsManager, SecretsManager}};
+    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EnvSecretsManager, SecretsManager}};
 
     use super::*;
     use channel_plugin::message::Participant;
@@ -896,30 +896,29 @@ qa:
 
     #[tokio::test]
     async fn test_qa_via_mock_yaml() {
-        use crate::executor::Executor;
-        use crate::logger::Logger;
 
         let yaml = r#"
-id: test-qa-mock
+id: "test-qa-mock"
+title: "Test QA"
 description: "Test QA via Mock"
 channels:
-  - mock
-
+  - mock_inout
 nodes:
   mock_in:
-    channel: mock
+    channel: mock_inout
     in: true
-
+    max_retries: 3
+    retry_delay_secs: 1
   qa_ask:
     qa:
-      welcome_template: "Hi there! Let's get your forecast."
+      welcome_template: Hi there! Let's get your forecast.
       questions:
         - id: q_location
-          prompt: "👉 What location would you like a forecast for?"
+          prompt: 👉 What location would you like a forecast for?
           answer_type: text
           state_key: q
         - id: q_days
-          prompt: "👉 Over how many days? (enter a number)"
+          prompt: 👉 Over how many days? (enter a number)
           answer_type: number
           state_key: days
           validate:
@@ -927,20 +926,106 @@ nodes:
               min: 0.0
               max: 7.0
       fallback_agent:
-        name: ollama
-
+        task: task
+      routing: []
+    max_retries: 3
+    retry_delay_secs: 1
   debug_node:
-    debug: {}
-
+    debug:
+      print: true
+    max_retries: 3
+    retry_delay_secs: 1
 connections:
-  - from: mock_in
-    to: qa_ask
-  - from: qa_ask
-    to: debug_node
+  mock_in:
+    - qa_ask
+  qa_ask:
+    - debug_node
         "#;
 
+
+    let expected = Flow::new(
+            "test-qa-mock".to_string(),
+            "Test QA".to_string(),
+            "Test QA via Mock".to_string(),
+        )
+        .add_channel("mock_inout")
+        .add_node(
+            "mock_in".to_string(),
+            NodeConfig::new(
+                "mock_in",
+                NodeKind::Channel {
+                    cfg: ChannelNodeConfig {
+                        channel_name: "mock_inout".to_string(),
+                        channel_in: true,
+                        channel_out: false,
+                        from: None,
+                        to: None,
+                        content: None,
+                        thread_id: None,
+                        reply_to_id: None,
+                    },
+                },
+                None,
+            ),
+        )
+        .add_node(
+            "qa_ask".to_string(),
+            NodeConfig::new(
+                "qa_ask",
+                NodeKind::Process {
+                    process: BuiltInProcess::Qa(QAProcessNode {
+                        config: QAProcessConfig {
+                            welcome_template: "Hi there! Let's get your forecast.".into(),
+                            questions: vec![
+                                QuestionConfig {
+                                    id: "q_location".into(),
+                                    prompt: "👉 What location would you like a forecast for?".into(),
+                                    answer_type: AnswerType::Text,
+                                    state_key: "q".into(),
+                                    validate: None,
+                                },
+                                QuestionConfig {
+                                    id: "q_days".into(),
+                                    prompt: "👉 Over how many days? (enter a number)".into(),
+                                    answer_type: AnswerType::Number,
+                                    state_key: "days".into(),
+                                    validate: Some(ValidationRule::Range {
+                                        range: RangeParams {
+                                            min: 0.0,
+                                            max: 7.0,
+                                        },
+                                    }),
+                                },
+                            ],
+                            fallback_agent: Some(BuiltInAgent::Ollama(
+                                OllamaAgent::new(None, "task".into(), None, None, None, None, None, None))),
+                            routing: vec![],
+                        },
+                    }),
+                },
+                None,
+            ),
+        )
+        .add_node(
+            "debug_node".to_string(),
+            NodeConfig::new(
+                "debug_node",
+                NodeKind::Process{
+                    process: BuiltInProcess::Debug(DebugProcessNode { print:true })
+                },
+                None,
+            ),
+        )
+        .add_connection("mock_in".into(), vec!["qa_ask".into()])
+        .add_connection("qa_ask".into(), vec!["debug_node".into()])
+        .build();
+
+        //println!("@@@ REMOVE {:?}",serde_yaml_bw::to_string(&expected).expect("yaml could not be printed"));
         // 2. Parse the flow
-        let flow: Flow = serde_yaml_bw::from_str(&yaml).expect("invalid flow YAML");
+        let mut flow: Flow = serde_yaml_bw::from_str(&yaml).expect("invalid flow YAML");
+        flow = flow.build();
+
+        assert_eq!(flow, expected);
 
         // 3. Set up runtime context
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
@@ -953,7 +1038,7 @@ connections:
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
         let channel_origin = ChannelOrigin::new("mock".to_string(), Participant::new("id".to_string(), None, None));
         let channel_manager = ChannelManager::new(config_manager, secrets.clone(), host_logger).await.expect("could not make channel manager");
-        let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_send.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
+        let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
         let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin)),None,None);
         channel_manager.register_channel("mock".to_string(), mock).await.expect("could not load mock channel");
         let mut ctx = NodeContext::new("123".to_string(),state, config, executor, channel_manager, Arc::new(process_manager), secrets, Some(channel_origin));
@@ -962,7 +1047,7 @@ connections:
         let incoming = Message::new_uuid("test", payload);
 
         // 5. Run the flow starting at telegram_in
-        let report = flow.run(incoming.clone(), "telegram_in", &mut ctx).await;
+        let report = flow.run(incoming.clone(), "mock_in", &mut ctx).await;
         println!("Flow report: {:?}", report);
 
 

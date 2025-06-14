@@ -99,6 +99,17 @@ pub struct Flow {
     plans: HashMap<String, Vec<NodeIndex>>,
 }
 
+impl PartialEq for Flow {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.title == other.title
+            && self.description == other.description
+            && self.channels == other.channels
+            && self.nodes == other.nodes
+            && self.connections == other.connections
+        // graph, index_of, plans are skipped
+    }
+}
 
 // this just re‐uses the normal Serde impl for the map but
 // after we get it, we fix up each NodeConfig.id
@@ -175,6 +186,12 @@ impl Flow {
             index_of: HashMap::new(),
             plans: HashMap::new(),
         }
+    }
+    pub fn title(&self) -> String {
+        self.title.clone()
+    }
+    pub fn description(&self) -> String {
+        self.description.clone()
     }
     /// Deserialize + build the internal graph
     pub fn build(mut self) -> Self {
@@ -570,7 +587,7 @@ impl Flow {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
 pub enum ValueOrTemplate<T> {
     Value(T),
@@ -599,7 +616,7 @@ impl ValueOrTemplate<Participant> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ChannelNodeConfig {
     /// The channel’s canonical name
     #[serde(rename = "channel")]
@@ -709,7 +726,7 @@ impl ChannelNodeConfig {
 }
 
 /// Node kinds, flattened by top-level key
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
@@ -746,7 +763,7 @@ pub enum NodeKind {
 /// in the on_err list.
 /// If no on_ok or on_err are specified then all connections will be called 
 /// with the result. 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ToolNodeConfig {
     pub name: String,
     pub action: String,
@@ -764,7 +781,7 @@ pub struct ToolNodeConfig {
 
 
 /// A single node’s config in the flow
-#[derive(Debug, Clone, JsonSchema)]
+#[derive(Debug, Clone, JsonSchema, PartialEq)]
 pub struct NodeConfig {
     #[serde(skip)]
     #[schemars(skip)]

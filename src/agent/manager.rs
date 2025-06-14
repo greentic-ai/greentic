@@ -10,7 +10,7 @@ use super::ollama::OllamaAgent;
 
 /// Every built‐in agent must implement the existing `AgentNode`‐like behavior.
 /// Instead of “trait objects,” we enumerate them here.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
 pub enum BuiltInAgent {
     #[serde(rename = "ollama")]

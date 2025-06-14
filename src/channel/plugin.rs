@@ -508,7 +508,7 @@ pub mod tests {
     fn plugin_name_extracts_stem() {
         let p = PathBuf::from("/foo/bar/baz.so");
         let name = PluginWatcher::plugin_name(&p);
-        assert_eq!(name, Some("libbaz".into()));
+        assert_eq!(name, Some("baz".into()));
 
         let p2 = PathBuf::from("/foo/bar/ignore.txt");
         let name2 = PluginWatcher::plugin_name(&p2);
@@ -589,6 +589,8 @@ pub mod tests {
         // trick plugin_name to extract "dummy"
         let _ = fs::File::create(&p);
         watcher.on_remove(&p).await.unwrap();
+
+        println!("@@@ REMOVE plugins: {:?}", watcher.plugins.clone());
 
         // map is now empty
         assert!(watcher.plugins.is_empty());

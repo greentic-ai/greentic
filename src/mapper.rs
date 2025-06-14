@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use dashmap::DashMap;
 
 use handlebars::Handlebars;
@@ -7,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::flow::state::StateValue;
 
-#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema )]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, PartialEq )]
 #[serde(tag = "type", rename = "map", rename_all = "snake_case")]
 pub enum Mapper {
     Copy(CopyMapper),
@@ -91,7 +93,7 @@ impl Mapper {
 ///   "state": ["done", { "tries": 0 }]
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename = "copy")]
 pub struct CopyMapper {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,6 +112,20 @@ pub enum CopyKey {
     WithDefault(DashMap<String, Value>),
 }
 
+impl PartialEq for CopyKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (CopyKey::Key(a), CopyKey::Key(b)) => a == b,
+            (CopyKey::WithDefault(a), CopyKey::WithDefault(b)) => {
+                // Convert DashMap to regular HashMap for comparison
+                let a_map: HashMap<_, _> = a.iter().map(|entry| (entry.key().clone(), entry.value().clone())).collect();
+                let b_map: HashMap<_, _> = b.iter().map(|entry| (entry.key().clone(), entry.value().clone())).collect();
+                a_map == b_map
+            }
+            _ => false,
+        }
+    }
+}
 impl CopyKey {
     pub fn extract(&self) -> (String, Option<Value>) {
         match self {
@@ -203,7 +219,7 @@ pub struct RenameMapper(
     pub DashMap<String, SourceField>
 );
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "from", rename="source")]
 pub enum SourceField {
     #[serde(rename = "payload")]
@@ -212,6 +228,13 @@ pub enum SourceField {
     Config { key: String, #[serde(default)] default: Option<Value> },
     #[serde(rename = "state")]
     State { key: String, #[serde(default)] default: Option<Value> },
+}
+impl PartialEq for RenameMapper {
+    fn eq(&self, other: &Self) -> bool {
+        let self_map: HashMap<_, _> = self.0.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect();
+        let other_map: HashMap<_, _> = other.0.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect();
+        self_map == other_map
+    }
 }
 impl RenameMapper {
     pub fn apply(
@@ -274,7 +297,7 @@ impl RenameMapper {
 /// ```json
 /// {"payload": { "temperature": {{root.[0].current.temp_c}} }}
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename = "script")]
 pub struct ScriptMapper {
     pub template: String,

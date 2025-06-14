@@ -27,7 +27,7 @@ pub enum MessageDirection {
     Incoming,
     Outgoing
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 pub struct Participant {
     pub id: String,                      // Internal or platform-specific ID
     pub display_name: Option<String>,   // Optional for SMS, Email

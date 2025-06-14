@@ -24,22 +24,23 @@ use crate::{
 /// `OllamaAgent` invokes a local Ollama server via `ollama_rs`.  
 /// It supports plain generation (`Generate`), embeddings (`Embed`), chat mode (`Chat`), and tool calls (`ToolCall`).
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize,)]
 pub struct OllamaAgent {
     pub task: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
-    #[serde(default)]
+   #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OllamaMode>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_host: Option<url::Url>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_port: Option<u16>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_options: Option<ollama_rs::models::ModelOptions>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_names: Option<Vec<String>>,
 
     /// Map of `tool.name -> ToolNode` for any external tool calls (`ToolCall` variant).
@@ -47,6 +48,18 @@ pub struct OllamaAgent {
     #[serde(skip)]
     pub tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
 
+}
+
+impl PartialEq for OllamaAgent {
+    fn eq(&self, other: &Self) -> bool {
+        self.task == other.task &&
+        self.model == other.model &&
+        self.mode == other.mode &&
+        self.ollama_host == other.ollama_host &&
+        self.ollama_port == other.ollama_port &&
+        self.tool_names == other.tool_names
+        // tool_nodes and model_config are intentionally skipped from equality check
+    }
 }
 
 #[async_trait]

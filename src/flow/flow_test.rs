@@ -38,6 +38,17 @@ mod tests {
     use crate::secret::{EmptySecretsManager, SecretsManager};
     use tempfile::TempDir;
 
+    impl Flow {
+        pub fn equal_for_test(&self, other: &Self) -> bool {
+            self.id() == other.id()
+            && self.title() == other.title()
+            && self.description() == other.description()
+            && self.channels() == other.channels()
+            && self.nodes() == other.nodes()
+            && self.connections() == other.connections()
+        }
+    }
+
     /// Helper to build a dummy `Executor` for NodeContext
     fn make_executor() -> Arc<Executor> {
         let secrets = SecretsManager(EmptySecretsManager::new());
