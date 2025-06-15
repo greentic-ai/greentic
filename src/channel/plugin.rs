@@ -578,6 +578,7 @@ pub mod tests {
             // create a dummy Plugin with a real file path
             let fake = make_noop_plugin();
             watcher.plugins.insert("dummy".into(), fake);
+            watcher.path_to_name.insert(so.to_string_lossy().into_owned(), "dummy".to_string());
         }
 
         // remove a non-existent file – must not panic
@@ -587,10 +588,8 @@ pub mod tests {
         // remove our dummy by path
         let p = dir.join("dummy.so");
         // trick plugin_name to extract "dummy"
-        let _ = fs::File::create(&p);
+        let _ = fs::File::create(&p); 
         watcher.on_remove(&p).await.unwrap();
-
-        println!("@@@ REMOVE plugins: {:?}", watcher.plugins.clone());
 
         // map is now empty
         assert!(watcher.plugins.is_empty());
