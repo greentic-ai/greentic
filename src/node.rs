@@ -367,8 +367,13 @@ pub fn state_map_to_json(state: &DashMap<String, StateValue>) -> JsonValue {
 
 impl TemplateContext for NodeContext {
     fn render_template(&self, template: &str) -> Result<String, String> {
+        let mut map = serde_json::Map::new();
+        for (k, v) in self.state.all() {
+            map.insert(k, v.to_json());
+        }
+
         self.hb
-            .render_template(template, &self.state.all())
+            .render_template(template, &Value::Object(map))
             .map_err(|e| format!("handlebars error: {}", e))
     }
 }
