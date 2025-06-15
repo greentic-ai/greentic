@@ -285,6 +285,7 @@ impl PluginEventHandler for ChannelManager {
                             for h in handlers {
                                 let m = msg.clone();
                                 tokio::spawn(async move {
+                                    println!("@@@ REMOVE GOT MESSAGE {:?}",m);
                                     let _ = h.handle_incoming(m).await;
                                 });
                             }
@@ -505,6 +506,18 @@ pub mod tests {
                 false
             }
         }
+        unsafe extern "C" fn add_route(_: PluginHandle, _: *const c_char, _: *const c_char) -> bool {
+            true
+        }
+
+        unsafe extern "C" fn remove_route(_: PluginHandle, _: *const c_char) -> bool {
+            true
+        }
+
+        unsafe extern "C" fn list_routes(_: PluginHandle) -> *mut i8 {
+            // Return empty JSON array as C string
+            CString::new("[]").unwrap().into_raw()
+        }
         unsafe extern "C" fn state(_: PluginHandle) -> ChannelState {
             ChannelState::Stopped
         }
@@ -533,6 +546,9 @@ pub mod tests {
             list_config,
             list_secrets,
             free_string,
+            add_route: Some(add_route),
+            remove_route: Some(remove_route),
+            list_routes: Some(list_routes),
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
         })

@@ -6,8 +6,78 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{ffi::{c_char, c_void, CString}};
 use thiserror::Error;
-use crate::{message::{ChannelCapabilities, ChannelMessage}, PluginHandle};
+use crate::{message::{ChannelCapabilities, ChannelMessage, RouteBinding, RouteMatcher}, PluginHandle};
+use std::sync::RwLock;
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Default)]
+pub struct DefaultRoutingSupport {
+    routes: RwLock<Vec<RouteBinding>>,
+}
+
+impl RoutingSupport for DefaultRoutingSupport {
+    fn add(&self, route: RouteBinding) {
+        let mut routes = self.routes.write().unwrap();
+        routes.push(route);
+    }
+
+    fn remove(&self, flow: &str, node: &str) {
+        let mut routes = self.routes.write().unwrap();
+        routes.retain(|r| r.flow != flow || r.node != node);
+    }
+
+    fn list(&self) -> Vec<RouteBinding> {
+        self.routes.read().unwrap().clone()
+    }
+
+    fn set(&self, new_routes: Vec<RouteBinding>) {
+        let mut routes = self.routes.write().unwrap();
+        *routes = new_routes;
+    }
+
+    fn find_match(&self, matcher: &RouteMatcher) -> Option<RouteBinding> {
+        let routes = self.routes.read().unwrap();
+
+        for route in routes.iter() {
+            match (&route.matcher, matcher) {
+                (RouteMatcher::Command(expected), RouteMatcher::Command(actual)) if expected == actual => {
+                    return Some(route.clone());
+                }
+                (RouteMatcher::ThreadId(expected), RouteMatcher::ThreadId(actual)) if expected == actual => {
+                    return Some(route.clone());
+                }
+                (RouteMatcher::Participant(expected), RouteMatcher::Participant(actual)) if expected == actual => {
+                    return Some(route.clone());
+                }
+                (RouteMatcher::WebPath(expected), RouteMatcher::WebPath(actual)) if expected == actual => {
+                    return Some(route.clone());
+                }
+                (RouteMatcher::Custom(expected), RouteMatcher::Custom(actual)) if expected == actual => {
+                    return Some(route.clone());
+                }
+                _ => continue,
+            }
+        }
+
+        None
+    }
+}
+
+impl Clone for DefaultRoutingSupport {
+    fn clone(&self) -> Self {
+        let routes = self.routes.read().unwrap().clone();
+        Self {
+            routes: RwLock::new(routes),
+        }
+    }
+}
+
+impl PartialEq for DefaultRoutingSupport {
+    fn eq(&self, other: &Self) -> bool {
+        let a = self.routes.read().unwrap();
+        let b = other.routes.read().unwrap();
+        *a == *b
+    }
+}
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 #[repr(C)]
@@ -72,11 +142,79 @@ unsafe impl Sync for PluginLogger {}
 /// New FFI entry‐point you must expose:
 pub type PluginSetLogger = unsafe extern "C" fn(PluginHandle, PluginLogger);
 
+pub trait RoutingSupport {
+    fn add(&self, route: RouteBinding);
+    fn remove(&self, flow: &str, node: &str);
+    fn list(&self) -> Vec<RouteBinding>;
+    fn set(&self, new_routes: Vec<RouteBinding>);
+    fn find_match(&self, matcher: &RouteMatcher) -> Option<RouteBinding>;
+}
+
 /// The one trait plugin authors implement.
 #[async_trait]
 pub trait ChannelPlugin {//: Send + Sync {
     /// The name of the plugin
     fn name(&self) -> String;
+
+    /// Whether this plugin supports dynamic routing updates or not.
+    /// needs to be set in the ChannelCapabilities
+    fn supports_routing(&self) -> bool {
+        self.capabilities().supports_routing
+    }
+
+    /// Does the plugin support routing. Overwrite this fn with your
+    /// routing support implementation if you don't want to use the default. 
+    /// Otherwise you can simply do:
+    /// pub struct YourPlugin {
+    ///     routing: DefaultRoutingSupport,
+    ///     ...
+    /// }
+    /// add to your default or new fn 
+    ///   routing: DefaultRoutingSupport::default(),
+    /// 
+    /// #[async_trait]
+    /// impl ChannelPlugin for YourPlugin {
+    ///   fn get_routing_support(&self) -> Option<&dyn RoutingSupport> {
+    ///      Some(&self.routing)
+    ///   }
+    ///   ...
+    /// }
+    /// Afterwards when a receive_message is called you need to use
+    /// the matching to set the node and flow to route to. See also
+    /// MessagingRouteContext for an easy way to define different routing
+    /// options.
+    fn get_routing_support(&self) -> Option<&dyn RoutingSupport> {
+        None
+    }
+
+    fn set_routes(&mut self, routes: Vec<RouteBinding>) -> Result<(), PluginError> {
+        if let Some(routing) = self.get_routing_support() {
+            routing.set(routes);
+            Ok(())
+        } else {
+            Err(PluginError::NotSupported)
+        }
+    }
+
+    fn remove_route(&self, flow: &str, node: &str) {
+        if let Some(routing) = self.get_routing_support() {
+            routing.remove(flow, node);
+        }
+    }
+
+    fn add_route(&self, route: RouteBinding) {
+        if let Some(routing) = self.get_routing_support() {
+            routing.add(route);
+        }
+    }
+
+    fn list_routes(&self) -> Vec<RouteBinding> {
+        if let Some(routing) = self.get_routing_support() {
+            routing.list()
+        } else {
+            Vec::new()
+        }
+    }
 
     /// Called by the host to give the plugin a logger handle.
     /// Plugins should store this in their struct and use it in place of
@@ -140,6 +278,10 @@ pub enum PluginError {
     /// The plugin returned an unspecified failure.
     #[error("plugin error: {0}")]
     Other(String),
+
+    /// The plugin does not support a certain feature.
+    #[error("this feature is not supported by this plugin")]
+    NotSupported,
 }
 
 impl From<serde_json::Error> for PluginError {

@@ -919,7 +919,7 @@ mod tests {
         fm.register_flow(flow.id().as_str(), flow.clone());
 
         let participant = Participant{ id: "id".to_string(), display_name:None, channel_specific_id: None };
-        let co = ChannelOrigin::new("channel".to_string(), participant);
+        let co = ChannelOrigin::new("channel".to_string(), None, None, participant);
         let mut ctx = NodeContext::new("123".to_string(), store.get_or_create("123").await, DashMap::new(), executor, channel_manager, Arc::new(process_mgr), secrets, Some(co));
 
 

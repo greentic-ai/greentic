@@ -50,8 +50,13 @@ impl ChannelNode {
     /// When an actual plugin yields an incoming ChannelMessage,
     /// this helper will route it into one or more flows.
     pub async fn handle_message(&self, msg: &ChannelMessage, fm: &Arc<FlowManager>) {
-        let input = Message::new_uuid(&msg.channel, serde_json::to_value(msg).unwrap());
-        let channel_origin = ChannelOrigin::new(msg.channel.clone(), msg.from.clone());
+        let session_id = msg.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let input = Message::new(&msg.id,  serde_json::to_value(msg).unwrap(),session_id,);
+        let channel_origin = ChannelOrigin::new(
+            msg.channel.clone(),
+            msg.reply_to_id.clone(),
+            msg.thread_id.clone(),
+            msg.from.clone());
         if let Some(report) = fm
             .process_message(&self.flow_name, &self.node_id, input, Some(channel_origin))
             .await
@@ -204,7 +209,7 @@ impl NodeType for ChannelNode {
             let cm = ChannelMessage {
                 to: to.clone(),
                 channel:   self.channel_name.clone(),
-                session_id: input.session_id().clone(),
+                session_id: Some(input.session_id().clone()),
                 direction: MessageDirection::Outgoing,
                 content:   Some(MessageContent::Text(text)),
                 ..Default::default()

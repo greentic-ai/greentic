@@ -10,8 +10,8 @@ use tokio::{ fs, sync::{mpsc, Mutex}, task, };
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use channel_plugin::{
     export_plugin,
-    message::{ChannelCapabilities, ChannelMessage, MessageContent},
-    plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger},
+    message::{ChannelCapabilities, ChannelMessage, MessageContent, RouteMatcher},
+    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use anyhow::Context;
 use uuid::Uuid;
@@ -32,6 +32,7 @@ struct SingleTest {
 
 /// A plugin that watches `./greentic/tests/*.test` and drives a suite of send/receive checks.
 pub struct TesterPlugin {
+    routing: DefaultRoutingSupport,
     logger:    Option<PluginLogger>,
     state:     ChannelState,
     watcher: Option<PollWatcher>,
@@ -54,6 +55,7 @@ impl Default for TesterPlugin {
         let (reply_tx,    reply_rx   ) = unbounded();
         
         TesterPlugin {
+            routing:    DefaultRoutingSupport::default(),
             logger:     None,
             state:      ChannelState::Stopped,
             config:     DashMap::new(),
@@ -70,6 +72,10 @@ impl Default for TesterPlugin {
 impl ChannelPlugin for TesterPlugin {
     fn name(&self) -> String { "channel_tester".into() }
 
+    fn get_routing_support(&self) -> Option<&dyn RoutingSupport> {
+        Some(&self.routing)
+    }
+
     fn set_logger(&mut self, logger: PluginLogger) {
         self.logger = Some(logger);
     }
@@ -84,6 +90,7 @@ impl ChannelPlugin for TesterPlugin {
             supports_sending:  true,
             supports_receiving:true,
             supports_text:     true,
+            supports_routing:  true,
             ..Default::default()
         }
     }
@@ -218,10 +225,21 @@ impl ChannelPlugin for TesterPlugin {
     }
 
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
-            println!("@@@ REMOVE 8");
-        // each call to receive_message() should get its own subscriber:
-        let rx = self.incoming_rx.clone();
-        rx.recv().map_err(|_| PluginError::Other("tester rx closed".into()))
+        if let Ok(mut msg) = self.incoming_rx.recv() {
+            if let Some(MessageContent::Text(ref input)) = msg.content {
+                // Search for matching route
+                if let Some(route) = self.routing.list().iter().find(|r| match &r.matcher {
+                    RouteMatcher::Custom(expected) => input == expected,
+                    _ => false,
+                }) {
+                    msg.flow = Some(route.flow.clone());
+                    msg.node = Some(route.node.clone());
+                }
+            }
+            Ok(msg)
+        } else {
+            Err(PluginError::Other("receive_message channel closed".into()))
+        }
     }
 }
 impl TesterPlugin {
@@ -229,6 +247,7 @@ impl TesterPlugin {
     /// we want an `Arc<Mutex<TesterPlugin>>`.
     fn clone_inner(&self) -> TesterPlugin {
         TesterPlugin {
+            routing:     self.routing.clone(),
             logger:      self.logger.clone(),
             state:       self.state.clone(),
             config:      self.config.clone(),
@@ -262,7 +281,7 @@ impl TesterPlugin {
             let mut cm = ChannelMessage::default();
             cm.channel    = "tester".into();
             cm.content    = Some(MessageContent::Text(test.send.clone()));
-            cm.session_id = "tester".into();
+            cm.session_id = Some("tester".into());
             cm.id         = Uuid::new_v4().to_string();
             cm.timestamp  = Utc::now();
             cm.direction  = /* incoming */ channel_plugin::message::MessageDirection::Incoming;
@@ -309,6 +328,7 @@ mod tests {
     use crate::{SingleTest, TestFile};
 
     use super::TesterPlugin;
+    use channel_plugin::message::{RouteBinding, RouteMatcher};
     use channel_plugin::plugin::{ChannelPlugin, PluginLogger, LogLevel};
     use tempfile::TempDir;
     use tokio::fs;
@@ -421,6 +441,11 @@ tests:
 
         // 3) new plugin
         let mut plugin = TesterPlugin::default();
+        plugin.add_route(RouteBinding {
+            matcher: RouteMatcher::Custom("hello".into()),
+            flow: "pass".into(),
+            node: "t_in".into(),
+        });
         plugin.set_logger(make_logger());
         plugin.start().await.expect("start");
 
@@ -465,6 +490,11 @@ tests:
         f.write_all(bad.as_bytes()).await.unwrap();
 
         let mut plugin = TesterPlugin::default();
+        plugin.add_route(RouteBinding {
+            matcher: RouteMatcher::Custom("ping".into()),
+            flow: "pass".into(),
+            node: "t_in".into(),
+        });
         plugin.set_logger(make_logger());
         plugin.start().await.expect("start");
 
@@ -557,5 +587,73 @@ connections:
         assert!(result.contains("roundtrip: PASS"), "got result = {:?}", result);
 
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_custom_matcher_no_route() {
+        let tmp = TempDir::new().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+
+        fs::create_dir_all("greentic/tests").await.unwrap();
+        fs::create_dir_all("greentic/flows").await.unwrap(); 
+
+        let _ygtc = write_minimal_flow(&tmp, "pass.ygtc").await;
+        let test_path = write_test_file(&tmp, "./greentic/flows/pass.ygtc", "unexpected").await;
+
+        let mut plugin = TesterPlugin::default();
+        plugin.set_logger(make_logger());
+
+        // 🔸 No route added for "unexpected"
+
+        plugin.start().await.expect("start");
+
+        plugin.clone_inner()
+            .run_test_file(&test_path)
+            .await
+            .expect("run_test_file");
+
+        let result_path = test_path.with_extension("test.result");
+        let out = fs::read_to_string(&result_path).await.unwrap();
+        assert!(out.contains("roundtrip: FAIL"),
+            "expected FAIL due to missing route but got: {}", out);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_custom_matcher_multiple_routes() {
+        let tmp = TempDir::new().unwrap();
+        env::set_current_dir(tmp.path()).unwrap();
+
+        fs::create_dir_all("greentic/tests").await.unwrap();
+        fs::create_dir_all("greentic/flows").await.unwrap(); 
+
+        let _ygtc = write_minimal_flow(&tmp, "pass.ygtc").await;
+        let test_path = write_test_file(&tmp, "./greentic/flows/pass.ygtc", "target").await;
+
+        let mut plugin = TesterPlugin::default();
+        plugin.set_logger(make_logger());
+
+        plugin.add_route(RouteBinding {
+            matcher: RouteMatcher::Custom("wrong".into()),
+            flow: "fail".into(),
+            node: "fail_node".into(),
+        });
+
+        plugin.add_route(RouteBinding {
+            matcher: RouteMatcher::Custom("target".into()),
+            flow: "pass".into(),
+            node: "t_in".into(),
+        });
+
+        plugin.start().await.expect("start");
+
+        plugin.clone_inner()
+            .run_test_file(&test_path)
+            .await
+            .expect("run_test_file");
+
+        let result_path = test_path.with_extension("test.result");
+        let out = fs::read_to_string(&result_path).await.unwrap();
+        assert!(out.contains("roundtrip: PASS"),
+            "expected PASS from correct route match but got: {}", out);
     }
 }

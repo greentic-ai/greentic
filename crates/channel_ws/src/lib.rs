@@ -8,8 +8,8 @@ use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 use futures_util::{StreamExt, SinkExt};
 use channel_plugin::{
     export_plugin,
-    message::{ChannelCapabilities, ChannelMessage, MessageContent, Participant, MessageDirection},
-    plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger, LogLevel},
+    message::{ChannelCapabilities, ChannelMessage, HttpRouteContext, MessageContent, MessageDirection, Participant},
+    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use uuid::Uuid;
 use chrono::Utc;
@@ -34,6 +34,7 @@ pub struct WsPlugin {
     cmd_tx: Option<UnboundedSender<Command>>,
     incoming_tx:  UnboundedSender<ChannelMessage>,
     msg_rx: UnboundedReceiver<ChannelMessage>,
+    routing: DefaultRoutingSupport,
     logger: Option<PluginLogger>,
     state:  ChannelState,
     addr:   String,
@@ -48,6 +49,7 @@ impl Default for WsPlugin {
             cmd_tx: None,
             incoming_tx,
             msg_rx: incoming_rx,
+            routing: DefaultRoutingSupport::default(),
             logger: None, 
             state: ChannelState::Stopped, 
             addr 
@@ -89,6 +91,7 @@ impl WsPlugin {
         stream: TcpStream,
         peer: SocketAddr,
         log: PluginLogger,
+        routing: DefaultRoutingSupport,
     ) {
         tokio::spawn(async move {
             let session = peer.to_string();
@@ -109,17 +112,35 @@ impl WsPlugin {
                                     let _ = write.send(WsMsg::Text(txt.clone())).await;
 
                                     log.log(LogLevel::Info, "ws", &format!("recv {}: {}", session, txt));
-                                    
-                                    let _ = msg_tx.send(ChannelMessage{
+                                    let mut cm = ChannelMessage{
                                         channel:"ws".into(),
-                                        session_id:session.clone(),
+                                        node: None,
+                                        flow: None,
+                                        session_id: Some(session.clone()),
                                         direction:MessageDirection::Incoming,
                                         from:Participant{id:session.clone(),display_name:None,channel_specific_id:None},
                                         content:Some(MessageContent::Text(txt.to_string())),
                                         id:Uuid::new_v4().to_string(),
                                         timestamp:Utc::now(),
                                         to:Vec::new(),thread_id:None,reply_to_id:None,metadata:DashMap::new(),
-                                    });
+                                    };
+                                    let ctx = HttpRouteContext {
+                                        path: None, // since we don’t have access to the original URI
+                                        participant_id: Some(session.clone()), // from peer socket address
+                                        thread_id: None,
+                                        custom: vec![],
+                                    };
+                                    let matchers = ctx.to_matchers();
+                                    for matcher in matchers {
+                                        if let Some(route) = routing.find_match(&matcher) {
+                                            cm.flow = Some(route.flow.clone());
+                                            cm.node = Some(route.node.clone());
+                                            break;
+                                        }
+                                    }
+
+                                    let _ = msg_tx.send(cm);
+
                                 }
                                 _ => break,
                             },
@@ -146,6 +167,7 @@ impl WsPlugin {
 #[async_trait]
 impl ChannelPlugin for WsPlugin {
     fn name(&self) -> String { "ws".into() }
+    fn get_routing_support(&self) -> Option<&dyn RoutingSupport> { Some(&self.routing) }
     fn set_logger(&mut self, lg: PluginLogger) { self.logger = Some(lg); }
     fn get_logger(&self) -> Option<PluginLogger> { self.logger  }
     fn set_config(&mut self, cfg: DashMap<String,String>) { 
@@ -164,7 +186,7 @@ impl ChannelPlugin for WsPlugin {
     }
     fn list_config(&self) -> Vec<String> { vec!["address".into(),"port".into()] }
     fn capabilities(&self) -> ChannelCapabilities {
-        ChannelCapabilities { name:"ws".into(),supports_sending:true,supports_receiving:true,supports_text:true,..Default::default() }
+        ChannelCapabilities { name:"ws".into(),supports_routing: true,supports_sending:true,supports_receiving:true,supports_text:true,..Default::default() }
     }
     async fn start(&mut self) -> Result<(),PluginError> {
         // Use the current runtime’s handle:
@@ -189,6 +211,7 @@ impl ChannelPlugin for WsPlugin {
                     stream,
                     peer,
                     log,
+                    self.routing.clone(),
                 );
             }
        // });
@@ -198,13 +221,18 @@ impl ChannelPlugin for WsPlugin {
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
         println!("@@@ REMOVE: SEND MESSAGE");
         if let Some(txt) = msg.content.as_ref().and_then(|c| match c { MessageContent::Text(t) => Some(t.clone()), _=>None }) {
-            let _ = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone(), msg: WsMsg::Text(txt.into()) });
+            let _ = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone().unwrap(), msg: WsMsg::Text(txt.into()) });
         }
         Ok(())
     }
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError> {
         println!("@@@ REMOVE: SEND MESSAGE");
-        self.msg_rx.recv().await.ok_or_else(||PluginError::Other("receive closed".into()))
+        match self.msg_rx.recv().await {
+            Some(msg) => {
+                Ok(msg)
+            }
+            None => Err(PluginError::Other("receive_message channel closed".into())),
+        }
     }
     fn drain(&mut self)->Result<(),PluginError>{ Ok(()) }
     async fn wait_until_drained(&mut self,_u:u64)->Result<(),PluginError>{Ok(())}
@@ -270,7 +298,9 @@ mod tests {
         let mut plugin = WsPlugin::default();
         let cm = ChannelMessage {
             channel:    "ws".into(),
-            session_id: "test-session".into(),
+            node:       Some("ws_in".into()),
+            flow:       None,
+            session_id: Some("test-session".into()),
             direction:  MessageDirection::Incoming,
             from:       Participant { id: "user1".into(), display_name: None, channel_specific_id: None },
             content:    Some(MessageContent::Text("hello".into())),
@@ -329,7 +359,6 @@ mod tests {
             cm.content,
             Some(MessageContent::Text("ping".into()))
         );
-
         // 7) Now send from plugin -> client
         plugin.send_message(cm.clone())
             .await
@@ -344,4 +373,6 @@ mod tests {
 
         
     }
+
+
 }

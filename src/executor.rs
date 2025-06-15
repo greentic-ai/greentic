@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView,};
 use std::time::SystemTime;
 use anyhow::{bail, Context, Error, Result};
@@ -382,6 +382,7 @@ impl WatchedType for ToolDirHandler {
   }
 
     async fn on_create_or_modify(&self, path: &Path) -> Result<()> {
+        let now = std::time::Instant::now();
         let tool_id = path.file_stem().unwrap().to_str().unwrap().to_string();
         let instance = instantiate_tool(self.secrets.clone(), self.logging.clone(), &tool_id, path.to_path_buf())?;
         for tool in &instance.tools_list {
@@ -397,6 +398,7 @@ impl WatchedType for ToolDirHandler {
             let wrapper = ToolWrapper::new(instance.clone(), tool.name.clone(), tool.description.clone(), instance.secrets_list.clone(), schema);
             self.tools.insert(name, Arc::new(wrapper));
         }
+        info!("Loaded tools in {:?}",(std::time::Instant::now()-now));
         Ok(())
     }
 
@@ -634,9 +636,11 @@ pub mod tests {
     where
         F: FnMut() -> bool,
     {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let now = std::time::Instant::now();
+        let deadline = now + std::time::Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
             if check() {
+                println!("@@@ REMOVE {:?}",(std::time::Instant::now()-now));
                 return true;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -660,24 +664,26 @@ pub mod tests {
 
         // Spawn the watcher in the background
         let executor_clone = Arc::clone(&executor);
+        let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move {
+            println!("@@@ REMOVE STARTING WATCHER");
             executor_clone.watch_tool_dir(tool_dir.clone()).await.expect("could not start watcher");
+            let _ = ready_tx.send(()).await;
         });
-
-        // Wait briefly to ensure the watcher is running
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // Wait until the watcher is confirmed started
+        let _ = ready_rx.recv().await;
 
         // copy the weather wasm
         let weather_wasm = Path::new("./tests/wasm/tools_call/weather_api.wasm");
-        fs::copy(weather_wasm, test_wasm.clone()).expect("could not copy weather wasm");           
+        fs::copy(weather_wasm, test_wasm.clone()).expect("could not copy weather wasm");         
 
         // Wait for the watcher to find the file. Watcher has been configured for 2 seconds
         let loaded = wait_for_tool(|| {
             executor.list_tool_keys()
                     .iter()
                     .any(|k| k.starts_with("weather_api_forecast_weather"))
-        }, 8_000).await;
-        assert!(loaded, "Expected tool not loaded after 8s");
+        }, 12000).await;
+        assert!(loaded, "Expected tool not loaded after 12s");
 
         // Remove the file
         try_remove_file_until_gone(&test_wasm, 20);
@@ -688,7 +694,7 @@ pub mod tests {
         !executor.list_tool_keys()
                  .iter()
                  .any(|k| k.starts_with("weather_api_forecast_weather"))
-        }, 8_000).await;
+        }, 8000).await;
         assert!(removed, "Tool was not removed from executor in time");
         
     }

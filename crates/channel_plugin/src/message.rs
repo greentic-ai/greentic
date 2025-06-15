@@ -5,10 +5,33 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub enum RouteMatcher {
+    /// Match based on exact Telegram command (e.g., `/start`)
+    Command(String),
+    /// Match based on reply thread/session ID
+    ThreadId(String),
+    /// Match all messages from a participant
+    Participant(String),
+    /// Match by webhook path
+    WebPath(String),
+    /// Match by custom logic (used only internally or via pattern)
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct RouteBinding {
+    pub flow: String,
+    pub node: String,
+    pub matcher: RouteMatcher,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ChannelMessage {
     pub id: String,                      // Unique ID (UUID or channel-provided)
-    pub session_id: String,              // A UUID uses during the same flow execution by the same user
+    pub flow: Option<String>,            // The flow to route to
+    pub node: Option<String>,            // The node inside the flow to route to
+    pub session_id: Option<String>,      // A UUID uses during the same flow execution by the same user
     pub direction: MessageDirection,     // Incoming or Outgoing
     pub timestamp: DateTime<Utc>,        // When it was sent or received
     pub channel: String,                 // Slack, Telegram, Email, etc.
@@ -89,6 +112,7 @@ pub struct ChannelCapabilities {
     pub supports_media: bool,
     pub supports_events: bool,
     pub supports_typing: bool,
+    pub supports_routing: bool,
     pub supports_threading: bool,
     pub supports_reactions: bool,
     pub supports_call: bool,
@@ -97,4 +121,79 @@ pub struct ChannelCapabilities {
     pub supports_custom_payloads: bool,
 
     pub supported_events: Vec<EventType>, // List of events with descriptions
+}
+
+/// Can be used to route messaging platforms:
+/// - commands
+/// - thread_id when messages are in a thread
+/// - participant_id
+/// - chat_type (e.g. public, private)
+/// - is_reply_to_bot
+/// - language_code
+/// - custom e.g., ["lang:en", "chat_type:private"]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct MessagingRouteContext {
+    pub command: Option<String>,
+    pub thread_id: Option<String>,
+    pub participant_id: Option<String>,
+    pub chat_type: Option<String>,
+    pub is_reply_to_bot: bool,
+    pub language_code: Option<String>,
+    pub custom: Vec<String>,  // e.g., ["lang:en", "chat_type:private"]
+}
+
+impl MessagingRouteContext {
+    pub fn to_matchers(&self) -> Vec<RouteMatcher> {
+        let mut matchers = Vec::new();
+
+        if let Some(c) = &self.command {
+            matchers.push(RouteMatcher::Command(c.clone()));
+        }
+
+        if let Some(tid) = &self.thread_id {
+            matchers.push(RouteMatcher::ThreadId(tid.clone()));
+        }
+
+        if let Some(pid) = &self.participant_id {
+            matchers.push(RouteMatcher::Participant(pid.clone()));
+        }
+
+        for c in &self.custom {
+            matchers.push(RouteMatcher::Custom(c.clone()));
+        }
+
+        matchers
+    }
+}
+
+
+/// Can be used to define http type of routing with a WebPath
+/// or Participant (e.g. session in websockets)
+/// or Custom
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct HttpRouteContext {
+    pub path: Option<String>,
+    pub participant_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub custom: Vec<String>,
+}
+
+impl HttpRouteContext {
+    pub fn to_matchers(&self) -> Vec<RouteMatcher> {
+        let mut v = Vec::new();
+
+        if let Some(pid) = &self.participant_id {
+            v.push(RouteMatcher::Participant(pid.clone()));
+        }
+
+        if let Some(p) = &self.path {
+            v.push(RouteMatcher::WebPath(p.clone()));
+        }
+
+        for c in &self.custom {
+            v.push(RouteMatcher::Custom(c.clone()));
+        }
+
+        v
+    }
 }

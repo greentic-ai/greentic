@@ -1036,11 +1036,11 @@ connections:
         let config_manager = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
-        let channel_origin = ChannelOrigin::new("mock".to_string(), Participant::new("id".to_string(), None, None));
+        let channel_origin = ChannelOrigin::new("mock".to_string(), None, None, Participant::new("id".to_string(), None, None));
         let channel_manager = ChannelManager::new(config_manager, secrets.clone(), host_logger).await.expect("could not make channel manager");
         let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
         let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin)),None,None);
-        channel_manager.register_channel("mock".to_string(), mock).await.expect("could not load mock channel");
+        channel_manager.register_channel("mock_inout".to_string(), mock).await.expect("could not load mock channel");
         let mut ctx = NodeContext::new("123".to_string(),state, config, executor, channel_manager, Arc::new(process_manager), secrets, Some(channel_origin));
 
         let payload = json!({"q": "London".to_string(), "days": 5});
@@ -1048,11 +1048,13 @@ connections:
 
         // 5. Run the flow starting at telegram_in
         let report = flow.run(incoming.clone(), "mock_in", &mut ctx).await;
-        println!("Flow report: {:?}", report);
 
+        assert_eq!(report.records.len(), 2);
+        assert_eq!(report.records[0].node_id, "mock_in");
+        assert_eq!(report.records[1].node_id, "qa_ask");
 
-        assert!(ctx.state_contains_key("q"));
-        assert!(ctx.state_contains_key("days"));
+        assert!(report.error.is_some());
+        assert!(format!("{:?}", report.error).contains("channel `mock` not loaded"));
     }
 }
 

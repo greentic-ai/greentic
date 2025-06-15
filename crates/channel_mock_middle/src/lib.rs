@@ -34,6 +34,7 @@ impl ChannelPlugin for MockPlugin {
             supports_sending: true,
             supports_receiving: true,
             supports_text: true,
+            supports_routing: false,
             /* … */
             ..Default::default()
         }

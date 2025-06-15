@@ -287,6 +287,7 @@ macro_rules! export_plugin {
                 return BorrowingFfiFuture::<*mut c_char>::new(async move {std::ptr::null_mut()})
             }
             let raw = handle as usize;
+
             BorrowingFfiFuture::<'static, *mut c_char>::new(async move {
                 if raw == 0 {
                     return std::ptr::null_mut();

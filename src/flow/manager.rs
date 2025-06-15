@@ -712,7 +712,7 @@ impl ChannelNodeConfig {
         // 5) Build the ChannelMessage, pulling channel from the config:
         Ok(ChannelMessage {
             id,
-            session_id,
+            session_id: Some(session_id),
             channel: self.channel_name.clone(),
             from,
             to,

@@ -15,9 +15,9 @@ use teloxide::{
 use channel_plugin::{
     export_plugin,
     message::{
-        ChannelCapabilities, ChannelMessage, Event, EventType, FileMetadata, MediaMetadata, MediaType, MessageContent, MessageDirection, Participant
+        ChannelCapabilities, ChannelMessage, Event, EventType, FileMetadata, MediaMetadata, MediaType, MessageContent, MessageDirection, MessagingRouteContext, Participant,
     },
-    plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger},
+    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 
 /// Extract `MessageContent` from a Telegram SDK message
@@ -161,6 +161,7 @@ pub struct TelegramPlugin {
     /// Incoming queue for async receive_message
     incoming_tx: Sender<ChannelMessage>,
     incoming_rx: Receiver<ChannelMessage>,
+    routing: DefaultRoutingSupport,
     runtime: Runtime,
     state:   ChannelState,
     config:  DashMap<String,String>,
@@ -178,6 +179,7 @@ impl Default for TelegramPlugin {
             .expect("failed to build runtime");
         TelegramPlugin { 
             incoming_tx: tx,
+            routing: DefaultRoutingSupport::default(),
             runtime,
             incoming_rx: rx,
             state: ChannelState::Stopped, 
@@ -208,31 +210,53 @@ impl TelegramPlugin {
             // 2) Clone our plugin‐inbound channel & logger
             let tx = self.incoming_tx.clone();
             let log = self.logger.clone().unwrap();
+            let routing = self.routing.clone(); 
             // 3) Build a dptree handler that fires on Message updates
             let handler = Update::filter_message()
                 .endpoint(move |bot: Bot, msg: Message| {
                     let tx = tx.clone();
                     let log = log.clone();
+                    let routing = routing.clone();
                     async move {
                         if let Some(content) = extract_content(bot, &msg) {
                             let session = msg.chat.id.to_string();
-                            let cm = ChannelMessage {
+                            let thread_id = match &msg.thread_id {
+                                Some(tid) => tid.0.0.to_string(),  // ThreadId.0 is MessageId, MessageId.0 is i32
+                                None => "None".to_string(),
+                            };
+                            let reply_to_id: Option<String> = msg
+                                .reply_to_message()
+                                .and_then(|reply| reply.from.as_ref())
+                                .map(|user| user.id.0.to_string());
+                            let mut cm = ChannelMessage {
                                 channel:    "telegram".into(),
-                                session_id: session.clone(),
+                                flow: None,
+                                node: None,
+                                session_id: None,
                                 direction:  MessageDirection::Incoming,
                                 from: Participant {
                                     id:                 session.clone(),
-                                    display_name:       msg.from.clone().map(|u| u.full_name()),
-                                    channel_specific_id: msg.from.and_then(|u| u.username.clone()),
+                                    display_name:       msg.from.as_ref().map(|u| u.full_name()),
+                                    channel_specific_id: msg.from.as_ref().and_then(|u| u.username.clone()),
                                 },
                                 content:    Some(content),
-                                id:         msg.id.to_string(),
+                                id:         msg.id.clone().to_string(),
                                 timestamp:  Utc::now(),
                                 to:         Vec::new(),
-                                thread_id:  None,
-                                reply_to_id:None,
+                                thread_id: Some(thread_id),
+                                reply_to_id,
                                 metadata:   Default::default(),
                             };
+                            let ctx = extract_route_context(&msg);
+                            let matchers = ctx.to_matchers();
+
+                            for matcher in matchers {
+                                if let Some(route) = routing.find_match(&matcher) {
+                                    cm.flow = Some(route.flow.clone());
+                                    cm.node = Some(route.node.clone());
+                                    break;
+                                }
+                            }
                             if let Err(e) = tx.send(cm) {
                                 log.log(LogLevel::Error, "telegram", &format!("queue send error: {}", e));
                             }
@@ -262,11 +286,14 @@ impl TelegramPlugin {
     
 }
 
-
 #[async_trait]
 impl ChannelPlugin for TelegramPlugin {
     fn name(&self) -> String {
         "telegram".to_string()
+    }
+    
+    fn get_routing_support(&self) -> Option<&dyn RoutingSupport> {
+        Some(&self.routing)
     }
 
     fn set_logger(&mut self, logger: PluginLogger) {
@@ -288,6 +315,7 @@ impl ChannelPlugin for TelegramPlugin {
             supports_events:         true,
             supports_typing:         true,
             supports_threading:      false,
+            supports_routing:        true,
             supports_reactions:      false,
             supports_call:           false,
             supports_buttons:        false,
@@ -500,17 +528,70 @@ impl ChannelPlugin for TelegramPlugin {
         Ok(())
     }
     
+    /// Telegram messages get routed via:
+    /// - participants -> set a Participant route for a telegram id
+    /// - commands -> set a Command route
+    /// - thread_id -> set a ThreadId route
+    /// - reply_to_bot -> reply_to_bot:true
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError> {
         if let Some(log) = &self.logger {
             log.log(LogLevel::Info, "telegram", "receive message called");
         }
-        let result = self.incoming_rx
-            .recv()
-            .map_err(|_| PluginError::Other("receive_message channel closed".into()));
-
-        result
+        match self.incoming_rx.recv() {
+            Ok(msg) => {
+                Ok(msg)
+            }
+            Err(_) => Err(PluginError::Other("receive_message channel closed".into())),
+        }
     }
 }
+
+
+pub fn extract_route_context(msg: &Message) -> MessagingRouteContext {
+    let command = msg.text()
+        .filter(|t| t.starts_with('/'))
+        .and_then(|text| text.split_whitespace().next().map(|s| s.to_string()));
+
+    let thread_id = msg.thread_id.as_ref().map(|tid| tid.0.0.to_string());
+
+    let participant_id = msg.from.as_ref().map(|u| u.id.0.to_string());
+
+    let chat_type = Some(match &msg.chat.kind {
+        teloxide::types::ChatKind::Public(_) => "public",
+        teloxide::types::ChatKind::Private(_) => "private",
+    }.to_string());
+
+    let is_reply_to_bot = msg
+        .reply_to_message()
+        .and_then(|m| m.from.as_ref())
+        .map(|u| u.is_bot)
+        .unwrap_or(false);
+
+    let language_code = msg.from.as_ref()
+        .and_then(|u| u.language_code.clone());
+
+    let mut custom = vec![];
+    if let Some(lang) = &language_code {
+        custom.push(format!("lang:{}", lang));
+    }
+    if let Some(t) = &chat_type {
+        custom.push(format!("chat_type:{}", t));
+    }
+    if is_reply_to_bot {
+        custom.push("reply_to_me:true".into());
+    }
+
+    MessagingRouteContext {
+        command,
+        thread_id,
+        participant_id,
+        chat_type,
+        is_reply_to_bot,
+        language_code,
+        custom,
+    }
+}
+
 
 // export all the FFI for us
 
@@ -519,7 +600,7 @@ export_plugin!(TelegramPlugin);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use channel_plugin::message::{ChannelMessage, MessageContent, Participant, MessageDirection};
+    use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant, RouteBinding, RouteMatcher};
     use channel_plugin::plugin::{ChannelState, PluginLogger, LogLevel};
     use chrono::Utc;
     use dashmap::DashMap;
@@ -569,8 +650,8 @@ mod tests {
         assert_eq!(p.state(), ChannelState::Stopped);
     }
 
-    #[tokio::test]
-    async fn test_capabilities() {
+    #[test]
+    fn test_capabilities() {
         let mut p = TelegramPlugin::default();
         p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
         let caps = p.capabilities();
@@ -603,14 +684,15 @@ mod tests {
             m
         });
         p.start().await.expect("start");
-
         // Simulate an incoming Telegram message
         let incoming = ChannelMessage {
             id: "in1".into(),
-            session_id: "chat42".into(),
+            session_id: Some("chat42".into()),
             direction: MessageDirection::Incoming,
             timestamp: Utc::now(),
             channel: "telegram".into(),
+            node: Some("telegram_in".into()),
+            flow: Some("telegram_flow".into()),
             from: Participant { id:"chat42".into(), display_name:None, channel_specific_id:None },
             to: vec![],
             content: Some(MessageContent::Text("hello".into())),
@@ -630,10 +712,12 @@ mod tests {
         // Test send_message paths (won't actually call Telegram)
         let outgoing = ChannelMessage {
             id: "out1".into(),
-            session_id: "chat42".into(),
+            session_id: Some("chat42".into()),
             direction: MessageDirection::Outgoing,
             timestamp: Utc::now(),
             channel: "telegram".into(),
+            node: Some("telegram_in".into()),
+            flow: Some("telegram_flow".into()),
             from: Participant { id:"bot".into(), display_name:None, channel_specific_id:None },
             to: vec![ Participant { id:"chat42".into(), display_name:None, channel_specific_id:None } ],
             content: Some(MessageContent::Text("reply".into())),
@@ -680,5 +764,59 @@ mod tests {
             let entry = p.secrets.get("TELEGRAM_TOKEN").expect("telegra token not set");
             assert_eq!(entry.value(), "token");
         }
+    }
+
+    #[test]
+    fn test_add_and_list_routes() {
+        let plugin = TelegramPlugin::default();
+        let route = RouteBinding {
+            matcher: RouteMatcher::Command("/start".into()),
+            flow: "flow1".into(),
+            node: "node1".into(),
+        };
+
+        plugin.add_route(route.clone());
+        let routes = plugin.list_routes();
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0], route);
+    }
+
+    #[test]
+    fn test_remove_route() {
+        let plugin = TelegramPlugin::default();
+        let route = RouteBinding {
+            matcher: RouteMatcher::Command("/start".into()),
+            flow: "flow1".into(),
+            node: "node1".into(),
+        };
+
+        plugin.add_route(route.clone());
+        plugin.remove_route("flow1", "node1");
+        let routes = plugin.list_routes();
+
+        assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn test_set_routes_bulk() {
+        let mut plugin = TelegramPlugin::default();
+        let route1 = RouteBinding {
+            matcher: RouteMatcher::Command("/a".into()),
+            flow: "flowA".into(),
+            node: "nodeA".into(),
+        };
+        let route2 = RouteBinding {
+            matcher: RouteMatcher::Command("/b".into()),
+            flow: "flowB".into(),
+            node: "nodeB".into(),
+        };
+
+        plugin.set_routes(vec![route1.clone(), route2.clone()]).expect("set_routes");
+        let routes = plugin.list_routes();
+
+        assert_eq!(routes.len(), 2);
+        assert!(routes.contains(&route1));
+        assert!(routes.contains(&route2));
     }
 }

@@ -181,13 +181,19 @@ impl JsonSchema for Node {
 #[derive(Clone,Debug)]
 pub struct ChannelOrigin {
     channel: String,
+    reply_to: Option<String>,
+    thread_id: Option<String>,
     participant: Participant,
 }
 
 impl ChannelOrigin {
-    pub fn new(channel: String, participant: Participant) -> Self
+    pub fn new(
+        channel: String, 
+        reply_to: Option<String>,
+        thread_id: Option<String>,
+        participant: Participant) -> Self
     {
-        Self {channel,participant}
+        Self {channel,reply_to,thread_id, participant}
     }
 
     pub fn channel(&self) -> String {
@@ -196,6 +202,16 @@ impl ChannelOrigin {
 
     pub fn participant(&self) -> Participant {
         self.participant.clone()
+    }
+
+
+    pub fn reply_to(&self) -> Option<String> {
+        self.reply_to.clone()
+    }
+
+
+    pub fn thread_id(&self) -> Option<String> {
+        self.thread_id.clone()
     }
 
     /// Build a ChannelMessage that “replies” with `payload` to the original sender.

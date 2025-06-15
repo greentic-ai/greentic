@@ -1,6 +1,6 @@
 use std::{ffi::{c_char, CStr, CString}, sync::Arc};
 use dashmap::DashMap;
-use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger}};
+use channel_plugin::{message::{ChannelCapabilities, ChannelMessage, RouteBinding}, plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger}};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{schema::{Metadata}, schema_for};
 use serde_json::json;
@@ -84,6 +84,63 @@ impl ChannelPlugin for PluginWrapper {
         let mut caps = ChannelCapabilities::default();
         let ok = unsafe { (self.inner.caps)(self.inner.handle, &mut caps as *mut _) };
         if ok { caps } else { ChannelCapabilities::default() }
+    }
+
+    fn supports_routing(&self) -> bool {
+        self.capabilities().supports_routing
+    }
+
+    fn add_route(&self, route: RouteBinding) -> anyhow::Result<()> {
+        if !self.supports_routing() {
+            return Err(anyhow::anyhow!("plugin does not support routing"));
+        }
+
+        if let Some(f) = self.inner.add_route {
+            let json = serde_json::to_string(&route)?;
+            let c_route = CString::new(json)?;
+            unsafe { f(self.inner.handle, c_route.as_ptr()) };
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("plugin_add_route function missing"))
+        }
+    }
+
+    fn remove_route(&self, flow: &str, node: &str) -> anyhow::Result<()> {
+        if !self.supports_routing() {
+            return Err(anyhow::anyhow!("plugin does not support routing"));
+        }
+
+        if let Some(f) = self.inner.remove_route {
+            let c_flow = CString::new(flow)?;
+            let c_node = CString::new(node)?;
+            unsafe { f(self.inner.handle, c_flow.as_ptr(), c_node.as_ptr()) };
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("plugin_remove_route function missing"))
+        }
+    }
+
+    fn list_routes(&self) -> Vec<RouteBinding> {
+        if !self.supports_routing() {
+            return vec![];
+        }
+
+        if let Some(f) = self.inner.list_routes {
+            let ptr = unsafe { f(self.inner.handle) };
+            if ptr.is_null() {
+                return vec![];
+            }
+
+            let json = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+            unsafe { (self.inner.free_string)(ptr) };
+
+            match serde_json::from_str::<Vec<RouteBinding>>(&json) {
+                Ok(routes) => routes,
+                Err(_) => vec![], // or log and return empty
+            }
+        } else {
+            vec![]
+        }
     }
 
     fn set_config(&mut self, config: DashMap<String, String>) {
@@ -247,7 +304,7 @@ pub mod tests {
     use channel_plugin::message::{ChannelMessage, ChannelCapabilities};
     use channel_plugin::plugin::{ChannelState, LogLevel, PluginLogger};
     use channel_plugin::PluginHandle;
-    use dashmap::DashMap;
+    use dashmap::{DashMap, DashSet};
     use std::ffi::c_void;
     use std::os::raw::c_char;
     use std::path::PathBuf;
@@ -261,6 +318,7 @@ pub mod tests {
         caps: ChannelCapabilities,
         send_ok: bool,
         logger: Mutex<Option<PluginLogger>>,
+        routes: DashSet<String>,
     }
 
     impl FakePlugin {
@@ -272,6 +330,7 @@ pub mod tests {
                 caps: ChannelCapabilities { name: "Fake".into(), ..Default::default() },
                 send_ok: true,
                 logger: Mutex::new(None),
+                routes: DashSet::new(),
             })
         }
 
@@ -363,6 +422,54 @@ pub mod tests {
             fut.into_ffi()
         }
 
+        unsafe extern "C" fn add_route_fn(
+            handle: PluginHandle,
+            flow: *const c_char,
+            node: *const c_char,
+        ) -> bool {
+            let plugin = unsafe { &*(handle as *const FakePlugin) };
+
+            if flow.is_null() || node.is_null() {
+                return false;
+            }
+
+            let flow_str = match unsafe { CStr::from_ptr(flow).to_str() } {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            let node_str = match unsafe { CStr::from_ptr(node).to_str() } {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+
+            // For simplicity, join them (you can store as tuple or struct instead)
+            plugin.routes.insert(format!("{flow_str}:{node_str}"));
+            true
+        }
+
+        unsafe extern "C" fn remove_route_fn(handle: PluginHandle, route: *const c_char) -> bool {
+            let plugin = unsafe { &*(handle as *const FakePlugin) };
+            if route.is_null() {
+                return false;
+            }
+            let c_str = unsafe { CStr::from_ptr(route) };
+            if let Ok(route_str) = c_str.to_str() {
+                plugin.routes.remove(route_str);
+                true
+            } else {
+                false
+            }
+        }
+
+        unsafe extern "C" fn list_routes_fn(handle: PluginHandle) -> *mut c_char {
+            let plugin = unsafe { &*(handle as *const FakePlugin) };
+            let routes: Vec<String> = plugin.routes.iter().map(|r| r.clone()).collect();
+            match serde_json::to_string(&routes) {
+                Ok(json) => CString::new(json).unwrap().into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+
         unsafe extern "C" fn destroy(_: PluginHandle) {}
     }
 
@@ -386,6 +493,9 @@ pub mod tests {
             list_secrets:FakePlugin::list_secrets_fn,
             send_message: FakePlugin::send_message_fn,
             receive_message: FakePlugin::receive_message_fn,
+            add_route: Some(FakePlugin::add_route_fn),
+            remove_route: Some(FakePlugin::remove_route_fn),
+            list_routes: Some(FakePlugin::list_routes_fn),
             free_string: FakePlugin::free_string_fn,
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
