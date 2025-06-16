@@ -275,6 +275,41 @@ impl NodeContext
         self.channel_origin.clone()
     }
 
+    pub fn add_node(&self, node: String) {
+        self.state.add_node(node);
+    }
+
+    pub fn set_node(&self, node: String)
+    {
+        self.state.set_nodes(vec![node.clone()]);
+    }
+
+    pub fn set_nodes(&self, nodes: Vec<String>)
+    {
+        self.state.set_nodes(nodes);
+    }
+
+    pub fn nodes(&self) -> Option<Vec<String>> {
+        self.state.nodes()
+    }
+
+    pub fn set_flow(&self, flow: String) {
+        self.state.set_flows(vec![flow.clone()]);
+    }
+
+    pub fn add_flow(&self, flow: String) {
+        self.state.add_flow(flow);
+    }
+
+    pub fn set_flows(&self, flows: Vec<String>)
+    {
+        self.state.set_flows(flows);
+    }
+
+    pub fn flow(&self) -> Option<String> {
+        self.state.flows().and_then(|f| f.first().cloned())
+    }
+
     pub fn get_state(&self, key: &str) -> Option<StateValue> {
         self.state.get(key)
     }

@@ -20,6 +20,7 @@ use serde_json::Value;
 use tokio::{sync::Mutex,time::sleep};
 use tracing::{error, info};
 use crate::node::ToolNode;
+use tracing::{warn,trace};
 
 /// One record per-node, successful or error
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -328,6 +329,18 @@ impl Flow {
             let node_id = cfg.id.clone();
             let max_retries = cfg.max_retries.unwrap_or(0);
             let retry_delay = Duration::from_secs(cfg.retry_delay_secs.unwrap_or(1));
+
+            // Skip nodes not intended for this session
+            if let Some(allowed_nodes) = ctx.nodes() {
+                if !allowed_nodes.contains(&node_id) {
+                    println!("@@@ REMOVE skipping {}", &node_id);
+                    trace!("🔁 Skipping node `{}` not in session node list", node_id);
+                    continue;
+                }
+            }
+
+            // set flow and node for this session
+            ctx.set_node(node_id.clone());
 
             // pull in the single “input” message
             let input = if let Some(m) = outputs.remove(&nx) {
@@ -995,6 +1008,19 @@ impl FlowManager {
             self.secrets.clone(),
             channel_origin.clone(),
         );
+
+        match ctx.flows() {
+            None => {
+                // Lazily allow the current flow
+                ctx.add_flow(flow.id.clone());
+                trace!("👣 Registering flow `{}` for session `{}`", flow.id, ctx.get_session_id());
+            }
+            Some(ref allowed) if !allowed.contains(&flow.id) => {
+                warn!("🛑 Flow `{}` not permitted for session `{}`", flow.id, ctx.get_session_id());
+                return Some(ExecutionReport::skipped());
+            }
+            _ => {} // allowed, continue
+        }
 
         let report = flow.run(message, node_id, &mut ctx).await;
         state.save(ctx.get_all_state());
