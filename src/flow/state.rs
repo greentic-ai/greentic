@@ -20,7 +20,7 @@ pub trait SessionStateType: Send + Sync + Debug {
     fn set_flows(&self, flows: Vec<String>);
     fn nodes(&self) -> Option<Vec<String>>;
     fn add_node(&self, node: String);
-    fn pop_node(&mut self) -> Option<String>;
+    fn pop_node(&self) -> Option<String>;
     fn set_nodes(&self, nodes: Vec<String>);
 
     /// Gets the value associated with a key, if present.
@@ -227,7 +227,7 @@ impl SessionStateType for InMemoryState {
         q.extend(flows);
     }
 
-    fn pop_node(&mut self) -> Option<String> {
+    fn pop_node(&self) -> Option<String> {
         self.nodes.lock().unwrap().pop_front()
     }
 

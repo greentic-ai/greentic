@@ -396,9 +396,9 @@ impl Flow {
                         if cfg.channel_out {
                             let cm = cfg.create_out_msg(
                                 ctx,
-                                input.id().to_string(),
-                                input.session_id(),
-                                input.payload(),
+                                input.id().clone().to_string(),
+                                input.session_id().clone(),
+                                input.payload().clone(),
                                 MessageDirection::Outgoing,
                             );
             
@@ -418,7 +418,7 @@ impl Flow {
                             }
             
                         } else {
-                            Ok(NodeOut::with_routing(input, Routing::FollowGraph))
+                            Ok(NodeOut::with_routing(input.clone(), Routing::FollowGraph))
                         }
                     }
                     NodeKind::Tool { tool } => {
