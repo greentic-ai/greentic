@@ -1,12 +1,24 @@
-use std::{ffi::{c_char, CStr, OsStr}, fs, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::SystemTime};
+use std::{ffi::{c_char, CStr, CString, OsStr}, fs, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::SystemTime};
 use anyhow::{Context, Error};
 use async_trait::async_trait;
 use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelState, PluginLogger}, PluginHandle};
 use dashmap::DashMap;
 use libloading::{Library, Symbol};
+use once_cell::sync::OnceCell;
 use tracing::{error, info, warn};
-use async_ffi::FfiFuture;
-use crate::watcher::{DirectoryWatcher, WatchedType};
+use async_ffi::{BorrowingFfiFuture, FfiFuture};
+use crate::{flow::session::SessionStore, watcher::{DirectoryWatcher, WatchedType}};
+
+/// reference SessionStore for plugins
+pub static SESSION_STORE: OnceCell<SessionStore> = OnceCell::new();
+/// Callback functions for ChannelPlugins to get access to sessions
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct PluginSessionCallbacks {
+    pub get_session: GetSessionFn,
+    pub get_or_create_session: GetOrCreateSessionFn,
+    pub invalidate_session: InvalidateSessionFn,
+}
 
 
 // function‐pointer types matching your `export_plugin!` C API:
@@ -26,10 +38,14 @@ type PluginList             = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
 type PluginFreeString       = unsafe extern "C" fn(*mut c_char);
 type PluginSendMessage      = unsafe extern "C" fn(PluginHandle, *const ChannelMessage) -> FfiFuture<bool>;
 type PluginReceiveMessage   = unsafe extern "C" fn(PluginHandle) -> FfiFuture<*mut c_char>;
+type GetSessionFn           = extern "C" fn(*const c_char, *const c_char) -> FfiFuture<*mut c_char>;
+type GetOrCreateSessionFn   = extern "C" fn(*const c_char, *const c_char) -> FfiFuture<*mut c_char>;
+type InvalidateSessionFn    = extern "C" fn(*const c_char) -> FfiFuture<()>;
 //type PluginAddRoute         = unsafe extern "C" fn(PluginHandle, *const c_char, *const c_char) -> bool;
 //type PluginRemoveRoute      = unsafe extern "C" fn(PluginHandle, *const c_char) -> bool;
 //type PluginListRoutes       = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
-
+type PluginSetSessionCallbacks = unsafe extern "C" fn(PluginHandle, PluginSessionCallbacks);
+pub type RegisterSessionFns    = unsafe extern "C" fn(GetSessionFn,GetOrCreateSessionFn,InvalidateSessionFn,);
 /// We keep the `Library` alive so that the symbol pointers remain valid.
 #[derive(Debug)]
 pub struct Plugin {
@@ -57,6 +73,7 @@ pub struct Plugin {
    // pub remove_route:       Option<PluginRemoveRoute>,
    // pub list_routes:        Option<PluginListRoutes>,
     /// track last modification so we can reload
+    pub set_session_callbacks: Option<PluginSetSessionCallbacks>,
     pub last_modified: SystemTime,
     pub path: PathBuf,
 }
@@ -160,6 +177,13 @@ impl Plugin {
         };
         */
 
+        let set_sessions_sym = unsafe { lib.get(b"plugin_set_session_callbacks") };
+
+        let set_session_callbacks = match set_sessions_sym {
+            Ok(sym) => Some(*sym),
+            Err(_) => None, // Optional for backwards compatibility
+        };
+
         // 3) actually construct the plugin instance
         let handle = unsafe { create() };
 
@@ -185,11 +209,45 @@ impl Plugin {
           //  add_route,
           //  remove_route,
           //  list_routes,
+            set_session_callbacks,
             last_modified: mtime,
             path,
         })
     }
 
+}
+
+pub extern "C" fn plugin_get_session(plugin_name: *const c_char, key: *const c_char) -> FfiFuture<*mut c_char> {
+        let plugin = unsafe { CStr::from_ptr(plugin_name).to_string_lossy().to_string() };
+        let key = unsafe { CStr::from_ptr(key).to_string_lossy().to_string() };
+        let store = SESSION_STORE.get().cloned().expect("SESSION_STORE not initialized correctly");
+        BorrowingFfiFuture::new(async move {
+            if let Some(session_id) = store.get_channel(&plugin, &key).await {
+                CString::new(session_id).unwrap().into_raw()
+            } else {
+                std::ptr::null_mut()
+            }
+        })
+    }
+
+
+pub extern "C" fn plugin_get_or_create_session(plugin_name: *const c_char, key: *const c_char) -> FfiFuture<*mut c_char> {
+    let plugin = unsafe { CStr::from_ptr(plugin_name).to_string_lossy().to_string() };
+    let key = unsafe { CStr::from_ptr(key).to_string_lossy().to_string() };
+    let store = SESSION_STORE.get().cloned().expect("SESSION_STORE not initialized correctly");
+    BorrowingFfiFuture::new(async move {
+        let session_id = store.get_or_create_channel(&plugin, &key).await;
+        CString::new(session_id).unwrap().into_raw()
+    })
+}
+
+
+pub extern "C" fn plugin_invalidate_session(session_id: *const c_char) -> BorrowingFfiFuture<'static, ()> {
+    let session_id = unsafe { CStr::from_ptr(session_id).to_string_lossy().to_string() };
+    let store = SESSION_STORE.get().cloned().expect("SESSION_STORE not initialized correctly");
+    BorrowingFfiFuture::new(async move {
+        store.remove(&session_id).await;
+    })
 }
 
 unsafe impl Send for Plugin {}

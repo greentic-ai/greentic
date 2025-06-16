@@ -209,7 +209,7 @@ impl PluginEventHandler for ChannelManager {
         }
 
         // Wrap + configure:
-        let mut wrapper = PluginWrapper::new(plugin);
+        let mut wrapper = PluginWrapper::new(plugin, self.store.clone());
         
 
         // Wire in the host’s logger callback
@@ -241,9 +241,10 @@ impl PluginEventHandler for ChannelManager {
         let mut wrapper_cloned = wrapper.clone();
         let plugin_name = name.to_string();
 
-    
+        // Add the session callbacks so the channel can get sessions
+        wrapper.set_session_callbacks();
+
         // run start() under that runtime
-        
         match wrapper_cloned.start().await {
             Ok(()) => tracing::info!("Plugin `{}` started", plugin_name),
             Err(e) => tracing::error!("Failed to start `{}`: {:?}", plugin_name, e),
@@ -453,7 +454,7 @@ impl HostLogger {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
+    use crate::{channel::plugin::PluginSessionCallbacks, config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
 
     use super::*;
     use std::{ffi::CString, path::PathBuf, sync::Arc, time::SystemTime};
@@ -515,6 +516,16 @@ pub mod tests {
                 false
             }
         }
+
+        unsafe extern "C" fn set_session_callbacks(
+            _handle: PluginHandle,
+            _callbacks: PluginSessionCallbacks,
+        ) {
+            // For test purposes, this might do nothing
+            // Or you can store the callbacks in a Mutex<Option<...>> on the plugin
+            println!("✅ [FakePlugin] set_session_callbacks_fn called");
+        }
+        
  /*        unsafe extern "C" fn add_route(_: PluginHandle, _: *const c_char, _: *const c_char) -> bool {
             true
         }
@@ -559,6 +570,7 @@ pub mod tests {
             //add_route: Some(add_route),
             //remove_route: Some(remove_route),
             //list_routes: Some(list_routes),
+            set_session_callbacks: Some(set_session_callbacks),
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
         })
@@ -571,12 +583,12 @@ pub mod tests {
         let store =InMemorySessionStore::new(10);
         let host_logger = HostLogger::new();
         let ffi_logger  = host_logger.as_ffi(); 
-        let mgr = ChannelManager::new(config, secrets, store, host_logger)
+        let mgr = ChannelManager::new(config, secrets, store.clone(), host_logger)
             .await
             .unwrap();
 
         let plugin = make_noop_plugin();
-        let mut wrapper = PluginWrapper::new(plugin.clone());
+        let mut wrapper = PluginWrapper::new(plugin.clone(), store);
         wrapper.set_logger(ffi_logger);
         mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);

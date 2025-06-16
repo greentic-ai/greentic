@@ -16,7 +16,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler, ManagedChannel};
     use crate::channel::node::ChannelsRegistry;
-    use crate::channel::plugin::Plugin;
+    use crate::channel::plugin::{Plugin, PluginSessionCallbacks};
     use crate::channel::wrapper::tests::make_wrapper;
     use crate::channel::PluginWrapper;
     use crate::config::{ConfigManager, MapConfigManager};
@@ -95,6 +95,15 @@ mod tests {
                 })
             
         }
+
+        unsafe extern "C" fn set_session_callbacks(
+            _handle: PluginHandle,
+            _callbacks: PluginSessionCallbacks,
+        ) {
+            // Store or mock for verification in tests
+            println!("✅ FakePlugin received set_session_callbacks_fn");
+        }
+
         unsafe extern "C" fn state(_: PluginHandle) -> ChannelState {
             ChannelState::Stopped
         }
@@ -123,6 +132,7 @@ mod tests {
             free_string,
             send_message,
             receive_message,
+            set_session_callbacks: Some(set_session_callbacks),
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
         })
@@ -912,7 +922,7 @@ mod tests {
         let registry = ChannelsRegistry::new(fm.clone(),channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
         let noop = make_noop_plugin();              // Arc<Plugin>
-        let wrapper = PluginWrapper::new(noop.clone());
+        let wrapper = PluginWrapper::new(noop.clone(), store.clone());
         channel_manager.register_channel("mock".into(), ManagedChannel::new(wrapper,None,None)).await.expect("failed to register noop channel");
         // **4.** *tell* the FlowManager about your new flow so that it fires
         //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.

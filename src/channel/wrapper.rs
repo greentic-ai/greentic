@@ -5,24 +5,70 @@ use crossbeam_utils::atomic::AtomicCell;
 use schemars::{schema::{Metadata}, schema_for};
 use serde_json::json;
  use async_trait::async_trait;
+use tracing::info;
+use crate::{channel::plugin::{plugin_get_or_create_session, plugin_get_session, plugin_invalidate_session, RegisterSessionFns}, flow::session::SessionStore};
+
 use super::plugin::Plugin;
 use async_ffi::FfiFuture;          // for the FFI‐safe future
+
 
 #[derive(Clone,Debug)]
 pub struct PluginWrapper {
     inner: Arc<Plugin>,
     state:   Arc<AtomicCell<ChannelState>>,
     logger: Option<PluginLogger>,
+    session_store: SessionStore,
 }
 
 impl PluginWrapper {
-    pub fn new(inner: Arc<Plugin>) -> Self {
+    pub fn new(inner: Arc<Plugin>, session_store: SessionStore) -> Self {
         Self {
             inner,
             state:   Arc::new(AtomicCell::new(ChannelState::Running)),
             logger: None,
+            session_store,
         }
     }
+
+    pub fn session_store(&self) -> SessionStore {
+        self.session_store.clone()
+    }
+    /// Set the session callbacks so the plugins can request a session 
+    pub fn set_session_callbacks(&mut self) {
+        if self.channel_capabilities().supports_routing {
+            if let Some(lib) = &self.inner.lib {
+                let result: std::result::Result<libloading::Symbol<RegisterSessionFns>, libloading::Error> =
+                    unsafe { lib.get(b"greentic_register_session_fns") };
+                match result {
+                    Ok(register) => {
+                        // Register our session handlers
+                        unsafe {
+                            register(
+                                plugin_get_session,
+                                plugin_get_or_create_session,
+                                plugin_invalidate_session,
+                        )};
+                        
+                        tracing::info!("✅ Registered session callbacks for plugin `{}`", self.name());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "⚠️ Plugin `{}` does not expose `greentic_register_session_fns`: {}",
+                            self.name(),
+                            e
+                        );
+                    }
+                }     
+            }
+        } else {
+            info!("Plugin `{}` does not support routing, skipping session injection", self.name());
+        }
+    }
+
+
+
+    
+
 
     /// Fetch the plugin’s capabilities via FFI, or fall back to default.
     pub fn channel_capabilities(&self) -> ChannelCapabilities {
@@ -299,6 +345,9 @@ impl ChannelPlugin for PluginWrapper {
 #[cfg(test)]
 pub mod tests {
 
+    use crate::channel::plugin::{PluginSessionCallbacks, SESSION_STORE};
+    use crate::flow::session::InMemorySessionStore;
+
     use super::*;
     use async_ffi::{BorrowingFfiFuture, FutureExt};
     use channel_plugin::message::{ChannelMessage, ChannelCapabilities};
@@ -319,6 +368,7 @@ pub mod tests {
         send_ok: bool,
         logger: Mutex<Option<PluginLogger>>,
         //routes: DashSet<String>,
+        session_callbacks: Mutex<Option<PluginSessionCallbacks>>,
     }
 
     impl FakePlugin {
@@ -331,6 +381,7 @@ pub mod tests {
                 send_ok: true,
                 logger: Mutex::new(None),
                 //routes: DashSet::new(),
+                session_callbacks: Mutex::new(None),
             })
         }
 
@@ -421,6 +472,15 @@ pub mod tests {
             };
             fut.into_ffi()
         }
+
+        unsafe extern "C" fn set_session_callbacks_fn(
+            handle: PluginHandle,
+            callbacks: PluginSessionCallbacks,
+        ) {
+            let plugin = unsafe { &*(handle as *const FakePlugin) };
+            *plugin.session_callbacks.lock().unwrap() = Some(callbacks);
+            println!("✅ [FakePlugin] set_session_callbacks_fn called");
+        }
 /* 
         unsafe extern "C" fn add_route_fn(
             handle: PluginHandle,
@@ -493,14 +553,17 @@ pub mod tests {
             list_secrets:FakePlugin::list_secrets_fn,
             send_message: FakePlugin::send_message_fn,
             receive_message: FakePlugin::receive_message_fn,
+            set_session_callbacks: Some(FakePlugin::set_session_callbacks_fn),
             //add_route: Some(FakePlugin::add_route_fn),
             //remove_route: Some(FakePlugin::remove_route_fn),
             //list_routes: Some(FakePlugin::list_routes_fn),
             free_string: FakePlugin::free_string_fn,
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
+
         };
-        PluginWrapper::new(Arc::new(p))
+        let store = InMemorySessionStore::new(60);
+        PluginWrapper::new(Arc::new(p), store)
     }
 
         /// A tiny in‐process logger we can inspect.
@@ -608,5 +671,54 @@ pub mod tests {
         let sec = DashMap::new();
         sec.insert("s".into(), "t".into());
         w.set_secrets(sec);
+    }
+
+    #[tokio::test]
+    async fn test_set_session_callbacks() {
+        let wrapper = make_wrapper();
+        let store = wrapper.session_store();
+
+        // Initialize global SESSION_STORE for plugin callbacks
+        let _ = SESSION_STORE.set(store.clone());
+
+        // Manually invoke the session callback FFI registration (bypassing lib.get)
+        if let Some(set_fns) = wrapper.inner.set_session_callbacks {
+            unsafe { set_fns(wrapper.inner.handle, PluginSessionCallbacks {
+                get_session: crate::channel::plugin::plugin_get_session,
+                get_or_create_session: crate::channel::plugin::plugin_get_or_create_session,
+                invalidate_session: crate::channel::plugin::plugin_invalidate_session,
+            }) };
+        }
+
+        // Verify they were actually set in the plugin
+        let fake = unsafe { &*(wrapper.inner.handle as *const FakePlugin) };
+        let stored = fake.session_callbacks.lock().unwrap();
+        let fns = stored.as_ref().expect("Session callbacks were not registered");
+
+        // Prep test values
+        let plugin_name = CString::new("test_plugin").unwrap();
+        let key = CString::new("user_123").unwrap();
+
+        // First call: should create the session
+        let fut = (fns.get_or_create_session)(plugin_name.as_ptr(), key.as_ptr());
+        let raw = fut.await;
+        let session_id = unsafe { CStr::from_ptr(raw) }.to_string_lossy().to_string();
+        assert!(!session_id.is_empty(), "Should have received a session ID");
+
+        // Second call: get_session should return the same
+        let fut2 = (fns.get_session)(plugin_name.as_ptr(), key.as_ptr());
+        let raw2 = fut2.await;
+        let fetched = unsafe { CStr::from_ptr(raw2) }.to_string_lossy().to_string();
+        assert_eq!(session_id, fetched, "Session IDs should match");
+
+        // Invalidate session
+        let sid_cstr = CString::new(session_id.clone()).unwrap();
+        let fut3 = (fns.invalidate_session)(sid_cstr.as_ptr());
+        fut3.await;
+
+        // get_session should now return null
+        let fut4 = (fns.get_session)(plugin_name.as_ptr(), key.as_ptr());
+        let raw4 = fut4.await;
+        assert!(raw4.is_null(), "Session should have been invalidated");
     }
 }

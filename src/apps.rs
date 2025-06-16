@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
+    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry, plugin::SESSION_STORE}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
 };
 
 pub struct App
@@ -52,7 +52,7 @@ impl App {
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
         let store = InMemorySessionStore::new(session_timeout);
-
+        SESSION_STORE.set(store.clone()).expect("Could not set SESSION_STORE");
         // Process Manager
         match ProcessManager::new(processes_dir)
         {

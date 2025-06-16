@@ -1038,9 +1038,9 @@ connections:
         let host_logger = HostLogger::new();
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
         let channel_origin = ChannelOrigin::new("mock".to_string(), None, None, Participant::new("id".to_string(), None, None));
-        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store, host_logger).await.expect("could not make channel manager");
+        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), host_logger).await.expect("could not make channel manager");
         let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
-        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin)),None,None);
+        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin), store.clone()),None,None);
         channel_manager.register_channel("mock_inout".to_string(), mock).await.expect("could not load mock channel");
         let mut ctx = NodeContext::new("123".to_string(),state, config, executor, channel_manager, Arc::new(process_manager), secrets, Some(channel_origin));
 
