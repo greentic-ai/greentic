@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use std::{sync::Arc};
 use dashmap::DashMap;
 use async_trait::async_trait;
@@ -5,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 
 pub type SessionState = Arc<dyn SessionStateType + Send + Sync + 'static>;
@@ -19,6 +20,7 @@ pub trait SessionStateType: Send + Sync + Debug {
     fn set_flows(&self, flows: Vec<String>);
     fn nodes(&self) -> Option<Vec<String>>;
     fn add_node(&self, node: String);
+    fn pop_node(&mut self) -> Option<String>;
     fn set_nodes(&self, nodes: Vec<String>);
 
     /// Gets the value associated with a key, if present.
@@ -159,11 +161,17 @@ impl TryFrom<Value> for StateValue {
 #[derive(Clone, Debug)]
 pub struct InMemoryState {
     store: Arc<DashMap<String, StateValue>>,
+    nodes: Arc<Mutex<VecDeque<String>>>,
+    flows: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl InMemoryState {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { store: Arc::new(DashMap::new()),})
+        Arc::new(Self { 
+            store: Arc::new(DashMap::new()),
+            nodes: Arc::new(Mutex::new(VecDeque::new())),
+            flows: Arc::new(Mutex::new(VecDeque::new())),
+        })
     }
 }
 #[async_trait]
@@ -203,49 +211,41 @@ impl SessionStateType for InMemoryState {
     }
 
     fn flows(&self) -> Option<Vec<String>> {
-        self.get("flows").and_then(|v| match v {
-            StateValue::List(list) => Some(list.iter().filter_map(|s| match s {
-                StateValue::String(s) => Some(s.clone()),
-                _ => None,
-            }).collect()),
-            _ => None,
-        })
+        Some(self.flows.lock().unwrap().iter().cloned().collect())
     }
 
     fn add_flow(&self, flow: String) {
-        let mut flows = self.flows().unwrap_or_default();
-        if !flows.contains(&flow) {
-            flows.push(flow);
-            self.set("flows".to_string(), StateValue::List(flows.into_iter().map(StateValue::String).collect()));
+        let mut q = self.flows.lock().unwrap();
+        if !q.contains(&flow) {
+            q.push_back(flow);
         }
     }
 
     fn set_flows(&self, flows: Vec<String>) {
-        let list = flows.into_iter().map(StateValue::String).collect();
-        self.set("flows".to_string(), StateValue::List(list));
+        let mut q = self.flows.lock().unwrap();
+        q.clear();
+        q.extend(flows);
+    }
+
+    fn pop_node(&mut self) -> Option<String> {
+        self.nodes.lock().unwrap().pop_front()
     }
 
     fn nodes(&self) -> Option<Vec<String>> {
-        self.get("nodes").and_then(|v| match v {
-            StateValue::List(list) => Some(list.iter().filter_map(|s| match s {
-                StateValue::String(s) => Some(s.clone()),
-                _ => None,
-            }).collect()),
-            _ => None,
-        })
+        Some(self.nodes.lock().unwrap().iter().cloned().collect())
     }
 
     fn add_node(&self, node: String) {
-        let mut nodes = self.nodes().unwrap_or_default();
-        if !nodes.contains(&node) {
-            nodes.push(node);
-            self.set("nodes".to_string(), StateValue::List(nodes.into_iter().map(StateValue::String).collect()));
+        let mut q = self.nodes.lock().unwrap();
+        if !q.contains(&node) {
+            q.push_back(node);
         }
     }
 
     fn set_nodes(&self, nodes: Vec<String>) {
-        let list = nodes.into_iter().map(StateValue::String).collect();
-        self.set("nodes".to_string(), StateValue::List(list));
+        let mut q = self.nodes.lock().unwrap();
+        q.clear();
+        q.extend(nodes);
     }
 }
 

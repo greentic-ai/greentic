@@ -12,6 +12,7 @@ use url::Url;
 
 use crate::executor::call_result_to_json;
 use crate::flow::state::StateValue;
+use crate::node::Routing;
 use crate::{
     message::Message,
     node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, ToolNode},
@@ -201,7 +202,7 @@ impl NodeType for OllamaAgent {
                         .get("name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            NodeErr::new(NodeError::ExecutionFailed(
+                            NodeErr::next(NodeError::ExecutionFailed(
                                 "Missing `name` in tool_call".into()),
                                 next_conn.clone())
                         })?;
@@ -209,7 +210,7 @@ impl NodeType for OllamaAgent {
                         .get("action")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            NodeErr::new(NodeError::ExecutionFailed(
+                            NodeErr::next(NodeError::ExecutionFailed(
                                 "Missing `action` in tool_call".into()),
                             next_conn.clone())
                         })?;
@@ -227,11 +228,11 @@ impl NodeType for OllamaAgent {
                                 result_json,
                                 input.session_id().clone(),
                             );
-                            return Ok(NodeOut::new(tool_msg,next_conn));
+                            return Ok(NodeOut::next(tool_msg,next_conn));
                         }
                         Err(e) => {
                             // route to your on_err connection
-                            return Err(NodeErr::new(
+                            return Err(NodeErr::next(
                                 NodeError::ExecutionFailed(format!("tool `{}` errored: {:?}", name, e)),
                                 next_conn,
                             ));
@@ -242,7 +243,7 @@ impl NodeType for OllamaAgent {
 
                 // 2) No inline/deferred tool_calls left: emit your normal LLM payload + any follow-ups
                 let main_msg = Message::new(&input.id(), payload.clone(), input.session_id().clone());
-                Ok(NodeOut::new(main_msg,next_conn))
+                Ok(NodeOut::next(main_msg, next_conn))
             }
         }
     }
@@ -297,7 +298,7 @@ impl OllamaAgent {
 
         let out = json!({ "embeddings": resp.embeddings });
         let msg = Message::new(input.id().as_str(), out, input.session_id().clone());
-        Ok(NodeOut::all(msg))
+        Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
     }
 
     /// Generate branch: returns a JSON payload with `"generated_text"`.
@@ -323,7 +324,7 @@ impl OllamaAgent {
 
         let out = json!({ "generated_text": resp.response });
         let msg = Message::new(input.id().as_str(), out, input.session_id().clone());
-        Ok(NodeOut::all(msg))
+        Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
     }
 }
 

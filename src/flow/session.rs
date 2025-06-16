@@ -10,6 +10,8 @@ pub type SessionStore = Arc<dyn SessionStoreType>;
 /// Factory and cache for per-session state instances.
 #[async_trait]
 pub trait SessionStoreType: Send + Sync + Debug {
+    /// Returns an existing session if it exists.
+    async fn get(&self, session_id: &str) ->  Option<SessionState>;
     /// Returns an existing session or creates a new one with default state.
     async fn get_or_create(&self, session_id: &str) ->  SessionState;
 
@@ -85,6 +87,18 @@ impl SessionStoreType for InMemorySessionStore {
             self.by_channel.insert(key_tuple.clone(), session_id.clone()).await;
             self.reverse_map.insert(session_id.clone(), key_tuple).await;
             session_id
+        }
+    }
+
+    async fn get(&self, session_id: &str) -> Option<SessionState> {
+        let key = session_id.to_string();
+
+        match self.cache.get(&key).await {
+            Some(state) => {
+                let state: Option<SessionState> = Some(state);
+                state
+            }
+            None => None,
         }
     }
     

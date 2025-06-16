@@ -34,11 +34,12 @@ mod tests {
     use crate::flow::manager::{ChannelNodeConfig, ExecutionReport, Flow, FlowManager, NodeConfig, NodeKind, ResolveError, TemplateContext, ToolNodeConfig, ValueOrTemplate};
     use crate::logger::{Logger, OpenTelemetryLogger};
     use crate::message::Message;
-    use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType};
+    use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing};
     use crate::secret::{EmptySecretsManager, SecretsManager};
     use tempfile::TempDir;
 
     impl Flow {
+
         pub fn equal_for_test(&self, other: &Self) -> bool {
             self.id() == other.id()
             && self.title() == other.title()
@@ -46,6 +47,35 @@ mod tests {
             && self.channels() == other.channels()
             && self.nodes() == other.nodes()
             && self.connections() == other.connections()
+        }
+    }
+
+    fn dummy_flow(name: &str) -> Flow {
+        // create a minimal flow with one dummy node
+        let flow = Flow::new(name.to_string(),name.to_string(),"dummy".to_string())
+        .add_node("start".to_string(), dummy_tool_node())
+        .build();
+
+        flow
+    }
+
+    fn dummy_tool_node() -> NodeConfig {
+        NodeConfig {
+            id: "start".to_string(),
+            kind: NodeKind::Tool {
+                tool: ToolNodeConfig {
+                    name: "noop".to_string(),
+                    action: "noop".to_string(),
+                    in_map: None,
+                    out_map: None,
+                    err_map: None,
+                    on_ok: None,
+                    on_err: None,
+                }
+            },
+            config: None,
+            max_retries: Some(0),
+            retry_delay_secs: Some(0),
         }
     }
 
@@ -186,7 +216,7 @@ mod tests {
                 Err(NodeErr::all(NodeError::ExecutionFailed("boom".into())))
             } else {
                 // subsequent: echo
-                Ok(NodeOut::all(msg))
+                Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
             }
         }
 
@@ -949,5 +979,64 @@ mod tests {
         // total should be non‐zero duration
         assert!(report.total.num_milliseconds() >= 0);
         store.clear();
+    }
+
+
+
+    #[tokio::test]
+    async fn test_lazy_flow_registration() {
+        let session_store =InMemorySessionStore::new(15);
+        let flow = dummy_flow("lazy_flow");
+        let manager = FlowManager::new_test(session_store.clone());
+        manager.register_flow("lazy_flow",flow.clone());
+
+        let msg = Message::new("1", serde_json::json!({"q": "hello"}), "sess1".to_string());
+        let report = manager.process_message("lazy_flow", "start", msg.clone(), None).await;
+
+        assert!(report.is_some());
+        assert!(report.as_ref().unwrap().error.is_none());
+
+        let session = session_store.get("sess1").await.unwrap();
+        let flows = session.flows().unwrap();
+        assert!(flows.contains(&"lazy_flow".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_block_disallowed_flow() {
+        let session_store = InMemorySessionStore::new(15);
+        let flow = dummy_flow("blocked_flow");
+        let manager = FlowManager::new_test(session_store.clone());
+        manager.register_flow("blocked_flow",flow.clone());
+
+        let session = session_store.get_or_create("sess2").await;
+        session.set_flows(vec!["allowed_flow".to_string()]);
+
+        let msg = Message::new("2", serde_json::json!({"q": "block test"}), "sess2".to_string());
+        let report = manager.process_message("blocked_flow", "start", msg.clone(), None).await;
+
+        assert!(report.is_some());
+        let r = report.unwrap();
+        assert!(r.records.is_empty());
+        assert!(r.error.is_none());
+        assert_eq!(r.total.num_milliseconds(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_valid_flow_executes() {
+        let session_store =InMemorySessionStore::new(15);
+        let flow = dummy_flow("valid_flow");
+        let manager = FlowManager::new_test(session_store.clone());
+        manager.register_flow("valid_flow",flow.clone());
+
+        let session = session_store.get_or_create("sess3").await;
+        session.set_flows(vec!["valid_flow".to_string()]);
+
+        let msg = Message::new("3", serde_json::json!({"q": "run"}), "sess3".to_string());
+        let report = manager.process_message("valid_flow", "start", msg.clone(), None).await;
+
+        assert!(report.is_some());
+        let r = report.unwrap();
+        assert!(!r.records.is_empty());
+        assert!(r.error.is_none());
     }
 }

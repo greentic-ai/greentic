@@ -3,7 +3,7 @@
 //! under the registry by their name; as they disappear, they get unregistered.
 
 use crate::message::Message;
-use crate::node::{NodeContext, NodeErr, NodeError, NodeOut};
+use crate::node::{NodeContext, NodeErr, NodeError, NodeOut, Routing};
 use crate::process::qa_process::QAProcessNode;
 use crate::watcher::DirectoryWatcher;
 use crate::{node::NodeType, process::process::ProcessWatcher};
@@ -75,7 +75,8 @@ impl BuiltInProcess {
                 if watcher.is_none() {
                     let error = format!("ProcessWatcher should be set in process manager");
                     error!(error);
-                    return Err(NodeErr::all(NodeError::Internal(error)));
+                    return Err(NodeErr::with_routing(NodeError::Internal(error),
+                        Routing::FollowGraph,));
                 }
                 let process = watcher.unwrap().get_process(name);
                 match process {
@@ -83,7 +84,9 @@ impl BuiltInProcess {
                     None => {
                         let error = format!("Process {} was not found",name);
                         error!(error);
-                        return Err(NodeErr::all(NodeError::NotFound(error)));
+                        return Err(NodeErr::with_routing(NodeError::NotFound(error),
+                        Routing::FollowGraph,));
+                        
                     },
                 }
             }

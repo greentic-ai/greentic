@@ -3,7 +3,7 @@
 use crate::flow::manager::{Flow, FlowManager, NodeKind};
 use crate::flow::session::SessionStore;
 use crate::message::Message;
-use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType};
+use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing};
 use async_trait::async_trait;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection};
 use channel_plugin::plugin::ChannelPlugin;
@@ -263,7 +263,7 @@ impl NodeType for ChannelNode {
         if let Err(e) = send_result {
             warn!(error = ?e, "failed to send to channel {}", self.channel_name);
         }
-        Ok(NodeOut::all(input))
+        Ok(NodeOut::with_routing(input, Routing::FollowGraph))
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {

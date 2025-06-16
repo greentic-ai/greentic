@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
 };
 use crate::{
-    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, flow::session::SessionStore, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, watcher::{DirectoryWatcher, WatchedType}
+    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, flow::session::SessionStore, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, watcher::{DirectoryWatcher, WatchedType}
 };
 use anyhow::Error;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
@@ -39,6 +39,16 @@ pub struct ExecutionReport {
     pub error: Option<(String, NodeError)>,
     /// total elapsed wall time
     pub total: TimeDelta,
+}
+
+impl ExecutionReport {
+    pub fn skipped() -> Self {
+        ExecutionReport {
+            records: vec![],
+            error: Some(("skipped".to_string(), NodeError::ExecutionFailed("Flow not allowed".to_string()))),
+            total: chrono::Duration::zero(),
+        }
+    }
 }
 
 impl JsonSchema for ExecutionReport {
@@ -308,6 +318,7 @@ impl Flow {
         self
     }
 
+
     /// Kick off this flow with an initial message
     pub async fn run(&self, msg: Message, start: &str, ctx: &mut NodeContext) -> ExecutionReport {
         let run_start = Utc::now();
@@ -323,20 +334,30 @@ impl Flow {
 
         // look up the linear plan
         let plan = &self.plans[start];
-
-        for &nx in plan {
+        ctx.set_nodes(vec![start.to_string()]);
+        while let Some(next_id) = ctx.pop_next_node() {
+            let nx = match self.index_of.get(&next_id) {
+                Some(i) => *i,
+                None => {
+                    error!("Node `{}` not found in flow graph", next_id);
+                    break;
+                }
+            };
             let cfg: &NodeConfig = &self.graph[nx];
             let node_id = cfg.id.clone();
             let max_retries = cfg.max_retries.unwrap_or(0);
             let retry_delay = Duration::from_secs(cfg.retry_delay_secs.unwrap_or(1));
 
             // Skip nodes not intended for this session
-            if let Some(allowed_nodes) = ctx.nodes() {
-                if !allowed_nodes.contains(&node_id) {
-                    println!("@@@ REMOVE skipping {}", &node_id);
-                    trace!("🔁 Skipping node `{}` not in session node list", node_id);
-                    continue;
-                }
+            let should_run = match ctx.nodes() {
+                None => true, // no routing constraint
+                Some(allowed) => allowed.contains(&node_id),
+            };
+
+            if !should_run {
+                println!("@@@ REMOVE ME - skipping: {}",&node_id);
+                trace!("⏩ Skipping node `{}` — not in session route", node_id);
+                continue;
             }
 
             // set flow and node for this session
@@ -397,7 +418,7 @@ impl Flow {
                             }
             
                         } else {
-                            Ok(NodeOut::all(input.clone()))
+                            Ok(NodeOut::with_routing(input, Routing::FollowGraph))
                         }
                     }
                     NodeKind::Tool { tool } => {
@@ -471,15 +492,18 @@ impl Flow {
             match result {
                 Ok(out_msg) => {
                     // figure out which downstream connections to actually use:
-                    let target_ids: Result<Vec<String>,NodeErr> = match out_msg.out_only() {
-                        None => {
-                            // default: whatever the YAML said
-                            Ok(self.connections
+                    let target_ids: Result<Vec<String>,NodeErr> = match out_msg.routing() {
+                        Routing::FollowGraph => {
+                            let downstream = self
+                                .connections
                                 .get(&node_id)
                                 .cloned()
-                                .unwrap_or_default())
+                                .unwrap_or_default();
+
+                            ctx.set_nodes(downstream.clone()); 
+                            Ok(downstream)
                         }
-                        Some(list) if list.is_empty() => {
+                        Routing::ReplyToOrigin => {
                             // “reply” special case:
                             if let Some(origin) = ctx.channel_origin() {
                                 // build & send a ChannelMessage back to origin.channel
@@ -510,9 +534,20 @@ impl Flow {
                             // don’t propagate through the flow graph
                             Ok(Vec::new())
                         }
-                        Some(list) => {
-                            // override: only send to the named subset
+                        Routing::ToNode(list) => {
+                            ctx.set_node(list.clone());
+                            Ok(vec![list.clone()])
+                        }
+                        Routing::ToNodes( list ) => {
+                            ctx.set_nodes(list.clone());
                             Ok(list.clone())
+                        }
+                        Routing::EndFlow => {
+                            return ExecutionReport {
+                                    records,
+                                    error: None,
+                                    total: Utc::now() - run_start,
+                                };
                         }
                     };
 
@@ -525,8 +560,8 @@ impl Flow {
                         }
                     };
 
-                    // finally enqueue into each successor
-                    for to in downstream {
+                    // if multiple messages come into one downstream node, they get put into an array
+                    for to in downstream.clone() {
                         let &succ_idx = self
                             .index_of
                             .get(&to)
@@ -548,6 +583,21 @@ impl Flow {
                         })
                         .or_insert_with(|| out_msg.message().clone());
                     }
+
+
+                    // Update next steps into session state
+                    let next_nodes: Vec<String> = downstream
+                        .into_iter()
+                        .filter(|to| self.index_of.contains_key(to)) // <- validate via graph
+                        .collect();
+
+                    ctx.set_nodes(
+                        next_nodes
+                            .into_iter()
+                            .filter(|n| plan.iter().any(|nx| self.graph[*nx].id == *n))
+                            .collect()
+                    );
+                
                 }
                 Err(err) => {
                     early_err = Some((node_id.clone(), err.error()));
@@ -1113,4 +1163,21 @@ where
 pub trait TemplateContext {
     /// Render the template with the context’s data, producing a JSON string.
     fn render_template(&self, template: &str) -> Result<String, String>;
+}
+
+#[cfg(test)]
+impl FlowManager {
+    pub fn new_test(session_store: SessionStore) -> Self {
+        use crate::secret::EmptySecretsManager;
+
+        Self {
+            flows: DashMap::new(),
+            store: session_store,
+            executor: Executor::dummy(),
+            channel_manager: ChannelManager::dummy(),
+            process_manager: ProcessManager::dummy(),
+            secrets: SecretsManager(EmptySecretsManager::new()),
+            on_added: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 }

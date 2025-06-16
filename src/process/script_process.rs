@@ -5,8 +5,7 @@ use rhai::{serde::to_dynamic, Engine, Scope};
 use serde_json::{json, Value};
 
 use crate::{
-    message::Message,
-    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, flow::state::StateValue,
+    flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}
 };
 
 /// A Rhai script process node
@@ -171,7 +170,7 @@ impl NodeType for ScriptProcessNode {
                 };
 
                 let msg = Message::new(&input.id(), json!({"output": payload}), input.session_id());
-                Ok(NodeOut::all(msg))
+                Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
             }
             Err(err) => {
                 // Read back the updated state and apply it
@@ -184,9 +183,10 @@ impl NodeType for ScriptProcessNode {
                         }
                     }
                 }
-                Err(NodeErr::all(NodeError::InvalidInput(format!(
-                "Script error: {}", err
-            ))))},
+                Err(NodeErr::with_routing(NodeError::InvalidInput(format!(
+                    "Script error: {}", err)),
+                    Routing::FollowGraph,))
+            },
         }
     }
 
@@ -305,7 +305,7 @@ mod tests {
         let result = node.process(msg, &mut ctx).await;
         assert!(result.is_err());
         assert!(
-            matches!(result.unwrap_err().error, NodeError::InvalidInput(_)),
+            matches!(result.unwrap_err().error(), NodeError::InvalidInput(_)),
             "Expected InvalidInput error"
         );
     }

@@ -4,7 +4,7 @@ use ::serde::{Deserialize, Serialize};
 use handlebars::{Handlebars, JsonValue};
 use serde_json::json;
 
-use crate::{message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}};
+use crate::{message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}};
 
 /// A Handlebars template process node.
 ///
@@ -124,10 +124,12 @@ impl NodeType for TemplateProcessNode {
 
         // Render the template
         let rendered = hbs.render_template(&self.template, &data)
-            .map_err(|e| NodeErr::all(NodeError::InvalidInput(format!("Template render error: {}", e))))?;
+            .map_err(|e| 
+                NodeErr::with_routing(NodeError::InvalidInput(format!("Template render error: {}", e)),
+                        Routing::FollowGraph,))?;
 
         let msg = Message::new(&input.id(), json!({"text": rendered}), input.session_id());
-        Ok(NodeOut::all(msg))
+        Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {

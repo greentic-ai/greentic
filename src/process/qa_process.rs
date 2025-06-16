@@ -12,7 +12,7 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use crate::{agent::manager::BuiltInAgent, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType}, flow::state::StateValue, util::render_handlebars};
+use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
 /// QAProcessNode
 ///
 /// A “stateful” question‐and‐answer node that guides a user through a series of prompts,
@@ -219,14 +219,16 @@ impl NodeType for QAProcessNode {
                     json!({ "text": format!("I didn’t understand: {}\n{}", err, prompt) }),
                     session.to_string(),
                 );
-                return Ok(NodeOut::all(out));
+                return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
             }
             Ok(parsed_json) => {
                 // first, convert the JSON value into your StateValue enum
                 let state_val = StateValue::try_from(parsed_json.clone())
-                    .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(
-                        format!("Failed to convert answer to StateValue: {:?}", e)
-                    )))?;
+                    .map_err(|e| 
+                        NodeErr::with_routing(NodeError::ExecutionFailed(
+                        format!("Failed to convert answer to StateValue: {:?}", e)),
+                        Routing::FollowGraph,)
+                    )?;
                 
                 // store it under the user‐specified state_key
                 ctx.set_state(&last_q.state_key, state_val);
@@ -250,7 +252,7 @@ impl NodeType for QAProcessNode {
                 json!({ "text": prompt }),
                 session.to_string(),
             );
-            return Ok(NodeOut::all(out));
+            return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
         }
 
         // 4) All done! run routing rules against ctx.state
@@ -270,13 +272,12 @@ impl NodeType for QAProcessNode {
                     payload,
                     msg.session_id(),
                 );
-                return Ok(NodeOut::one(out_msg, rule.to.clone()));
+                return Ok(NodeOut::with_routing(out_msg, Routing::ToNode(rule.to.clone())));
             }
         }
 
-        Err(NodeErr::all(NodeError::ExecutionFailed(
-            "no routing rule matched".into(),
-        )))
+        Err(NodeErr::with_routing(NodeError::ExecutionFailed(
+            "no routing rule matched".into()),Routing::FollowGraph,))
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {

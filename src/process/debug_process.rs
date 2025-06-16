@@ -3,7 +3,7 @@ use schemars::{schema::RootSchema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{message::Message, node::{NodeContext, NodeErr, NodeOut, NodeType}};
+use crate::{message::Message, node::{NodeContext, NodeErr, NodeOut, NodeType, Routing}};
 
 
 /// A simple debug node for testing that just echoes its input.
@@ -46,7 +46,7 @@ impl NodeType for DebugProcessNode {
         }
         
         info!("**** DEBUGGER ****: Got message {:?}, context {:?}", input, context.get_all_state());
-        Ok(NodeOut::all(input))
+        Ok(NodeOut::with_routing(input, Routing::FollowGraph))
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {
@@ -66,6 +66,7 @@ mod debug_tests {
     use crate::channel::manager::ChannelManager;
     use crate::flow::manager::NodeKind;
     use crate::flow::state::InMemoryState;
+    use crate::node::Routing;
     use crate::process::manager::{BuiltInProcess, ProcessManager};
     use crate::secret::{EmptySecretsManager, SecretsManager};
 
@@ -127,10 +128,10 @@ mod debug_tests {
 
         // out should be NodeOut::all(original) ⇒ one message, no next‐connections
         let msgs = out.message();       // Vec<Message>
-        let conns = out.out_only();  // Option<&[String]>
+        let routing = out.routing();  // Option<&[String]>
 
-        assert_eq!(msgs, original);
-        assert!(conns.is_none());
+        assert_eq!(msgs,  original);
+        assert_eq!(routing, &Routing::FollowGraph);
     }
 
     #[test]

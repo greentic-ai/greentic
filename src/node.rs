@@ -14,78 +14,141 @@ use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{e
 use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
 
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub enum Routing {
+    /// Use all connections defined in the graph (default)
+    FollowGraph,
+    /// Only use specific named nodes
+    ToNodes(Vec<String>),
+    ToNode(String),
+    /// Send a reply to the original incoming channel
+    ReplyToOrigin,
+    /// Ends the Flow,
+    EndFlow
+}
+
 /// NodeOut enables to send the messages coming out of the Node
-/// to either all connections (default optin)
-/// or if Some(out_only) connections are specified only this
-/// subset of connections 
+/// to either:
+/// * all connections (FollowGraph)
+/// * some connections (ToNodes)
+/// * to the original incoming channel and user (ReplyToOrigin) 
+/// * end the flow (EndFlow)
 #[derive(Clone,Debug, Serialize, Deserialize,JsonSchema)]
 pub struct NodeOut{
     message: Message,
-    /// the list of connections you only want to send the message to
-    out_only: Option<Vec<String>>,
+    routing: Routing,
 }
 
 impl NodeOut {
-    pub fn new(message: Message, out_only: Option<Vec<String>>) -> Self {
-        Self { message, out_only}
-    } 
+    pub fn follow_graph(message: Message) -> Self {
+        Self { message, routing: Routing::FollowGraph }
+    }
+
+    pub fn to_nodes(message: Message, targets: Vec<String>) -> Self {
+        Self { message, routing: Routing::ToNodes(targets) }
+    }
+
+    pub fn to_node(message: Message, target: String) -> Self {
+        Self { message, routing: Routing::ToNode(target) }
+    }
 
     pub fn all(message: Message) -> Self {
-        Self { message, out_only:None}
-    } 
+        Self { message, routing: Routing::FollowGraph }
+    }
 
-    pub fn one(message: Message, out_only: String) -> Self {
-        Self { message, out_only: Some(vec![out_only])}
-    } 
+    pub fn next(message: Message, targets: Option<Vec<String>>) -> Self {
+        let routing = match targets {
+            Some(targets) => if targets.len() == 1 {
+                Routing::ToNode(targets.first().unwrap().to_owned())
+            } else {
+                Routing::ToNodes(targets)
+            },
+            None => Routing::FollowGraph,
+        };
+        Self {message, routing}
+    }
 
-    pub fn message(&self) -> Message{
+    pub fn reply(message: Message) -> Self {
+        Self { message, routing: Routing::ReplyToOrigin }
+    }
+
+    pub fn end_flow(message: Message) -> Self {
+        Self { message, routing: Routing::EndFlow }
+    }
+
+    pub fn routing(&self) -> &Routing {
+        &self.routing
+    }
+
+    pub fn message(&self) -> Message {
         self.message.clone()
     }
 
-    pub fn out_only(&self) -> Option<Vec<String>> {
-        self.out_only.clone()
-    }
-
-    /// “Reply to the same channel/session that delivered the incoming Message.”
-    pub fn reply(message: Message) -> Self {
-        // here we encode “reply” as a special empty `out_only` list
-        Self { message, out_only: Some(vec![]) }
+    pub fn with_routing(message: Message, routing: Routing) -> Self {
+        Self { message, routing }
     }
 }
 
-/// NodeErr enables to send a NodeError to all connections (default)
-/// or only a subset of connections
+/// NodeErr enables to send a NodeError coming out of the Node
+/// to either:
+/// * all connections (FollowGraph)
+/// * some connections (ToNodes)
+/// * to the original incoming channel and user (ReplyToOrigin) 
+/// * end the flow (EndFlow)
 #[derive(Clone,Debug, Serialize, Deserialize,JsonSchema)]
 pub struct NodeErr{
-    pub error: NodeError,
-    /// The list of connections you only want to send the error to
-    pub err_only: Option<Vec<String>>,
+    error: NodeError,
+    routing: Routing,
 }
 
 
 impl NodeErr {
-    pub fn new(error: NodeError, err_only: Option<Vec<String>>) -> Self {
-        Self { error, err_only}
-    } 
-
-    pub fn all(error: NodeError) -> Self {
-        Self { error, err_only:None}
-    } 
-
-    pub fn one(error: NodeError, err_only: String) -> Self {
-        Self { error, err_only: Some(vec![err_only])}
-    } 
-
-    pub fn error(&self) -> NodeError{
-        self.error.clone()
+    pub fn follow_graph(error: NodeError) -> Self {
+        Self { error, routing: Routing::FollowGraph }
     }
 
-    pub fn err_only(&self) -> Option<Vec<String>> {
-        self.err_only.clone()
+    pub fn all(error: NodeError) -> Self {
+        Self { error, routing: Routing::FollowGraph }
+    }
+
+    pub fn next(error: NodeError, targets: Option<Vec<String>>) -> Self {
+        let routing = match targets {
+            Some(targets) => if targets.len() == 1 {
+                Routing::ToNode(targets.first().unwrap().to_owned())
+            } else {
+                Routing::ToNodes(targets)
+            },
+            None => Routing::FollowGraph,
+        };
+        Self {error, routing}
+    }
+
+    pub fn to_nodes(error: NodeError, targets: Vec<String>) -> Self {
+        Self { error, routing: Routing::ToNodes(targets) }
+    }
+    
+    pub fn to_node(error: NodeError, target: String) -> Self {
+        Self { error, routing: Routing::ToNode(target) }
     }
 
     pub fn reply(error: NodeError) -> Self {
-        Self { error, err_only: Some(vec![]) }
+        Self { error, routing: Routing::ReplyToOrigin }
+    }
+
+    pub fn end_flow(error: NodeError) -> Self {
+        Self { error, routing: Routing::EndFlow }
+    }
+
+    pub fn routing(&self) -> &Routing {
+        &self.routing
+    }
+
+    pub fn error(&self) -> NodeError {
+        self.error.clone()
+    }
+
+    pub fn with_routing(error: NodeError, routing: Routing) -> Self {
+        Self { error, routing }
     }
 }
 
@@ -275,6 +338,17 @@ impl NodeContext
         self.channel_origin.clone()
     }
 
+    pub fn add_nodes(&self, nodes: Vec<String>) {
+        for n in nodes {
+            self.state.add_node(n);
+        }
+    }
+
+    pub fn pop_next_node(&mut self) -> Option<String> {
+        self.state.pop_node()
+    }
+
+
     pub fn add_node(&self, node: String) {
         self.state.add_node(node);
     }
@@ -308,6 +382,10 @@ impl NodeContext
 
     pub fn flow(&self) -> Option<String> {
         self.state.flows().and_then(|f| f.first().cloned())
+    }
+
+    pub fn flows(&self) -> Option<Vec<String>> {
+        self.state.flows()
     }
 
     pub fn get_state(&self, key: &str) -> Option<StateValue> {
@@ -549,6 +627,20 @@ impl ToolNode {
         self.action.clone()
     }
 
+    fn build_routing(&self, is_error: bool) -> Routing {
+        if is_error {
+            match &self.on_err {
+                Some(routes) => Routing::ToNodes(routes.clone()),
+                None => Routing::FollowGraph,
+            }
+        } else {
+            match &self.on_ok {
+                Some(routes) => Routing::ToNodes(routes.clone()),
+                None => Routing::FollowGraph,
+            }
+        }
+    }
+
 }
 impl Clone for ToolNode {
     fn clone(&self) -> Self {
@@ -637,26 +729,29 @@ impl NodeType for ToolNode {
                             outputs.push(val);
                         }
                         Content::Image(image) => {
-                            let storage_dir = resolve_or_create_storage_dir(&context.config)?;
+                            let routing = self.build_routing(call_result.is_error.unwrap_or(false));
+                            let storage_dir = resolve_or_create_storage_dir(&context.config, routing.clone())?;
                             let filename = storage_dir.join(format!("image_{}.{}", i, extension_from_mime(&image.mime_type)));
                             fs::write(&filename, &image.data)
-                                .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to write image: {}", e))))?;
+                                .map_err(|e| NodeErr::with_routing(NodeError::ExecutionFailed(format!("Failed to write image: {}", e)), self.build_routing(true)))?;
                             outputs.push(serde_json::json!({ "image": filename.to_string_lossy() }));
                         }
                         Content::Embedded(embedded) => {
                             match &embedded.resource_contents {
                                 ResourceContents::Blob(blob) => {
-                                    let storage_dir = resolve_or_create_storage_dir(&context.config)?;
+                                    let routing = self.build_routing(call_result.is_error.unwrap_or(false));
+                                    let storage_dir = resolve_or_create_storage_dir(&context.config, routing.clone())?;
                                     let filename = storage_dir.join(format!("blob_{}.{}", i, extension_from_mime(blob.mime_type.as_deref().unwrap_or("bin"))));
                                     fs::write(&filename, &blob.blob)
-                                        .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to write blob: {}", e))))?;
+                                        .map_err(|e| NodeErr::with_routing(NodeError::ExecutionFailed(format!("Failed to write blob: {}", e)), self.build_routing(true)))?;
                                     outputs.push(serde_json::json!({ "blob": filename.to_string_lossy() }));
                                 }
                                 ResourceContents::Text(text) => {
-                                    let storage_dir = resolve_or_create_storage_dir(&context.config)?;
+                                    let routing = self.build_routing(call_result.is_error.unwrap_or(false));
+                                    let storage_dir = resolve_or_create_storage_dir(&context.config, routing.clone())?;
                                     let filename = storage_dir.join(format!("text_{}.txt", i));
                                     fs::write(&filename, &text.text)
-                                        .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to write text: {}", e))))?;
+                                        .map_err(|e| NodeErr::with_routing(NodeError::ExecutionFailed(format!("Failed to write text: {}", e)), self.build_routing(true)))?;
                                     outputs.push(serde_json::json!({ "text_file": filename.to_string_lossy() }));
                                 }
                             }
@@ -693,33 +788,22 @@ impl NodeType for ToolNode {
                     }
                     let output_message = Message::new(&input.id(), mapper_output.payload, input.session_id());
 
-                    let output = if call_result.is_error.unwrap_or(false) {
-                        let routes = self.on_err.clone();
-                        NodeOut::new(output_message, routes)
-                    } else {
-                        let routes = self.on_ok.clone();
-                        NodeOut::new(output_message, routes)
-                    };
-                    Ok(output)
+                    let routing = self.build_routing(call_result.is_error.unwrap_or(false));
+                    Ok(NodeOut::with_routing(output_message, routing))
                 } else {
-                   let output_message = Message::new(&input.id(), output_json, input.session_id());
-                    let output = if call_result.is_error.unwrap_or(false) {
-                        let routes = self.on_err.clone();
-                        NodeOut::new(output_message, routes)
-                    } else {
-                        let routes = self.on_ok.clone();
-                        NodeOut::new(output_message, routes)
-                    };
-                    Ok(output)
+                    let output_message = Message::new(&input.id(), output_json, input.session_id());
+                    let routing = self.build_routing(call_result.is_error.unwrap_or(false));
+                    Ok(NodeOut::with_routing(output_message, routing))
                 }
             }
             Err(e) => {
-                let err = NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e));
-                if let Some(err_targets) = &self.on_err {
-                    Err(NodeErr::new(err, Some(err_targets.clone())))
-                } else {
-                    Err(NodeErr::all(err))
-                }
+                Err(NodeErr::with_routing(
+                    NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e)),
+                    self.on_err
+                        .clone()
+                        .map(Routing::ToNodes)
+                        .unwrap_or(Routing::FollowGraph),
+                ))
             }
         }
     }
@@ -730,19 +814,29 @@ impl NodeType for ToolNode {
 
 fn resolve_or_create_storage_dir(
     config: &DashMap<String, String>,
+    routing: Routing,
 ) -> Result<PathBuf, NodeErr> {
     if let Some(dir_str) = config.get("node_storage_dir") {
         let path = PathBuf::from(dir_str.value());
         if !path.exists() {
             fs::create_dir_all(&path)
-                .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to create node_storage_dir: {}", e))))?;
+            .map_err(|e| {
+                NodeErr::with_routing(
+                    NodeError::ExecutionFailed(format!("Failed to create node_storage_dir: {}", e)),
+                    routing.clone(),
+                )
+            })?;
         }
         Ok(path)
     } else {
         let tempdir = TempDir::new()
-            .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Failed to create tempdir: {}", e))))?;
-        let path = tempdir.path().to_path_buf();
-        Ok(path)
+            .map_err(|e| {
+                NodeErr::with_routing(
+                    NodeError::ExecutionFailed(format!("Failed to create tempdir: {}", e)),
+                    routing.clone(),
+                )
+            })?;
+        Ok(tempdir.path().to_path_buf())
     }
 }
 
@@ -820,7 +914,7 @@ pub mod tests {
 
         async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
             context.set_state("echoed", StateValue::String("yes".to_string()));
-            Ok(NodeOut::all(input))
+            Ok(NodeOut::with_routing(input, Routing::FollowGraph))
         }
 
         fn clone_box(&self) -> Box<dyn NodeType> {
@@ -860,7 +954,7 @@ pub mod tests {
 
         let mut ctx = make_test_context_with_mock(Ok(result));
         let out = node.process(input, &mut ctx).await.unwrap();
-        assert_eq!(out.out_only(), Some(vec!["next_success".into()]));
+        assert_eq!(out.routing(), &Routing::ToNodes(vec!["next_success".into()]));
     }
 
     #[tokio::test]
@@ -902,7 +996,7 @@ pub mod tests {
         let mut ctx = make_test_context_with_mock(Err(ToolError::ExecutionError("bad call".into())));
 
         let err = node.process(input, &mut ctx).await.unwrap_err();
-        assert!(err.err_only().expect("did not find routing errors").contains(&"err_conn".to_string()));
+        assert_eq!(err.routing(), &Routing::ToNodes(vec!["err_conn".to_string()]));
     }
 
     #[tokio::test]

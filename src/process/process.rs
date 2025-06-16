@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use crate::message::Message;
-use crate::node::{NodeContext, NodeErr, NodeError, NodeOut};
+use crate::node::{NodeContext, NodeErr, NodeError, NodeOut, Routing};
 use crate::watcher::WatchedType;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -45,7 +45,9 @@ impl ProcessWrapper {
 
     pub async fn process(&self, _msg: Message, _ctx: &mut NodeContext) -> Result<NodeOut, NodeErr>
     {
-        return Err(NodeErr::all(NodeError::Internal("Not yet implemented".to_string())));
+        return Err(NodeErr::with_routing(NodeError::ExecutionFailed(
+                        "Not yet implemented".to_string()),
+                        Routing::FollowGraph,));
     }
 }
 /// Holds loaded libraries and their process names.
