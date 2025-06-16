@@ -1,6 +1,6 @@
 use std::{ffi::{c_char, CStr, CString}, sync::Arc};
 use dashmap::DashMap;
-use channel_plugin::{message::{ChannelCapabilities, ChannelMessage, RouteBinding}, plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger}};
+use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger}};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{schema::{Metadata}, schema_for};
 use serde_json::json;
@@ -85,7 +85,7 @@ impl ChannelPlugin for PluginWrapper {
         let ok = unsafe { (self.inner.caps)(self.inner.handle, &mut caps as *mut _) };
         if ok { caps } else { ChannelCapabilities::default() }
     }
-
+/* 
     fn supports_routing(&self) -> bool {
         self.capabilities().supports_routing
     }
@@ -142,7 +142,7 @@ impl ChannelPlugin for PluginWrapper {
             vec![]
         }
     }
-
+*/
     fn set_config(&mut self, config: DashMap<String, String>) {
         let json = serde_json::to_string(&config).unwrap_or_default();
         let c = CString::new(json).unwrap();
@@ -304,7 +304,7 @@ pub mod tests {
     use channel_plugin::message::{ChannelMessage, ChannelCapabilities};
     use channel_plugin::plugin::{ChannelState, LogLevel, PluginLogger};
     use channel_plugin::PluginHandle;
-    use dashmap::{DashMap, DashSet};
+    use dashmap::{DashMap};
     use std::ffi::c_void;
     use std::os::raw::c_char;
     use std::path::PathBuf;
@@ -318,7 +318,7 @@ pub mod tests {
         caps: ChannelCapabilities,
         send_ok: bool,
         logger: Mutex<Option<PluginLogger>>,
-        routes: DashSet<String>,
+        //routes: DashSet<String>,
     }
 
     impl FakePlugin {
@@ -330,7 +330,7 @@ pub mod tests {
                 caps: ChannelCapabilities { name: "Fake".into(), ..Default::default() },
                 send_ok: true,
                 logger: Mutex::new(None),
-                routes: DashSet::new(),
+                //routes: DashSet::new(),
             })
         }
 
@@ -421,7 +421,7 @@ pub mod tests {
             };
             fut.into_ffi()
         }
-
+/* 
         unsafe extern "C" fn add_route_fn(
             handle: PluginHandle,
             flow: *const c_char,
@@ -469,7 +469,7 @@ pub mod tests {
                 Err(_) => std::ptr::null_mut(),
             }
         }
-
+*/
         unsafe extern "C" fn destroy(_: PluginHandle) {}
     }
 
@@ -493,9 +493,9 @@ pub mod tests {
             list_secrets:FakePlugin::list_secrets_fn,
             send_message: FakePlugin::send_message_fn,
             receive_message: FakePlugin::receive_message_fn,
-            add_route: Some(FakePlugin::add_route_fn),
-            remove_route: Some(FakePlugin::remove_route_fn),
-            list_routes: Some(FakePlugin::list_routes_fn),
+            //add_route: Some(FakePlugin::add_route_fn),
+            //remove_route: Some(FakePlugin::remove_route_fn),
+            //list_routes: Some(FakePlugin::list_routes_fn),
             free_string: FakePlugin::free_string_fn,
             last_modified: SystemTime::now(),
             path: PathBuf::new(),

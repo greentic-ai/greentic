@@ -12,9 +12,7 @@ use tokio_util::sync::CancellationToken;
 use channel_plugin::{message::ChannelMessage, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
 
 use crate::{
-    channel::{plugin::{Plugin, PluginEventHandler}, wrapper::PluginWrapper},
-    config::ConfigManager,
-    secret::SecretsManager, watcher::DirectoryWatcher,
+    channel::{plugin::{Plugin, PluginEventHandler}, wrapper::PluginWrapper}, config::ConfigManager, flow::session::SessionStore, secret::SecretsManager, watcher::DirectoryWatcher
 };
 
 
@@ -23,7 +21,7 @@ use crate::{
 /// a subscriber gets every incoming ChannelMessage
 #[async_trait]
 pub trait IncomingHandler: Send + Sync {
-    async fn handle_incoming(&self, msg: ChannelMessage);
+    async fn handle_incoming(&self, msg: ChannelMessage, session_store: SessionStore);
 }
 
 
@@ -32,6 +30,7 @@ pub trait IncomingHandler: Send + Sync {
 pub struct ChannelManager {
     config:        ConfigManager,
     secrets:       SecretsManager,
+    store:         SessionStore,
     channels:      Arc<DashMap<String, ManagedChannel>>,
     host_logger:   Arc<HostLogger>,
     incoming_subscribers: Arc<Mutex<Vec<Arc<dyn IncomingHandler>>>>,
@@ -42,11 +41,13 @@ impl ChannelManager {
     pub async fn new(
         config: ConfigManager,
         secrets: SecretsManager,
+        store: SessionStore,
         host_logger: Arc<HostLogger>,
     ) -> Result<Arc<Self>> {
         let me = Arc::new(Self {
             config,
             secrets,
+            store,
             channels: Arc::new(DashMap::new()),
             host_logger: host_logger.clone(),
             incoming_subscribers: Arc::new(Mutex::new(vec![])),
@@ -62,6 +63,10 @@ impl ChannelManager {
             .iter()
             .map(|kv| (kv.key().clone(), kv.value().wrapper.state()))
             .collect()
+    }
+
+    pub fn session_store(&self) -> SessionStore {
+        self.store.clone()
     }
 
     /// subscribe to incoming messageds
@@ -257,10 +262,12 @@ impl PluginEventHandler for ChannelManager {
             let poller_cancel = cancel_token.clone();
             let poller_wrapper = wrapper.clone();
 
+            let store = self.store.clone();
             let poller = tokio::spawn(async move {
                 // run this entire loop inside a single blocking thread:
                 // that way there's exactly one `.receive_message()` in flight at a time.
                 loop {
+                    let store = store.clone();
                     // check for cancellation _before_ we block again
                     if poller_cancel.is_cancelled() {
                          break;
@@ -284,9 +291,10 @@ impl PluginEventHandler for ChannelManager {
                             // now dispatch in async land
                             for h in handlers {
                                 let m = msg.clone();
+                                let store = store.clone();
                                 tokio::spawn(async move {
                                     println!("@@@ REMOVE GOT MESSAGE {:?}",m);
-                                    let _ = h.handle_incoming(m).await;
+                                    let _ = h.handle_incoming(m, store.clone()).await;
                                 });
                             }
                         }
@@ -445,7 +453,7 @@ impl HostLogger {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{config::MapConfigManager, secret::EmptySecretsManager,};
+    use crate::{config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
 
     use super::*;
     use std::{ffi::CString, path::PathBuf, sync::Arc, time::SystemTime};
@@ -461,6 +469,7 @@ pub mod tests {
             Arc::new(ChannelManager { 
                 config: ConfigManager(MapConfigManager::new()), 
                 secrets: SecretsManager(EmptySecretsManager::new()), 
+                store: InMemorySessionStore::new(10),
                 channels: Arc::new(DashMap::new()), 
                 host_logger: HostLogger::new(), 
                 incoming_subscribers: Arc::new(Mutex::new(Vec::new())), 
@@ -506,7 +515,7 @@ pub mod tests {
                 false
             }
         }
-        unsafe extern "C" fn add_route(_: PluginHandle, _: *const c_char, _: *const c_char) -> bool {
+ /*        unsafe extern "C" fn add_route(_: PluginHandle, _: *const c_char, _: *const c_char) -> bool {
             true
         }
 
@@ -518,6 +527,7 @@ pub mod tests {
             // Return empty JSON array as C string
             CString::new("[]").unwrap().into_raw()
         }
+        */
         unsafe extern "C" fn state(_: PluginHandle) -> ChannelState {
             ChannelState::Stopped
         }
@@ -546,9 +556,9 @@ pub mod tests {
             list_config,
             list_secrets,
             free_string,
-            add_route: Some(add_route),
-            remove_route: Some(remove_route),
-            list_routes: Some(list_routes),
+            //add_route: Some(add_route),
+            //remove_route: Some(remove_route),
+            //list_routes: Some(list_routes),
             last_modified: SystemTime::now(),
             path: PathBuf::new(),
         })
@@ -558,9 +568,10 @@ pub mod tests {
     async fn test_register_and_unload() {
         let secrets = SecretsManager(EmptySecretsManager::new());
         let config = ConfigManager(MapConfigManager::new());
+        let store =InMemorySessionStore::new(10);
         let host_logger = HostLogger::new();
         let ffi_logger  = host_logger.as_ffi(); 
-        let mgr = ChannelManager::new(config, secrets, host_logger)
+        let mgr = ChannelManager::new(config, secrets, store, host_logger)
             .await
             .unwrap();
 

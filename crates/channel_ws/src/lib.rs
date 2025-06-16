@@ -9,7 +9,7 @@ use futures_util::{StreamExt, SinkExt};
 use channel_plugin::{
     export_plugin,
     message::{ChannelCapabilities, ChannelMessage, HttpRouteContext, MessageContent, MessageDirection, Participant},
-    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
+    plugin::{get_session_id, ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use uuid::Uuid;
 use chrono::Utc;
@@ -92,9 +92,11 @@ impl WsPlugin {
         peer: SocketAddr,
         log: PluginLogger,
         routing: DefaultRoutingSupport,
+        name: String,
     ) {
         tokio::spawn(async move {
             let session = peer.to_string();
+            let name = name.clone();
             match accept_async(stream).await {
                     Ok(ws_stream) => {
                         println!("@@@ GOT HERE 7");
@@ -110,13 +112,13 @@ impl WsPlugin {
                                 Some(Ok(WsMsg::Text(txt))) => {
                                     println!("@@@ GOT HERE 8");
                                     let _ = write.send(WsMsg::Text(txt.clone())).await;
-
-                                    log.log(LogLevel::Info, "ws", &format!("recv {}: {}", session, txt));
+                                    let session_id = get_session_id(&name, &session).await;
+                                    log.log(LogLevel::Info, &name, &format!("recv {}: {}", session, txt));
                                     let mut cm = ChannelMessage{
-                                        channel:"ws".into(),
+                                        channel:name.clone().into(),
                                         node: None,
                                         flow: None,
-                                        session_id: Some(session.clone()),
+                                        session_id: session_id.clone(),
                                         direction:MessageDirection::Incoming,
                                         from:Participant{id:session.clone(),display_name:None,channel_specific_id:None},
                                         content:Some(MessageContent::Text(txt.to_string())),
@@ -124,18 +126,21 @@ impl WsPlugin {
                                         timestamp:Utc::now(),
                                         to:Vec::new(),thread_id:None,reply_to_id:None,metadata:DashMap::new(),
                                     };
-                                    let ctx = HttpRouteContext {
-                                        path: None, // since we don’t have access to the original URI
-                                        participant_id: Some(session.clone()), // from peer socket address
-                                        thread_id: None,
-                                        custom: vec![],
-                                    };
-                                    let matchers = ctx.to_matchers();
-                                    for matcher in matchers {
-                                        if let Some(route) = routing.find_match(&matcher) {
-                                            cm.flow = Some(route.flow.clone());
-                                            cm.node = Some(route.node.clone());
-                                            break;
+                                    if session_id.is_none() {
+                                        // if no active session, let's see if we can route another way
+                                        let ctx = HttpRouteContext {
+                                            path: None, // since we don’t have access to the original URI
+                                            participant_id: Some(session.clone()), // from peer socket address
+                                            thread_id: None,
+                                            custom: vec![],
+                                        };
+                                        let matchers = ctx.to_matchers();
+                                        for matcher in matchers {
+                                            if let Some(route) = routing.find_match(&matcher) {
+                                                cm.flow = Some(route.flow.clone());
+                                                cm.node = Some(route.node.clone());
+                                                break;
+                                            }
                                         }
                                     }
 
@@ -212,6 +217,7 @@ impl ChannelPlugin for WsPlugin {
                     peer,
                     log,
                     self.routing.clone(),
+                    self.name().clone(),
                 );
             }
        // });

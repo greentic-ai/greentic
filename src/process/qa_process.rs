@@ -603,7 +603,7 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EnvSecretsManager, SecretsManager}};
+    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EnvSecretsManager, SecretsManager}};
 
     use super::*;
     use channel_plugin::message::Participant;
@@ -1028,6 +1028,7 @@ connections:
         assert_eq!(flow, expected);
 
         // 3. Set up runtime context
+        let store =InMemorySessionStore::new(10);
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let secrets = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let executor = Executor::new(secrets.clone(), logger.clone());
@@ -1037,7 +1038,7 @@ connections:
         let host_logger = HostLogger::new();
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
         let channel_origin = ChannelOrigin::new("mock".to_string(), None, None, Participant::new("id".to_string(), None, None));
-        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), host_logger).await.expect("could not make channel manager");
+        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store, host_logger).await.expect("could not make channel manager");
         let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
         let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin)),None,None);
         channel_manager.register_channel("mock_inout".to_string(), mock).await.expect("could not load mock channel");

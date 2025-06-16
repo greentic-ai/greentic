@@ -10,8 +10,8 @@ use tokio::{ fs, sync::{mpsc, Mutex}, task, };
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use channel_plugin::{
     export_plugin,
-    message::{ChannelCapabilities, ChannelMessage, MessageContent, RouteMatcher},
-    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
+    message::{ChannelCapabilities, ChannelMessage, MessageContent},
+    plugin::{get_or_create_session_id, ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use anyhow::Context;
 use uuid::Uuid;
@@ -225,17 +225,7 @@ impl ChannelPlugin for TesterPlugin {
     }
 
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
-        if let Ok(mut msg) = self.incoming_rx.recv() {
-            if let Some(MessageContent::Text(ref input)) = msg.content {
-                // Search for matching route
-                if let Some(route) = self.routing.list().iter().find(|r| match &r.matcher {
-                    RouteMatcher::Custom(expected) => input == expected,
-                    _ => false,
-                }) {
-                    msg.flow = Some(route.flow.clone());
-                    msg.node = Some(route.node.clone());
-                }
-            }
+        if let Ok(msg) = self.incoming_rx.recv() {
             Ok(msg)
         } else {
             Err(PluginError::Other("receive_message channel closed".into()))
@@ -277,12 +267,14 @@ impl TesterPlugin {
         for test in tf.tests {
             logger.log(LogLevel::Info, "tester", &format!("→ `{}` sending “{}”", test.name, test.send));
 
+            let key = Uuid::new_v4().to_string();
+            let sesssion_id = get_or_create_session_id(&self.name(), &key).await;
             // stage the incoming ChannelMessage
             let mut cm = ChannelMessage::default();
             cm.channel    = "tester".into();
             cm.content    = Some(MessageContent::Text(test.send.clone()));
-            cm.session_id = Some("tester".into());
-            cm.id         = Uuid::new_v4().to_string();
+            cm.session_id = Some(sesssion_id.clone());
+            cm.id         = key.clone();
             cm.timestamp  = Utc::now();
             cm.direction  = /* incoming */ channel_plugin::message::MessageDirection::Incoming;
             self.incoming_tx.send(cm).ok();

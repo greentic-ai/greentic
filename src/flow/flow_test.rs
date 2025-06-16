@@ -443,7 +443,8 @@ mod tests {
         let secrets = SecretsManager(EmptySecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
-        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), host_logger)
+        let store =InMemorySessionStore::new(10);
+        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, host_logger)
             .await
             .expect("channel manager");
         let tempdir = TempDir::new().unwrap();
@@ -488,7 +489,8 @@ mod tests {
         let secrets = SecretsManager(EmptySecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
-        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), host_logger)
+        let store =InMemorySessionStore::new(10);
+        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, host_logger)
             .await
             .expect("channel manager");
         let state = InMemoryState::new();
@@ -895,19 +897,17 @@ mod tests {
 
         // prepare a dummy Message
         let msg = Message::new("msg1", json!({ "hello": "world" }),"123".to_string());
-
+        let store =InMemorySessionStore::new(10);
         // dummy context
         let executor = make_executor();
         let secrets = SecretsManager(EmptySecretsManager::new());
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
+        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
         let tempdir = TempDir::new().unwrap();
         let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
 
         // **3.** create a FlowManager and a ChannelsRegistry that auto‐registers any Channel nodes
-        let store = Arc::new(InMemorySessionStore::new(30));
-
         let fm = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), Arc::new(process_mgr.clone()), secrets.clone());
         let registry = ChannelsRegistry::new(fm.clone(),channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
@@ -938,5 +938,6 @@ mod tests {
 
         // total should be non‐zero duration
         assert!(report.total.num_milliseconds() >= 0);
+        store.clear();
     }
 }

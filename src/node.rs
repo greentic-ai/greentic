@@ -718,6 +718,7 @@ pub mod tests {
     use crate::channel::manager::HostLogger;
     use crate::config::{ConfigManager, MapConfigManager};
     use crate::executor::exports::wasix::mcp::router::{CallToolResult, TextContent, ToolError};
+    use crate::flow::session::InMemorySessionStore;
     use crate::logger::{Logger, OpenTelemetryLogger};
     use crate::message::Message;
     use crate::secret::{EmptySecretsManager, SecretsManager};
@@ -901,7 +902,8 @@ pub mod tests {
         let executor = Executor::new(secrets.clone(),logging);
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
+        let store =InMemorySessionStore::new(10);
+        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(),store.clone(), host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
         let mut ctx = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor,channel_manager, process_manager, secrets, None);
         assert!(ctx.get_state("missing").is_none());
@@ -941,7 +943,8 @@ pub mod tests {
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
+        let store =InMemorySessionStore::new(10);
+        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(),host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
         let mut context = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor, channel_manager, process_manager, secrets, None);
 
@@ -967,7 +970,8 @@ pub mod tests {
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), host_logger).await.expect("could not create channel manager");
+        let store =InMemorySessionStore::new(10);
+        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
         let mut context = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor, channel_manager, process_manager, secrets, None);
 

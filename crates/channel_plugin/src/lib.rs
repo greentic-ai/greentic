@@ -12,6 +12,15 @@ macro_rules! export_plugin {
         use channel_plugin::PluginHandle;
         use async_ffi::{BorrowingFfiFuture, FfiFuture, FutureExt};
         use tokio::runtime::Builder;
+
+        type GetSessionFn = fn(plugin_name: &str, key: &str) -> BorrowingFfiFuture<'static, *mut c_char>;
+        type GetOrCreateSessionFn = fn(plugin_name: &str, key: &str) -> BorrowingFfiFuture<'static, *mut c_char>;
+        type InvalidateSessionFn = fn(session_id: &str) -> BorrowingFfiFuture<'static, ()>;
+
+        static GET_SESSION: once_cell::sync::OnceCell<GetSessionFn> = once_cell::sync::OnceCell::new();
+        static GET_OR_CREATE: once_cell::sync::OnceCell<GetOrCreateSessionFn> = once_cell::sync::OnceCell::new();
+        static INVALIDATE_SESSION: once_cell::sync::OnceCell<InvalidateSessionFn> = once_cell::sync::OnceCell::new();
+
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn plugin_create() -> $crate::PluginHandle {
             unsafe{
@@ -299,6 +308,71 @@ macro_rules! export_plugin {
                 let js = serde_json::to_string(&msg).unwrap_or_default();
                 CString::new(js).unwrap().into_raw()
             })
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn greentic_register_session_fns(
+            get: GetSessionFn,
+            get_or_create: GetOrCreateSessionFn,
+            invalidate: InvalidateSessionFn,
+        ) {
+            let _ = GET_SESSION.set(get);
+            let _ = GET_OR_CREATE.set(get_or_create);
+            let _ = INVALIDATE_SESSION.set(invalidate);
+        }
+
+        /// Get an existing session for a plugin-specific key
+        #[unsafe(no_mangle)]
+        pub extern "C" fn greentic_get_session(plugin_name: *const c_char, key: *const c_char) 
+        -> BorrowingFfiFuture<'static, *mut c_char> {
+            if plugin_name.is_null() || key.is_null() {
+                return BorrowingFfiFuture::new(async { std::ptr::null_mut() });
+            }
+            let plugin_name = unsafe { CStr::from_ptr(plugin_name) }.to_string_lossy().to_string();
+            let key = unsafe { CStr::from_ptr(key) }.to_string_lossy().to_string();
+
+                if let Some(f) = GET_SESSION.get() {
+                    f(&plugin_name, &key)
+                } else {
+                    BorrowingFfiFuture::new(async { std::ptr::null_mut() })
+                }
+        }
+
+        /// Get or create a session for a plugin-specific key
+        #[unsafe(no_mangle)]
+        pub extern "C" fn greentic_get_or_create_session(
+            plugin_name: *const c_char,
+            key: *const c_char,
+        ) -> BorrowingFfiFuture<'static, *mut c_char> {
+            if plugin_name.is_null() || key.is_null() {
+                return BorrowingFfiFuture::new(async { std::ptr::null_mut() });
+            }
+
+            let plugin_name = unsafe { CStr::from_ptr(plugin_name) }.to_string_lossy().to_string();
+            let key = unsafe { CStr::from_ptr(key) }.to_string_lossy().to_string();
+
+            if let Some(f) = GET_OR_CREATE.get() {
+                f(&plugin_name, &key)
+            } else {
+                BorrowingFfiFuture::new(async { std::ptr::null_mut() })
+            }
+        }
+        /// Remove a session by ID
+        #[unsafe(no_mangle)]
+        pub extern "C" fn greentic_invalidate_session(
+            session_id: *const c_char,
+        ) -> BorrowingFfiFuture<'static, ()> {
+            if session_id.is_null() {
+                return BorrowingFfiFuture::new(async {});
+            }
+
+            let session_id = unsafe { CStr::from_ptr(session_id) }.to_string_lossy().to_string();
+
+            if let Some(f) = INVALIDATE_SESSION.get() {
+                f(&session_id)
+            } else {
+                BorrowingFfiFuture::new(async {})
+            }
         }
 
     };

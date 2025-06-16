@@ -51,7 +51,7 @@ impl App {
         secrets:      SecretsManager,
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
-        let store = Arc::new(InMemorySessionStore::new(session_timeout));
+        let store = InMemorySessionStore::new(session_timeout);
 
         // Process Manager
         match ProcessManager::new(processes_dir)
@@ -95,7 +95,7 @@ impl App {
 
         // Channel manager (internally starts its own PluginWatcher over channels_dir)
         let host_logger = HostLogger::new();
-        let channel_manager = ChannelManager::new(config, secrets.clone(),host_logger).await?;
+        let channel_manager = ChannelManager::new(config, secrets.clone(),store.clone(),host_logger).await?;
         self.channel_manager = Some(channel_manager.clone());
 
 

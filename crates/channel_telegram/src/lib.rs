@@ -8,6 +8,7 @@ use chrono::Utc;
 use reqwest::Url;
 use once_cell::sync::OnceCell;
 use serde_json::json;
+use channel_plugin::plugin::get_session_id;
 use teloxide::{
     prelude::*,
     types::{InputFile, MediaKind, Message as TelegramMessage},
@@ -211,15 +212,18 @@ impl TelegramPlugin {
             let tx = self.incoming_tx.clone();
             let log = self.logger.clone().unwrap();
             let routing = self.routing.clone(); 
+            let plugin = self.name().clone();
             // 3) Build a dptree handler that fires on Message updates
             let handler = Update::filter_message()
                 .endpoint(move |bot: Bot, msg: Message| {
                     let tx = tx.clone();
                     let log = log.clone();
-                    let routing = routing.clone();
+                    let _routing = routing.clone();
+                    let plugin = plugin.clone();
                     async move {
                         if let Some(content) = extract_content(bot, &msg) {
-                            let session = msg.chat.id.to_string();
+                            let chat_id = msg.chat.id.to_string();
+                            let user_id = msg.from.clone().expect("No user id").id.to_string();
                             let thread_id = match &msg.thread_id {
                                 Some(tid) => tid.0.0.to_string(),  // ThreadId.0 is MessageId, MessageId.0 is i32
                                 None => "None".to_string(),
@@ -228,14 +232,17 @@ impl TelegramPlugin {
                                 .reply_to_message()
                                 .and_then(|reply| reply.from.as_ref())
                                 .map(|user| user.id.0.to_string());
-                            let mut cm = ChannelMessage {
+                            let key = format!("chat:{}:user:{}", chat_id, user_id.clone());
+                            let session_id = get_session_id(&plugin, &key).await;
+
+                            let cm = ChannelMessage {
                                 channel:    "telegram".into(),
                                 flow: None,
                                 node: None,
-                                session_id: None,
+                                session_id: session_id.clone(),
                                 direction:  MessageDirection::Incoming,
                                 from: Participant {
-                                    id:                 session.clone(),
+                                    id:                 user_id,
                                     display_name:       msg.from.as_ref().map(|u| u.full_name()),
                                     channel_specific_id: msg.from.as_ref().and_then(|u| u.username.clone()),
                                 },
@@ -247,16 +254,23 @@ impl TelegramPlugin {
                                 reply_to_id,
                                 metadata:   Default::default(),
                             };
-                            let ctx = extract_route_context(&msg);
-                            let matchers = ctx.to_matchers();
+                            if session_id.is_none() {
+                                /* 
+                                DISABLED FOR NOW TO SEE IF WE CAN DO WITHOUT
+                                // Message is not part of an active session so we try to match it
+                                let ctx = extract_route_context(&msg);
+                                let matchers = ctx.to_matchers();
 
-                            for matcher in matchers {
-                                if let Some(route) = routing.find_match(&matcher) {
-                                    cm.flow = Some(route.flow.clone());
-                                    cm.node = Some(route.node.clone());
-                                    break;
+                                for matcher in matchers {
+                                    if let Some(route) = routing.find_match(&matcher) {
+                                        cm.flow = Some(route.flow.clone());
+                                        cm.node = Some(route.node.clone());
+                                        break;
+                                    }
                                 }
+                                */
                             }
+
                             if let Err(e) = tx.send(cm) {
                                 log.log(LogLevel::Error, "telegram", &format!("queue send error: {}", e));
                             }

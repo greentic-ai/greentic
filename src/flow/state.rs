@@ -13,6 +13,14 @@ pub type SessionState = Arc<dyn SessionStateType + Send + Sync + 'static>;
 /// Represents a per-session key-value store with async access.
 #[async_trait]
 pub trait SessionStateType: Send + Sync + Debug {
+    /// The session tracks which flows and nodes should get to handle the next message
+    fn flows(&self) -> Option<Vec<String>>;
+    fn add_flow(&self, flow: String);
+    fn set_flows(&self, flows: Vec<String>);
+    fn nodes(&self) -> Option<Vec<String>>;
+    fn add_node(&self, node: String);
+    fn set_nodes(&self, nodes: Vec<String>);
+
     /// Gets the value associated with a key, if present.
     fn get(&self, key: &str) -> Option<StateValue>;
 
@@ -192,6 +200,52 @@ impl SessionStateType for InMemoryState {
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
+    }
+
+    fn flows(&self) -> Option<Vec<String>> {
+        self.get("flows").and_then(|v| match v {
+            StateValue::List(list) => Some(list.iter().filter_map(|s| match s {
+                StateValue::String(s) => Some(s.clone()),
+                _ => None,
+            }).collect()),
+            _ => None,
+        })
+    }
+
+    fn add_flow(&self, flow: String) {
+        let mut flows = self.flows().unwrap_or_default();
+        if !flows.contains(&flow) {
+            flows.push(flow);
+            self.set("flows".to_string(), StateValue::List(flows.into_iter().map(StateValue::String).collect()));
+        }
+    }
+
+    fn set_flows(&self, flows: Vec<String>) {
+        let list = flows.into_iter().map(StateValue::String).collect();
+        self.set("flows".to_string(), StateValue::List(list));
+    }
+
+    fn nodes(&self) -> Option<Vec<String>> {
+        self.get("nodes").and_then(|v| match v {
+            StateValue::List(list) => Some(list.iter().filter_map(|s| match s {
+                StateValue::String(s) => Some(s.clone()),
+                _ => None,
+            }).collect()),
+            _ => None,
+        })
+    }
+
+    fn add_node(&self, node: String) {
+        let mut nodes = self.nodes().unwrap_or_default();
+        if !nodes.contains(&node) {
+            nodes.push(node);
+            self.set("nodes".to_string(), StateValue::List(nodes.into_iter().map(StateValue::String).collect()));
+        }
+    }
+
+    fn set_nodes(&self, nodes: Vec<String>) {
+        let list = nodes.into_iter().map(StateValue::String).collect();
+        self.set("nodes".to_string(), StateValue::List(list));
     }
 }
 

@@ -7,7 +7,7 @@ use schemars::schema_for;
 use serde_json::{json, Value};
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger}}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::manager::Flow, logger::{FileTelemetry, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
+    channel::manager::{ChannelManager, HostLogger}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
 };
 
 /// The entry point invoked by `main.rs` for `Commands::Schema`.
@@ -46,7 +46,8 @@ pub async fn write_schema(
     let config = ConfigManager(MapConfigManager::new());
     
     let host_logger = HostLogger::new();
-    let channel_mgr = ChannelManager::new( config, secrets, host_logger)
+    let store =InMemorySessionStore::new(10);
+    let channel_mgr = ChannelManager::new( config, secrets, store.clone(), host_logger)
         .await
         .expect("Could not start channels");
     

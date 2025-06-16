@@ -26,9 +26,9 @@ type PluginList             = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
 type PluginFreeString       = unsafe extern "C" fn(*mut c_char);
 type PluginSendMessage      = unsafe extern "C" fn(PluginHandle, *const ChannelMessage) -> FfiFuture<bool>;
 type PluginReceiveMessage   = unsafe extern "C" fn(PluginHandle) -> FfiFuture<*mut c_char>;
-type PluginAddRoute         = unsafe extern "C" fn(PluginHandle, *const c_char, *const c_char) -> bool;
-type PluginRemoveRoute      = unsafe extern "C" fn(PluginHandle, *const c_char) -> bool;
-type PluginListRoutes       = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
+//type PluginAddRoute         = unsafe extern "C" fn(PluginHandle, *const c_char, *const c_char) -> bool;
+//type PluginRemoveRoute      = unsafe extern "C" fn(PluginHandle, *const c_char) -> bool;
+//type PluginListRoutes       = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
 
 /// We keep the `Library` alive so that the symbol pointers remain valid.
 #[derive(Debug)]
@@ -53,9 +53,9 @@ pub struct Plugin {
     pub free_string:        PluginFreeString,
     pub send_message:       PluginSendMessage,
     pub receive_message:    PluginReceiveMessage,
-    pub add_route:          Option<PluginAddRoute>,
-    pub remove_route:       Option<PluginRemoveRoute>,
-    pub list_routes:        Option<PluginListRoutes>,
+   // pub add_route:          Option<PluginAddRoute>,
+   // pub remove_route:       Option<PluginRemoveRoute>,
+   // pub list_routes:        Option<PluginListRoutes>,
     /// track last modification so we can reload
     pub last_modified: SystemTime,
     pub path: PathBuf,
@@ -146,7 +146,7 @@ impl Plugin {
            unsafe { lib.get(b"plugin_receive_message") }
            .context("missing `plugin_receive_message`")?;
        let receive_message = *recv_msg_sym;
-
+/* 
        let add_route = unsafe {
             lib.get(b"plugin_add_route").ok().map(|sym: Symbol<PluginAddRoute>| *sym)
         };
@@ -158,6 +158,7 @@ impl Plugin {
         let list_routes = unsafe {
             lib.get(b"plugin_list_routes").ok().map(|sym: Symbol<PluginListRoutes>| *sym)
         };
+        */
 
         // 3) actually construct the plugin instance
         let handle = unsafe { create() };
@@ -181,9 +182,9 @@ impl Plugin {
             free_string,
             send_message,
             receive_message,
-            add_route,
-            remove_route,
-            list_routes,
+          //  add_route,
+          //  remove_route,
+          //  list_routes,
             last_modified: mtime,
             path,
         })

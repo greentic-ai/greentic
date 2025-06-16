@@ -1,6 +1,7 @@
 // channel_node.rs
 
 use crate::flow::manager::{Flow, FlowManager, NodeKind};
+use crate::flow::session::SessionStore;
 use crate::message::Message;
 use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType};
 use async_trait::async_trait;
@@ -11,7 +12,7 @@ use schemars::{schema_for, JsonSchema};
 use schemars::schema::RootSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use super::flow_router::{ChannelFlowRouter, ScriptFlowRouter};
 use super::manager::{ChannelManager, IncomingHandler};
 
@@ -118,6 +119,18 @@ impl ChannelsRegistry {
         me
     }
 
+    /// Find a specific ChannelNode by flow name and node ID
+    pub fn find_node(&self, flow: &str, node: &str) -> Option<ChannelNode> {
+        for entry in self.map.iter() {
+            for ch_node in entry.value().iter() {
+                if ch_node.flow_name == flow && ch_node.node_id == node {
+                    return Some(ch_node.clone());
+                }
+            }
+        }
+        None
+    }
+
     pub fn subscribe(&self) {
         
     }
@@ -133,7 +146,7 @@ impl ChannelsRegistry {
 
 #[async_trait]
 impl IncomingHandler for ChannelsRegistry {
-    async fn handle_incoming(&self, msg: ChannelMessage) {
+    async fn handle_incoming(&self, msg: ChannelMessage, session_store: SessionStore) {
         // exactly your old `handle_incoming` logic:
         if let Some(nodes) = self.map.get(&msg.channel) {
             if nodes.is_empty() {
@@ -142,9 +155,38 @@ impl IncomingHandler for ChannelsRegistry {
                     "received message but channel has no nodes configured"
                 );
             } else {
-                for node in nodes.iter().cloned() {
-                    node.handle_message(&msg, &self.flow_manager).await;
+                if let Some(session_id) = msg.session_id.clone() {
+                    let state = session_store.get_or_create(&session_id).await;
+                    let session_flows = state.flows().unwrap_or_default();
+                    let session_nodes = state.nodes().unwrap_or_default();
+
+                    if !session_flows.is_empty() && !session_nodes.is_empty() {
+                        let mut routed = false;
+
+                        for flow in session_flows.iter() {
+                            for node in session_nodes.iter() {
+                                if let Some(target_node) = self.find_node(flow, node) {
+                                    target_node.handle_message(&msg, &self.flow_manager).await;
+                                    routed = true;
+                                }
+                            }
+                        }
+
+                        if !routed {
+                            info!("No matching node found for session flows/nodes: {:?} / {:?}", session_flows, session_nodes);
+                            for node in nodes.iter().cloned() {
+                                node.handle_message(&msg, &self.flow_manager).await;
+                            }
+                        }
+                    }
+             
+                } else {
+                    info!("No flows/nodes recorded in session state. Broadcasting to all for {}", msg.channel);
+                    for node in nodes.iter().cloned() {
+                        node.handle_message(&msg, &self.flow_manager).await;
+                    }
                 }
+
             }
         } else {
             error!(
@@ -154,6 +196,7 @@ impl IncomingHandler for ChannelsRegistry {
         }
     }
 }
+
 
 /// So that you can `#[typetag::serde]` your `ChannelNode` inside a flow graph:
 #[async_trait]
@@ -243,22 +286,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_dispatches_safely() {
-        let store = Arc::new(InMemorySessionStore::new(10));
+        let store = InMemorySessionStore::new(10);
         let secrets = SecretsManager(EmptySecretsManager::new());
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let exec = Executor::new(secrets.clone(), logger);
         let config = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new();
-        let cm = ChannelManager::new(config, secrets.clone(), host_logger).await.expect("could not create channel manager");
+        let cm = ChannelManager::new(config, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
         let pm = ProcessManager::dummy();
-        let fm = FlowManager::new(store, exec, cm.clone(), pm.clone(), secrets);
+        let fm = FlowManager::new(store.clone(), exec, cm.clone(), pm.clone(), secrets);
         let reg = ChannelsRegistry::new(fm,cm).await;
 
         // no panic if nothing registered
         let mut msg = ChannelMessage::default();
         msg.channel = "foo".into();
         msg.direction = MessageDirection::Incoming;
-        reg.handle_incoming(msg.clone()).await;
+        reg.handle_incoming(msg.clone(), store.clone()).await;
 
         // register one node
         let node = ChannelNode {
@@ -271,6 +314,6 @@ mod tests {
         };
         reg.register(node);
         // still no panic, (router map empty)
-        reg.handle_incoming(msg).await;
+        reg.handle_incoming(msg, store).await;
     }
 }
