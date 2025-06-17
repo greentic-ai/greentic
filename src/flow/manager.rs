@@ -13,7 +13,7 @@ use std::fmt::Debug;
 use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
-use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{Topo, Walker}, Directed, Direction::Incoming};
+use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{Topo, Walker}, Directed};
 use schemars::{schema::{InstanceType, Metadata, Schema, SchemaObject}, JsonSchema, SchemaGenerator};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
@@ -333,382 +333,249 @@ impl Flow {
 
     /// Kick off this flow with an initial message
     pub async fn run(&self, msg: Message, start: &str, ctx: &mut NodeContext) -> ExecutionReport {
-        // Reject flow if not allowed by session
         if let Some(allowed_flows) = ctx.flows() {
-            if !allowed_flows.contains(&self.id.clone()) {
-                info!("🔒 Flow `{}` blocked by session restrictions", self.id.clone());
+            if !allowed_flows.contains(&self.id) {
                 return ExecutionReport {
                     records: vec![],
                     error: Some((
-                        self.id.clone(), 
-                        NodeError::ExecutionFailed("flow not allowed".to_string())
+                        self.id.clone(),
+                        NodeError::ExecutionFailed("flow not allowed".to_string()),
                     )),
                     total: TimeDelta::zero(),
                 };
             }
         }
+
         let run_start = Utc::now();
         let mut records = Vec::new();
         let mut early_err: Option<(String, NodeError)> = None;
-        // outputs holds the “current” Message(s) for each node index
         let mut outputs: HashMap<NodeIndex, Vec<Message>> = HashMap::new();
-        // seed the start node
-        let start_idx = *self.index_of
-            .get(start)
+
+        let start_idx = *self.index_of.get(start)
             .unwrap_or_else(|| panic!("run(): no plan for start `{}`", start));
-        outputs.insert(start_idx, msg.clone());
-
-        // look up the linear plan
-        let plan = &self.plans[start];
+        outputs.insert(start_idx, vec![msg.clone()]);
         ctx.set_nodes(vec![start.to_string()]);
-        println!("@@@ REMOVE 1: {:?}",ctx.nodes());
+
         while let Some(next_id) = ctx.pop_next_node() {
-            let nx = match self.index_of.get(&next_id) {
-                Some(i) => *i,
-                None => {
-                    println!("@@@ REMOVE 1.5: {:?}",ctx.nodes());
-                    error!("Node `{}` not found in flow graph", next_id);
-                    break;
-                }
+            let &nx = match self.index_of.get(&next_id) {
+                Some(ix) => ix,
+                None => break,
             };
-            let cfg: &NodeConfig = &self.graph[nx];
+
+            let cfg = &self.graph[nx];
             let node_id = cfg.id.clone();
-            let max_retries = cfg.max_retries.unwrap_or(0);
-            let retry_delay = Duration::from_secs(cfg.retry_delay_secs.unwrap_or(1));
 
-            println!("@@@ REMOVE 2: {:?}",ctx.nodes());
+            let input_messages = outputs.remove(&nx).unwrap_or_default();
 
-            // set flow and node for this session
-            ctx.set_node(node_id.clone());
+            for input in input_messages {
+                let max_retries = cfg.max_retries.unwrap_or(0);
+                let retry_delay = Duration::from_secs(cfg.retry_delay_secs.unwrap_or(1));
+                let mut attempt = 0;
 
-            // pull in the single “input” message
-            let input = if let Some(m) = outputs.remove(&nx) {
-                m
-            } else {
-                // if multiple upstream preds: merge as before
-                let mut ins = Vec::new();
-                for pred in self.graph.neighbors_directed(nx, Incoming) {
-                    ins.push(
-                        outputs.remove(&pred)
-                            .expect("missing upstream output")
-                    );
-                }
-                if ins.len() == 1 {
-                    ins.into_iter().next().unwrap()
-                } else {
-                    // copy the session_id from the first upstream message
-                    let session_id = ins[0].clone().session_id().clone();
-                    let arr = ins.into_iter().map(|m| m.payload()).collect();
-                    Message::new(&msg.id(), Value::Array(arr),session_id)
+                let result = loop {
+                    let started = Utc::now();
 
-                }
-            };
-
-            let mut attempt = 0;
-            
-            let result = loop {
-                let started = Utc::now();
-                // dispatch by kind
-                let res = match &cfg.kind {
-                    NodeKind::Channel { cfg } => {
-                        if cfg.channel_out {
-                            let cm = cfg.create_out_msg(
-                                ctx,
-                                input.id().clone().to_string(),
-                                input.session_id().clone(),
-                                input.payload().clone(),
-                                MessageDirection::Outgoing,
-                            );
-            
-                            match cm {
-                                Ok(msg) => {
-                                    ctx.channel_manager()
-                                    .send_to_channel(&cfg.channel_name, msg)
-                                    .await
-                                    .map(|_| NodeOut::all(input.clone()))
-                                    .map_err(|e| NodeErr::fail(NodeError::ConnectionFailed(format!("{:?}", e))))
-                                },
-                                Err(err) => {
-                                    let error = format!("Could not create a channel message because of {:?}",err);
-                                    error!(error);
-                                    Err(NodeErr::fail(NodeError::ExecutionFailed(error)))
-                                },
+                    let res = match &cfg.kind {
+                        NodeKind::Channel { cfg } => {
+                            if cfg.channel_out {
+                                let cm = cfg.create_out_msg(
+                                    ctx,
+                                    input.id().to_string(),
+                                    input.session_id().clone(),
+                                    input.payload().clone(),
+                                    MessageDirection::Outgoing,
+                                );
+                                match cm {
+                                    Ok(msg) => {
+                                        ctx.channel_manager().send_to_channel(&cfg.channel_name, msg).await
+                                            .map(|_| NodeOut::all(input.clone()))
+                                            .map_err(|e| NodeErr::fail(NodeError::ConnectionFailed(format!("{:?}", e))))
+                                    },
+                                    Err(err) => {
+                                        let error = format!("Could not create a channel message: {:?}", err);
+                                        Err(NodeErr::fail(NodeError::ExecutionFailed(error)))
+                                    },
+                                }
+                            } else {
+                                Ok(NodeOut::with_routing(input.clone(), Routing::FollowGraph))
                             }
-            
-                        } else {
-                            Ok(NodeOut::with_routing(input.clone(), Routing::FollowGraph))
                         }
-                    }
-                    NodeKind::Tool { tool } => {
-                        // same as before…
-                        let mut msg_with_params = input.clone();
-                        // Pull out the session ID and payload before we overwrite msg_with_params
-                        let session_id = msg_with_params.session_id().clone();
-                        let payload = msg_with_params.payload();
+                        NodeKind::Tool { tool } => {
+                            let msg_with_params = Message::new(
+                                &input.id(),
+                                input.payload(),
+                                input.session_id().clone(),
+                            );
 
-                        // Rebuild the message
-                        msg_with_params = Message::new(
-                            &msg_with_params.id(),
-                            payload,
-                            session_id,
-                        );
-
-                        // fetch secrets…
-                        let secrets_keys = ctx.executor().executor.secrets(tool.name.clone());
-
-                        let mut secret_map = HashMap::new();
-                        if secrets_keys.is_some() {
-                            for s in &secrets_keys.unwrap()
-                            {
-                                let name = s.name.clone();
-                                if let Some(tok) = ctx.reveal_secret(&name).await {
-                                    secret_map.insert(name, tok.clone());
+                            let mut secret_map = HashMap::new();
+                            if let Some(keys) = ctx.executor().executor.secrets(tool.name.clone()) {
+                                for s in keys {
+                                    if let Some(tok) = ctx.reveal_secret(&s.name).await {
+                                        secret_map.insert(s.name.clone(), tok);
+                                    }
                                 }
                             }
-                        }
 
-                        ToolNode::new(
-                            tool.name.clone(),
-                            tool.action.clone(),
-                            tool.in_map.clone(),
-                            tool.out_map.clone(),
-                            tool.err_map.clone(),
-                            tool.on_ok.clone(),
-                            tool.on_err.clone(),
-                        ).process(msg_with_params, ctx).await
-                    }
-                    NodeKind::Agent { agent } => {
-                        agent.process(input.clone(), ctx).await
-                    }
-                    NodeKind::Process { process } => {
-                        process.process( input.clone(),ctx).await
+                            ToolNode::new(
+                                tool.name.clone(),
+                                tool.action.clone(),
+                                tool.in_map.clone(),
+                                tool.out_map.clone(),
+                                tool.err_map.clone(),
+                                tool.on_ok.clone(),
+                                tool.on_err.clone(),
+                            ).process(msg_with_params, ctx).await
+                        }
+                        NodeKind::Agent { agent } => {
+                            agent.process(input.clone(), ctx).await
+                        }
+                        NodeKind::Process { process } => {
+                            process.process(input.clone(), ctx).await
+                        }
+                    };
+
+                    let finished = Utc::now();
+                    records.push(NodeRecord {
+                        node_id: node_id.clone(),
+                        attempt,
+                        started,
+                        finished,
+                        result: res.clone(),
+                    });
+
+                    match res {
+                        Ok(out) => break Ok(out),
+                        Err(err) => {
+                            // if it knows how to route, don’t retry
+                            match err.routing() {
+                                Routing::ToNode(_) | Routing::ToNodes(_) | Routing::ReplyToOrigin => {
+                                    break Err(err);
+                                }
+                                _ if attempt < max_retries => {
+                                    attempt += 1;
+                                    sleep(retry_delay).await;
+                                }
+                                _ => break Err(err),
+                            }
+                        }
                     }
                 };
 
-                let finished = Utc::now();
-                // record this attempt
-                records.push(NodeRecord {
-                    node_id: node_id.clone(),
-                    attempt,
-                    started,
-                    finished: finished.clone(),
-                    result: res.clone(),
-                });
-
-                match res {
-                    Ok(output) => break Ok(output),
-                    Err(_) if attempt < max_retries => {
-                        attempt += 1;
-                        sleep(retry_delay).await;
-                    }
-                    Err(err) => {
-                        break Err(err);
-                    }
-                }
-            };
-
-            match result {
-                Ok(out_msg) => {
-                    // figure out which downstream connections to actually use:
-                    let target_ids: Result<Vec<String>,NodeErr> = match out_msg.routing() {
-                        Routing::FollowGraph => {
-                            let downstream = self
-                                .connections
-                                .get(&node_id)
-                                .cloned()
-                                .unwrap_or_default();
-
-                            ctx.set_nodes(downstream.clone()); 
-                            Ok(downstream)
-                        }
-                        Routing::ReplyToOrigin => {
-                            // “reply” special case:
-                            if let Some(origin) = ctx.channel_origin() {
-                                // build & send a ChannelMessage back to origin.channel
-                               let cm = origin.reply(
-                                    &node_id,
-                                    out_msg.message().session_id().clone(),
-                                    out_msg.message().payload(),
-                                    ctx,
-                                    )// map any build‐error into a NodeErr
-                                    .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))); 
-                                match cm {
-                                    Ok(cm) => {
-                                        // send it—and if that fails, record and abort
-                                        if let Err(e) = ctx.channel_manager()
-                                                        .send_to_channel(&origin.channel(), cm).await
-                                        {
-                                            early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
-                                            break;
+                match result {
+                    Ok(out_msg) => {
+                        let target_ids = match out_msg.routing() {
+                            Routing::FollowGraph => {
+                                self.connections.get(&node_id).cloned().unwrap_or_default()
+                            }
+                            Routing::ToNode(n) => vec![n.clone()],
+                            Routing::ToNodes(v) => v.clone(),
+                            Routing::ReplyToOrigin => {
+                                if let Some(origin) = ctx.channel_origin() {
+                                    match origin.reply(
+                                        &node_id,
+                                        out_msg.message().session_id().clone(),
+                                        out_msg.message().payload(),
+                                        ctx,
+                                    ).map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))) {
+                                        Ok(cm) => {
+                                            if let Err(e) = ctx.channel_manager().send_to_channel(&origin.channel(), cm).await {
+                                                early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            early_err = Some((node_id.clone(), e.error()));
                                         }
                                     }
-                                    Err(e) => {
-                                        // reply‐construction failed
-                                        early_err = Some((node_id.clone(), e.error()));
-                                        break;
-                                    }
-                                }                     
+                                }
+                                vec![]
                             }
-                            // don’t propagate through the flow graph
-                            Ok(Vec::new())
-                        }
-                        Routing::ToNode(list) => {
-                            ctx.set_node(list.clone());
-                            Ok(vec![list.clone()])
-                        }
-                        Routing::ToNodes( list ) => {
-                            ctx.set_nodes(list.clone());
-                            Ok(list.clone())
-                        }
-                        Routing::EndFlow => {
-                            return ExecutionReport {
+                            Routing::EndFlow => {
+                                return ExecutionReport {
                                     records,
                                     error: None,
                                     total: Utc::now() - run_start,
                                 };
-                        }
-                    };
-
-                    // if building that list itself failed, catch it here:
-                    let downstream = match target_ids{
-                        Ok(v) => v,
-                        Err(e) => {
-                            early_err = Some((node_id.clone(), e.error()));
-                            break;
-                        }
-                    };
-
-                    // if multiple messages come into one downstream node, they get put into an array
-                    for to in downstream.clone() {
-                        let &succ_idx = self
-                            .index_of
-                            .get(&to)
-                            .unwrap_or_else(|| panic!("unknown connection `{}`", to));
-                        outputs.entry(succ_idx)
-                        .and_modify(|existing| {
-                            let session_id = existing.session_id().clone();
-                            let id = out_msg.message().id().to_string();
-
-                            let new_payload = match (existing.payload(), out_msg.message().payload()) {
-                                (Value::Array(mut arr), other) => {
-                                    arr.push(other);
-                                    Value::Array(arr)
-                                }
-                                (a, b) => Value::Array(vec![a, b]),
-                            };
-
-                            *existing = Message::new(&id, new_payload, session_id);
-                        })
-                        .or_insert_with(|| out_msg.message().clone());
-                    }
-
-
-                    // Update next steps into session state
-                    let next_nodes: Vec<String> = downstream
-                        .into_iter()
-                        .filter(|to| self.index_of.contains_key(to)) // <- validate via graph
-                        .collect();
-
-                    ctx.set_nodes(
-                        next_nodes
-                            .into_iter()
-                            .filter(|n| plan.iter().any(|nx| self.graph[*nx].id == *n))
-                            .collect()
-                    );
-                
-                }
-                Err(err) => {
-                  // Figure out which downstream connections to use based on error routing
-                    let routing = err.routing();
-                    let target_ids: Result<Vec<String>, NodeErr> = match routing {
-                        Routing::FollowGraph => {
-                            let downstream = self
-                                .connections
-                                .get(&node_id)
-                                .cloned()
-                                .unwrap_or_default();
-                            for node in &downstream {
-                                ctx.add_node(node.clone());
                             }
-                            Ok(downstream)
-                        }
-                        Routing::ToNodes(vec) => {
-                            ctx.set_nodes(vec.clone());
-                            Ok(vec.clone())
-                        }
-                        Routing::ToNode(node) => {
-                            ctx.set_node(node.clone());
-                            Ok(vec![node.clone()])
-                        }
-                        Routing::ReplyToOrigin => {
-                            if let Some(origin) = ctx.channel_origin() {
-                                let cm = origin.reply(
-                                    &node_id,
-                                    ctx.get_session_id().clone(),
-                                    json!({"error": err.error()}),
-                                    ctx,
-                                ).map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string())));
-                                
-                                match cm {
-                                    Ok(cm) => {
-                                        if let Err(e) = ctx.channel_manager().send_to_channel(&origin.channel(), cm).await {
-                                            early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        early_err = Some((node_id.clone(), e.error()));
-                                        break;
-                                    }
-                                }
-                            }
-                            Ok(vec![]) // don’t continue graph routing
-                        }
-                        Routing::EndFlow => {
-                            return ExecutionReport {
-                                records,
-                                error: Some((node_id.clone(), err.error())),
-                                total: Utc::now() - run_start,
-                            };
-                        }
-                    };
+                        };
 
-                    // Handle post-error routing if any nodes are defined
-                    match target_ids {
-                        Ok(targets) if !targets.is_empty() => {
-                            for to in targets.iter() {
+                        for to in target_ids.iter() {
+                            if let Some(&succ_idx) = self.index_of.get(to) {
+                                outputs.entry(succ_idx)
+                                    .or_insert_with(Vec::new)
+                                    .push(out_msg.message().clone());
                                 ctx.add_node(to.clone());
                             }
                         }
-                        Ok(_) => {
-                            // No next steps, continue loop
-                        }
-                        Err(e) => {
-                            early_err = Some((node_id.clone(), e.error()));
-                            break;
-                        }
                     }
+                    Err(err) => {
+                        let routing = err.routing();
+                        let targets = match routing {
+                            Routing::FollowGraph => self.connections.get(&node_id).cloned().unwrap_or_default(),
+                            Routing::ToNode(n) => vec![n.clone()],
+                            Routing::ToNodes(v) => v.clone(),
+                            Routing::ReplyToOrigin => {
+                                if let Some(origin) = ctx.channel_origin() {
+                                    match origin.reply(
+                                        &node_id,
+                                        ctx.get_session_id().clone(),
+                                        json!({"error": err.error()}),
+                                        ctx,
+                                    ).map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))) {
+                                        Ok(cm) => {
+                                            if let Err(e) = ctx.channel_manager().send_to_channel(&origin.channel(), cm).await {
+                                                early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            early_err = Some((node_id.clone(), e.error()));
+                                        }
+                                    }
+                                }
+                                vec![]
+                            }
+                            Routing::EndFlow => {
+                                // Don't do anything
+                                /* 
+                                return ExecutionReport {
+                                    records,
+                                    error: Some((node_id.clone(), err.error())),
+                                    total: Utc::now() - run_start,
+                                };
+                                */
+                                vec![]
+                            }
+                        };
 
-                    // Still record the error even if it routes
-                    records.push(NodeRecord::new(
-                        node_id.clone(),
-                        attempt,
-                        run_start,
-                        Utc::now(),
-                        Err(err.clone()),
-                    ));
-                
+                        for to in targets {
+                            if let Some(&succ_idx) = self.index_of.get(&to) {
+                                outputs.entry(succ_idx)
+                                    .or_insert_with(Vec::new)
+                                    .push(input.clone()); // Forward original input to err route
+                                ctx.add_node(to.clone());
+                            }
+                        }
+
+                        /* 
+                        records.push(NodeRecord::new(
+                            node_id.clone(),
+                            attempt,
+                            run_start,
+                            Utc::now(),
+                            Err(err.clone()),
+                        ));
+                        */
+                    }
                 }
             }
         }
 
-        let total = Utc::now() - run_start;
         ExecutionReport {
             records,
             error: early_err,
-            total,
+            total: Utc::now() - run_start,
         }
     }
+
 
 
     pub fn channels(&self) -> Vec<String>{
