@@ -277,7 +277,7 @@ mod tests {
         //      └─> C ┘
         //
         // At D we should see payload = [payload_from_B, payload_from_C].
-        let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
+        let dbg = BuiltInProcess::Debug(DebugProcessNode{print:true}); // @@@ REMOVE put back to false
         let flow = Flow::new("branch", "Branch & Merge", "")
         .add_node("A".into(), NodeConfig::new(
                 "A", NodeKind::Process { process: dbg.clone() }, None

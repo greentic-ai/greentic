@@ -350,8 +350,8 @@ impl Flow {
         let run_start = Utc::now();
         let mut records = Vec::new();
         let mut early_err: Option<(String, NodeError)> = None;
-        // outputs holds the “current” Message for each node index
-        let mut outputs: HashMap<NodeIndex, Message> = HashMap::new();
+        // outputs holds the “current” Message(s) for each node index
+        let mut outputs: HashMap<NodeIndex, Vec<Message>> = HashMap::new();
         // seed the start node
         let start_idx = *self.index_of
             .get(start)
@@ -366,6 +366,7 @@ impl Flow {
             let nx = match self.index_of.get(&next_id) {
                 Some(i) => *i,
                 None => {
+                    println!("@@@ REMOVE 1.5: {:?}",ctx.nodes());
                     error!("Node `{}` not found in flow graph", next_id);
                     break;
                 }
@@ -626,7 +627,9 @@ impl Flow {
                                 .get(&node_id)
                                 .cloned()
                                 .unwrap_or_default();
-                            ctx.set_nodes(downstream.clone());
+                            for node in &downstream {
+                                ctx.add_node(node.clone());
+                            }
                             Ok(downstream)
                         }
                         Routing::ToNodes(vec) => {
