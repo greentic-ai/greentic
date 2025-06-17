@@ -125,8 +125,7 @@ impl NodeType for TemplateProcessNode {
         // Render the template
         let rendered = hbs.render_template(&self.template, &data)
             .map_err(|e| 
-                NodeErr::with_routing(NodeError::InvalidInput(format!("Template render error: {}", e)),
-                        Routing::FollowGraph,))?;
+                NodeErr::fail(NodeError::InvalidInput(format!("Template render error: {}", e))))?;
 
         let msg = Message::new(&input.id(), json!({"text": rendered}), input.session_id());
         Ok(NodeOut::with_routing(msg, Routing::FollowGraph))

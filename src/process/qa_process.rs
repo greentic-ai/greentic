@@ -225,9 +225,8 @@ impl NodeType for QAProcessNode {
                 // first, convert the JSON value into your StateValue enum
                 let state_val = StateValue::try_from(parsed_json.clone())
                     .map_err(|e| 
-                        NodeErr::with_routing(NodeError::ExecutionFailed(
-                        format!("Failed to convert answer to StateValue: {:?}", e)),
-                        Routing::FollowGraph,)
+                        NodeErr::fail(NodeError::ExecutionFailed(
+                        format!("Failed to convert answer to StateValue: {:?}", e)))
                     )?;
                 
                 // store it under the user‐specified state_key
@@ -276,8 +275,8 @@ impl NodeType for QAProcessNode {
             }
         }
 
-        Err(NodeErr::with_routing(NodeError::ExecutionFailed(
-            "no routing rule matched".into()),Routing::FollowGraph,))
+        Err(NodeErr::fail(NodeError::ExecutionFailed(
+            "no routing rule matched".into())))
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {

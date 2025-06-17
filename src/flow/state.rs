@@ -211,7 +211,12 @@ impl SessionStateType for InMemoryState {
     }
 
     fn flows(&self) -> Option<Vec<String>> {
-        Some(self.flows.lock().unwrap().iter().cloned().collect())
+        let flows = self.flows.lock().unwrap().iter().cloned().collect::<Vec<String>>();
+        if flows.is_empty() {
+            None
+        } else {
+            Some(flows)
+        }
     }
 
     fn add_flow(&self, flow: String) {
@@ -232,7 +237,12 @@ impl SessionStateType for InMemoryState {
     }
 
     fn nodes(&self) -> Option<Vec<String>> {
-        Some(self.nodes.lock().unwrap().iter().cloned().collect())
+        let nodes = self.nodes.lock().unwrap().iter().cloned().collect::<Vec<String>>();
+        if nodes.is_empty() {
+            None
+        } else {
+            Some(nodes)
+        }
     }
 
     fn add_node(&self, node: String) {

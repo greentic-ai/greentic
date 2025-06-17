@@ -213,7 +213,7 @@ mod tests {
             let prev = self.counter.fetch_add(1, Ordering::SeqCst);
             if prev == 0 {
                 // first call: fail
-                Err(NodeErr::all(NodeError::ExecutionFailed("boom".into())))
+                Err(NodeErr::fail(NodeError::ExecutionFailed("boom".into())))
             } else {
                 // subsequent: echo
                 Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
@@ -381,12 +381,18 @@ mod tests {
             // hack: wrap our FailableNode under ScriptProcessNode so we can inject it
             // but if you have a direct variant you can skip that
             r#"
-                if "tries" !in state {
-                    state["tries"] = 1;
-                    throw "boom";
-                } else {
-                    payload
-                }
+            if "tries" !in state {
+                state["tries"] = 1;
+                throw "boom";
+            } else {
+                let json = #{
+                    "__greentic": #{
+                        "payload": payload,
+                        "out": ["X"]
+                    }
+                };
+                return json;
+            }
             "#.to_string())
         );
 
@@ -408,7 +414,75 @@ mod tests {
         // records: just A then Y
         assert!(report.error.is_none());
         let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
-        assert_eq!(ids, &["A", "A", "X", "Y"]);
+        assert_eq!(ids, &["A", "A", "X"]);
+    }
+
+    #[tokio::test]
+    async fn test_err_only_override() {
+        let a_node = BuiltInProcess::Script(ScriptProcessNode::new(r#"
+            if "tries" !in state {
+                state["tries"] = 1;
+                throw "boom";
+            } else {
+                let json = #{
+                    "__greentic": #{
+                        "payload": payload,
+                        "err": ["Z"]
+                    }
+                };
+                return json;
+            }
+        "#.to_string()));
+        let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
+        let flow = Flow::new("test_err_only_override", "test_err_only_override", "")
+            .add_node("A".into(), NodeConfig::new("A", NodeKind::Process { process: a_node }, None))
+            .add_node("Z".into(), NodeConfig::new("Z", NodeKind::Process { process: dbg.clone() }, None))
+            .add_connection("A".into(), vec!["Z".into()])
+            .build();
+
+        let mut ctx = make_ctx();
+        let input = Message::new("m-o", json!({"ok":true}), "123".to_string());
+        let report = flow.run(input.clone(), "A", &mut ctx).await;
+
+        println!("@@@ REMOVE report: {:?}",report);
+
+        assert!(report.error.is_some());
+        let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
+        assert_eq!(ids, &["A", "A", "Z"]);
+    }
+
+    #[tokio::test]
+    async fn test_err_and_out_prefers_err() {
+        let a_node = BuiltInProcess::Script(ScriptProcessNode::new(r#"
+            if "tries" !in state {
+                state["tries"] = 1;
+                throw "boom";
+            } else {
+                let json = #{
+                    "__greentic": #{
+                        "payload": payload,
+                        "out": ["Y"],
+                        "err": ["Z"]
+                    }
+                };
+                return json;
+            }
+        "#.to_string()));
+        let dbg = BuiltInProcess::Debug(DebugProcessNode{print:false});
+        let flow = Flow::new("test_err_and_out_prefers_err", "test_err_and_out_prefers_err", "")
+            .add_node("A".into(), NodeConfig::new("A", NodeKind::Process { process: a_node }, None))
+            .add_node("Y".into(), NodeConfig::new("Y", NodeKind::Process { process: dbg.clone() }, None))
+            .add_node("Z".into(), NodeConfig::new("Z", NodeKind::Process { process: dbg.clone() }, None))
+            .add_connection("A".into(), vec!["Y".into(), "Z".into()])
+            .build();
+
+        let mut ctx = make_ctx();
+        let input = Message::new("m-o", json!({"ok":true}), "123".to_string());
+        let report = flow.run(input.clone(), "A", &mut ctx).await;
+
+        assert!(report.error.is_some());
+        let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
+        assert_eq!(ids, &["A", "A", "Z"]);
     }
 
     #[tokio::test]
@@ -993,6 +1067,7 @@ mod tests {
         let msg = Message::new("1", serde_json::json!({"q": "hello"}), "sess1".to_string());
         let report = manager.process_message("lazy_flow", "start", msg.clone(), None).await;
 
+        println!("@@@ REMOVE: {:?}",report);
         assert!(report.is_some());
         assert!(report.as_ref().unwrap().error.is_none());
 
@@ -1017,7 +1092,7 @@ mod tests {
         assert!(report.is_some());
         let r = report.unwrap();
         assert!(r.records.is_empty());
-        assert!(r.error.is_none());
+        assert!(r.error.is_some());
         assert_eq!(r.total.num_milliseconds(), 0);
     }
 

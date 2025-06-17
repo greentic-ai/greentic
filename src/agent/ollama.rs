@@ -135,12 +135,12 @@ impl NodeType for OllamaAgent {
                 }
 
                 let resp = client.send_chat_messages_with_history(&mut vec![], req).await
-                    .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("LLM error: {}", e))))?;
+                    .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {}", e))))?;
                 let reply = resp.message.content;
 
                 // 4) parse JSON
                 let result: JsonValue = serde_json::from_str(&reply)
-                    .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!(
+                    .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!(
                         "Invalid JSON from LLM: {}", e
                     ))))?;
 
@@ -202,17 +202,15 @@ impl NodeType for OllamaAgent {
                         .get("name")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            NodeErr::next(NodeError::ExecutionFailed(
-                                "Missing `name` in tool_call".into()),
-                                next_conn.clone())
+                            NodeErr::fail(NodeError::ExecutionFailed(
+                                "Missing `name` in tool_call".into()),)
                         })?;
                     let action = call
                         .get("action")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            NodeErr::next(NodeError::ExecutionFailed(
-                                "Missing `action` in tool_call".into()),
-                            next_conn.clone())
+                            NodeErr::fail(NodeError::ExecutionFailed(
+                                "Missing `action` in tool_call".into()))
                         })?;
                     let args = call.get("input").cloned().unwrap_or(json!({}));
                     match context.executor().executor.call_tool(
@@ -294,7 +292,7 @@ impl OllamaAgent {
 
         let req = GenerateEmbeddingsRequest::new(model, EmbeddingsInput::Single(text));
         let resp = client.generate_embeddings(req).await
-            .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Embed error: {}", e))))?;
+            .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Embed error: {}", e))))?;
 
         let out = json!({ "embeddings": resp.embeddings });
         let msg = Message::new(input.id().as_str(), out, input.session_id().clone());
@@ -320,7 +318,7 @@ impl OllamaAgent {
             req = req.options(opts.clone());
         }
         let resp = client.generate(req).await
-            .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(format!("Generate error: {}", e))))?;
+            .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Generate error: {}", e))))?;
 
         let out = json!({ "generated_text": resp.response });
         let msg = Message::new(input.id().as_str(), out, input.session_id().clone());

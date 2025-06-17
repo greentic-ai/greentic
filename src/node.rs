@@ -103,6 +103,9 @@ pub struct NodeErr{
 
 
 impl NodeErr {
+    pub fn fail(error: NodeError) -> Self {
+        Self { error, routing: Routing::EndFlow }
+    }
     pub fn follow_graph(error: NodeError) -> Self {
         Self { error, routing: Routing::FollowGraph }
     }
@@ -729,29 +732,26 @@ impl NodeType for ToolNode {
                             outputs.push(val);
                         }
                         Content::Image(image) => {
-                            let routing = self.build_routing(call_result.is_error.unwrap_or(false));
-                            let storage_dir = resolve_or_create_storage_dir(&context.config, routing.clone())?;
+                            let storage_dir = resolve_or_create_storage_dir(&context.config)?;
                             let filename = storage_dir.join(format!("image_{}.{}", i, extension_from_mime(&image.mime_type)));
                             fs::write(&filename, &image.data)
-                                .map_err(|e| NodeErr::with_routing(NodeError::ExecutionFailed(format!("Failed to write image: {}", e)), self.build_routing(true)))?;
+                                .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Failed to write image: {}", e))))?;
                             outputs.push(serde_json::json!({ "image": filename.to_string_lossy() }));
                         }
                         Content::Embedded(embedded) => {
                             match &embedded.resource_contents {
                                 ResourceContents::Blob(blob) => {
-                                    let routing = self.build_routing(call_result.is_error.unwrap_or(false));
-                                    let storage_dir = resolve_or_create_storage_dir(&context.config, routing.clone())?;
+                                    let storage_dir = resolve_or_create_storage_dir(&context.config,)?;
                                     let filename = storage_dir.join(format!("blob_{}.{}", i, extension_from_mime(blob.mime_type.as_deref().unwrap_or("bin"))));
                                     fs::write(&filename, &blob.blob)
-                                        .map_err(|e| NodeErr::with_routing(NodeError::ExecutionFailed(format!("Failed to write blob: {}", e)), self.build_routing(true)))?;
+                                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Failed to write blob: {}", e))))?;
                                     outputs.push(serde_json::json!({ "blob": filename.to_string_lossy() }));
                                 }
                                 ResourceContents::Text(text) => {
-                                    let routing = self.build_routing(call_result.is_error.unwrap_or(false));
-                                    let storage_dir = resolve_or_create_storage_dir(&context.config, routing.clone())?;
+                                    let storage_dir = resolve_or_create_storage_dir(&context.config)?;
                                     let filename = storage_dir.join(format!("text_{}.txt", i));
                                     fs::write(&filename, &text.text)
-                                        .map_err(|e| NodeErr::with_routing(NodeError::ExecutionFailed(format!("Failed to write text: {}", e)), self.build_routing(true)))?;
+                                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Failed to write text: {}", e))))?;
                                     outputs.push(serde_json::json!({ "text_file": filename.to_string_lossy() }));
                                 }
                             }
@@ -797,12 +797,8 @@ impl NodeType for ToolNode {
                 }
             }
             Err(e) => {
-                Err(NodeErr::with_routing(
-                    NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e)),
-                    self.on_err
-                        .clone()
-                        .map(Routing::ToNodes)
-                        .unwrap_or(Routing::FollowGraph),
+                Err(NodeErr::fail(
+                    NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e))
                 ))
             }
         }
@@ -814,16 +810,14 @@ impl NodeType for ToolNode {
 
 fn resolve_or_create_storage_dir(
     config: &DashMap<String, String>,
-    routing: Routing,
 ) -> Result<PathBuf, NodeErr> {
     if let Some(dir_str) = config.get("node_storage_dir") {
         let path = PathBuf::from(dir_str.value());
         if !path.exists() {
             fs::create_dir_all(&path)
             .map_err(|e| {
-                NodeErr::with_routing(
+                NodeErr::fail(
                     NodeError::ExecutionFailed(format!("Failed to create node_storage_dir: {}", e)),
-                    routing.clone(),
                 )
             })?;
         }
@@ -831,9 +825,8 @@ fn resolve_or_create_storage_dir(
     } else {
         let tempdir = TempDir::new()
             .map_err(|e| {
-                NodeErr::with_routing(
+                NodeErr::fail(
                     NodeError::ExecutionFailed(format!("Failed to create tempdir: {}", e)),
-                    routing.clone(),
                 )
             })?;
         Ok(tempdir.path().to_path_buf())
@@ -996,7 +989,7 @@ pub mod tests {
         let mut ctx = make_test_context_with_mock(Err(ToolError::ExecutionError("bad call".into())));
 
         let err = node.process(input, &mut ctx).await.unwrap_err();
-        assert_eq!(err.routing(), &Routing::ToNodes(vec!["err_conn".to_string()]));
+        assert_eq!(err.routing(), &Routing::EndFlow);
     }
 
     #[tokio::test]

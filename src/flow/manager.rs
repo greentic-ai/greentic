@@ -16,7 +16,7 @@ use dashmap::DashMap;
 use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{Topo, Walker}, Directed, Direction::Incoming};
 use schemars::{schema::{InstanceType, Metadata, Schema, SchemaObject}, JsonSchema, SchemaGenerator};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::{sync::Mutex,time::sleep};
 use tracing::{error, info};
 use crate::node::ToolNode;
@@ -30,6 +30,18 @@ pub struct NodeRecord {
     pub started: DateTime<Utc>,
     pub finished: DateTime<Utc>,
     pub result: Result<NodeOut, NodeErr>,
+}
+
+impl NodeRecord {
+    pub fn new(
+        node_id: String,
+        attempt: usize,
+        started: DateTime<Utc>,
+        finished: DateTime<Utc>,
+        result: Result<NodeOut, NodeErr>,
+    ) -> Self {
+        Self {node_id, attempt, started, finished, result }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +333,20 @@ impl Flow {
 
     /// Kick off this flow with an initial message
     pub async fn run(&self, msg: Message, start: &str, ctx: &mut NodeContext) -> ExecutionReport {
+        // Reject flow if not allowed by session
+        if let Some(allowed_flows) = ctx.flows() {
+            if !allowed_flows.contains(&self.id.clone()) {
+                info!("🔒 Flow `{}` blocked by session restrictions", self.id.clone());
+                return ExecutionReport {
+                    records: vec![],
+                    error: Some((
+                        self.id.clone(), 
+                        NodeError::ExecutionFailed("flow not allowed".to_string())
+                    )),
+                    total: TimeDelta::zero(),
+                };
+            }
+        }
         let run_start = Utc::now();
         let mut records = Vec::new();
         let mut early_err: Option<(String, NodeError)> = None;
@@ -335,6 +361,7 @@ impl Flow {
         // look up the linear plan
         let plan = &self.plans[start];
         ctx.set_nodes(vec![start.to_string()]);
+        println!("@@@ REMOVE 1: {:?}",ctx.nodes());
         while let Some(next_id) = ctx.pop_next_node() {
             let nx = match self.index_of.get(&next_id) {
                 Some(i) => *i,
@@ -348,17 +375,7 @@ impl Flow {
             let max_retries = cfg.max_retries.unwrap_or(0);
             let retry_delay = Duration::from_secs(cfg.retry_delay_secs.unwrap_or(1));
 
-            // Skip nodes not intended for this session
-            let should_run = match ctx.nodes() {
-                None => true, // no routing constraint
-                Some(allowed) => allowed.contains(&node_id),
-            };
-
-            if !should_run {
-                println!("@@@ REMOVE ME - skipping: {}",&node_id);
-                trace!("⏩ Skipping node `{}` — not in session route", node_id);
-                continue;
-            }
+            println!("@@@ REMOVE 2: {:?}",ctx.nodes());
 
             // set flow and node for this session
             ctx.set_node(node_id.clone());
@@ -408,12 +425,12 @@ impl Flow {
                                     .send_to_channel(&cfg.channel_name, msg)
                                     .await
                                     .map(|_| NodeOut::all(input.clone()))
-                                    .map_err(|e| NodeErr::all(NodeError::ConnectionFailed(format!("{:?}", e))))
+                                    .map_err(|e| NodeErr::fail(NodeError::ConnectionFailed(format!("{:?}", e))))
                                 },
                                 Err(err) => {
                                     let error = format!("Could not create a channel message because of {:?}",err);
                                     error!(error);
-                                    Err(NodeErr::all(NodeError::ExecutionFailed(error)))
+                                    Err(NodeErr::fail(NodeError::ExecutionFailed(error)))
                                 },
                             }
             
@@ -513,7 +530,7 @@ impl Flow {
                                     out_msg.message().payload(),
                                     ctx,
                                     )// map any build‐error into a NodeErr
-                                    .map_err(|e| NodeErr::all(NodeError::ExecutionFailed(e.to_string()))); 
+                                    .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))); 
                                 match cm {
                                     Ok(cm) => {
                                         // send it—and if that fails, record and abort
@@ -600,8 +617,84 @@ impl Flow {
                 
                 }
                 Err(err) => {
-                    early_err = Some((node_id.clone(), err.error()));
-                    break;
+                  // Figure out which downstream connections to use based on error routing
+                    let routing = err.routing();
+                    let target_ids: Result<Vec<String>, NodeErr> = match routing {
+                        Routing::FollowGraph => {
+                            let downstream = self
+                                .connections
+                                .get(&node_id)
+                                .cloned()
+                                .unwrap_or_default();
+                            ctx.set_nodes(downstream.clone());
+                            Ok(downstream)
+                        }
+                        Routing::ToNodes(vec) => {
+                            ctx.set_nodes(vec.clone());
+                            Ok(vec.clone())
+                        }
+                        Routing::ToNode(node) => {
+                            ctx.set_node(node.clone());
+                            Ok(vec![node.clone()])
+                        }
+                        Routing::ReplyToOrigin => {
+                            if let Some(origin) = ctx.channel_origin() {
+                                let cm = origin.reply(
+                                    &node_id,
+                                    ctx.get_session_id().clone(),
+                                    json!({"error": err.error()}),
+                                    ctx,
+                                ).map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string())));
+                                
+                                match cm {
+                                    Ok(cm) => {
+                                        if let Err(e) = ctx.channel_manager().send_to_channel(&origin.channel(), cm).await {
+                                            early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        early_err = Some((node_id.clone(), e.error()));
+                                        break;
+                                    }
+                                }
+                            }
+                            Ok(vec![]) // don’t continue graph routing
+                        }
+                        Routing::EndFlow => {
+                            return ExecutionReport {
+                                records,
+                                error: Some((node_id.clone(), err.error())),
+                                total: Utc::now() - run_start,
+                            };
+                        }
+                    };
+
+                    // Handle post-error routing if any nodes are defined
+                    match target_ids {
+                        Ok(targets) if !targets.is_empty() => {
+                            for to in targets.iter() {
+                                ctx.add_node(to.clone());
+                            }
+                        }
+                        Ok(_) => {
+                            // No next steps, continue loop
+                        }
+                        Err(e) => {
+                            early_err = Some((node_id.clone(), e.error()));
+                            break;
+                        }
+                    }
+
+                    // Still record the error even if it routes
+                    records.push(NodeRecord::new(
+                        node_id.clone(),
+                        attempt,
+                        run_start,
+                        Utc::now(),
+                        Err(err.clone()),
+                    ));
+                
                 }
             }
         }
@@ -1059,6 +1152,7 @@ impl FlowManager {
             channel_origin.clone(),
         );
 
+        println!("@@@ REMOVE flows: {:?}",ctx.flows());
         match ctx.flows() {
             None => {
                 // Lazily allow the current flow

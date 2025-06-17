@@ -218,7 +218,7 @@ impl NodeType for ChannelNode {
         let mut plugin = ctx
             .channel_manager()
             .channel(&self.channel_name)
-            .ok_or_else(|| NodeErr::all(NodeError::Internal(format!("no such channel: {}", self.channel_name))))?;
+            .ok_or_else(|| NodeErr::fail(NodeError::Internal(format!("no such channel: {}", self.channel_name))))?;
 
         // try to deserialize a full ChannelMessage
         let send_result = if let Ok(mut cm) = serde_json::from_value::<ChannelMessage>(input.payload().clone())
@@ -233,7 +233,7 @@ impl NodeType for ChannelNode {
                 } else {
                     let error = format!("No to field was specified so don't know where to send the message to in channel {} with session id {:?}",cm.channel, input.session_id());
                     error!(error);
-                    return Err(NodeErr::all(NodeError::InvalidInput(error)));
+                    return Err(NodeErr::fail(NodeError::InvalidInput(error)));
                 }
                 
             }
@@ -247,7 +247,7 @@ impl NodeType for ChannelNode {
             } else {
                 let error = format!("No to field was specified so don't know where to send the message to in channel {} with session id {:?}",plugin.name(), input.session_id());
                 error!(error);
-                return Err(NodeErr::all(NodeError::InvalidInput(error)));
+                return Err(NodeErr::fail(NodeError::InvalidInput(error)));
             };
             let cm = ChannelMessage {
                 to: to.clone(),

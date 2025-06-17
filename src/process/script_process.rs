@@ -150,27 +150,57 @@ impl NodeType for ScriptProcessNode {
             scope.push_dynamic("payload", dyn_payload);
         }
 
+        // let the script have access to all the connections of the node
+        if let Ok(dyn_connections) = to_dynamic(&context.connections()) {
+            scope.push_dynamic("connections", dyn_connections);
+        }
+
+
        match engine.eval_with_scope::<rhai::Dynamic>(&mut scope, &self.script) {
             Ok(result) => {
-                // Read back the updated state and apply it
-                if let Some(new_state) = scope.get_value::<rhai::Map>("state") {
-                    for (k, v) in new_state {
-                        if let Ok(json_value) = rhai::serde::from_dynamic::<serde_json::Value>(&v) {
-                            if let Ok(state_val) = StateValue::try_from(json_value) {
-                                context.set_state(&k, state_val);
-                            }
+                match result.clone().as_map_ref() {
+                    Ok(output_obj) if output_obj.contains_key("__greentic") => {
+                        let greentic = output_obj.get("__greentic").unwrap();
+
+                        let gmap = greentic.clone_cast::<rhai::Map>();
+                        let out_routing = gmap.get("out")
+                            .map(|v| extract_routing_list(v))
+                            .unwrap_or_default();
+
+                        let err_routing = gmap.get("err")
+                            .map(|v| extract_routing_list(v))
+                            .unwrap_or_default();
+
+                        let payload = gmap.get("payload")
+                            .and_then(|v| rhai::serde::from_dynamic::<serde_json::Value>(v).ok())
+                            .unwrap_or(json!({ "error": "Missing or invalid payload" }));
+
+                        let msg = Message::new(&input.id(), payload.clone(), input.session_id());
+
+                        if !err_routing.is_empty() {
+                            return Err(NodeErr::next(
+                                NodeError::InvalidInput(serde_json::to_string(&json!({ "error": payload })).expect("bug in script node")),
+                                Some(err_routing),
+                            ));
+                        } else if !out_routing.is_empty() {
+                            return Ok(NodeOut::next(msg, Some(out_routing)));
+                        } else {
+                            return Ok(NodeOut::with_routing(msg, Routing::FollowGraph));
                         }
                     }
+                    _ => {
+                        // fallback: return raw result wrapped under `output`
+                        let payload = match rhai::serde::to_dynamic(result)
+                            .and_then(|dyn_val| rhai::serde::from_dynamic(&dyn_val))
+                        {
+                            Ok(val) => val,
+                            Err(_) => json!({ "error": "Failed to convert Rhai result to JSON" }),
+                        };
+
+                        let msg = Message::new(&input.id(), json!({ "output": payload }), input.session_id());
+                        Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
+                    }
                 }
-
-                let payload = match rhai::serde::to_dynamic(result)
-                    .and_then(|dyn_val| rhai::serde::from_dynamic(&dyn_val)) {
-                    Ok(val) => val,
-                    Err(_) => json!({"error": "Failed to convert Rhai result to JSON"}),
-                };
-
-                let msg = Message::new(&input.id(), json!({"output": payload}), input.session_id());
-                Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
             }
             Err(err) => {
                 // Read back the updated state and apply it
@@ -183,15 +213,24 @@ impl NodeType for ScriptProcessNode {
                         }
                     }
                 }
-                Err(NodeErr::with_routing(NodeError::InvalidInput(format!(
-                    "Script error: {}", err)),
-                    Routing::FollowGraph,))
+                Err(NodeErr::fail(NodeError::InvalidInput(format!(
+                    "Script error: {}", err))))
             },
         }
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {
         Box::new(self.clone())
+    }
+}
+
+fn extract_routing_list(val: &rhai::Dynamic) -> Vec<String> {
+    if let Ok(list) = rhai::serde::from_dynamic::<Vec<String>>(val) {
+        list
+    } else if let Ok(single) = rhai::serde::from_dynamic::<String>(val) {
+        vec![single]
+    } else {
+        vec![]
     }
 }
 
