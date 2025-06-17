@@ -8,7 +8,6 @@ use chrono::Utc;
 use reqwest::Url;
 use once_cell::sync::OnceCell;
 use serde_json::json;
-use channel_plugin::plugin::get_session_id;
 use teloxide::{
     prelude::*,
     types::{InputFile, MediaKind, Message as TelegramMessage},
@@ -233,7 +232,7 @@ impl TelegramPlugin {
                                 .and_then(|reply| reply.from.as_ref())
                                 .map(|user| user.id.0.to_string());
                             let key = format!("chat:{}:user:{}", chat_id, user_id.clone());
-                            let session_id = get_session_id(&plugin, &key).await;
+                            let session_id = SessionApi::get_session_id(&plugin, &key).await;
 
                             let cm = ChannelMessage {
                                 channel:    "telegram".into(),
@@ -442,10 +441,13 @@ impl ChannelPlugin for TelegramPlugin {
             .as_ref()
             .ok_or_else(|| PluginError::InvalidState)?;
 
+        println!("@@@ REMOVE send_message 1: {:?}",msg);
+
         log.log(LogLevel::Info, "telegram", "send a message");
         // 1) pull off the Vec<Participant> and the Option<String> by cloning them:
         let to_list = msg.to.clone();
-        let runtime_handle = self.runtime.handle().clone();
+        println!("@@@ REMOVE send_message to: {:?}",to_list);
+        //let runtime_handle = self.runtime.handle().clone();
         // 2) now you can still use `msg` freely; whenever you call send_msg, clone `msg`:
         if to_list.is_empty() {
             let error = "sending to empty participant is not possible";
@@ -463,8 +465,8 @@ impl ChannelPlugin for TelegramPlugin {
                 let bot_clone = self.bot.as_ref().cloned().ok_or(PluginError::InvalidState)?;
                 let log         = self.logger.as_ref().cloned().ok_or(PluginError::InvalidState)?;
                 let msg_clone = msg.clone();
-                let rt           = runtime_handle.clone();
-                rt.spawn(async move {
+                //let rt           = runtime_handle.clone();
+                tokio::spawn(async move {
                         // Pull out your bot handle and the content
                         let result = match msg_clone.content {
                             Some(MessageContent::Text(text)) => {

@@ -1,0 +1,53 @@
+{
+  "id": "first.greentic",
+  "title": "Telegram→Weather Forecast Flow",
+  "description": "The first Greentic flow",
+  "channels": [
+     "telegram"
+  ],
+  "nodes": {
+    "telegram_in": {
+      "channel": "telegram",
+      "in": true,
+      "out": false
+    },
+    "forecast_weather": {
+      "tool": {
+        "name": "weather_api",
+        "action": "forecast_weather",
+        "parameters": {
+          "q": "New York",
+          "days": 1
+        },
+        "secrets": [
+          "WEATHERAPI_KEY"
+        ],      
+        "in_map": {
+          "type": "copy",
+          "payload": ["/parameters/q", "/parameters/days"]
+        },
+        "out_map": {
+          "type": "copy",
+          "payload": [
+            "/location/name",
+            "/forecast/forecastday/0/day/maxtemp_c",
+            "/forecast/forecastday/0/day/mintemp_c",
+            "/forecast/forecastday/0/day/condition/text",
+            "/forecast/forecastday/0/day/daily_will_it_rain"
+          ]
+        }
+      },
+      "max_retries": 2,
+      "retry_delay_secs": 1
+    },
+    "telegram_out": {
+      "channel": "telegram",
+      "in": false,
+      "out": true
+    }
+  },
+  "connections": {
+    "telegram_in": ["forecast_weather"],
+    "forecast_weather": ["telegram_out"]
+  }
+}

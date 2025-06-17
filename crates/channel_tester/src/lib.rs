@@ -11,7 +11,7 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use channel_plugin::{
     export_plugin,
     message::{ChannelCapabilities, ChannelMessage, MessageContent},
-    plugin::{get_or_create_session_id, ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
+    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use anyhow::Context;
 use uuid::Uuid;
@@ -268,7 +268,7 @@ impl TesterPlugin {
             logger.log(LogLevel::Info, "tester", &format!("→ `{}` sending “{}”", test.name, test.send));
 
             let key = Uuid::new_v4().to_string();
-            let sesssion_id = get_or_create_session_id(&self.name(), &key).await;
+            let sesssion_id = SessionApi::get_or_create_session_id(&self.name(), &key).await;
             // stage the incoming ChannelMessage
             let mut cm = ChannelMessage::default();
             cm.channel    = "tester".into();

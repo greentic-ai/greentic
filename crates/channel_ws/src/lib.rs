@@ -1,15 +1,15 @@
 // src/ws_plugin.rs
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, thread::sleep, time::Duration};
 use dashmap::DashMap;
 use async_trait::async_trait;
-use tokio::{net::{TcpListener, TcpStream}, sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}};
+use tokio::{net::{TcpListener, TcpStream}, sync::{broadcast, mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}}};
 use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 use futures_util::{StreamExt, SinkExt};
 use channel_plugin::{
     export_plugin,
-    message::{ChannelCapabilities, ChannelMessage, HttpRouteContext, MessageContent, MessageDirection, Participant},
-    plugin::{get_session_id, ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
+    message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant},
+    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use uuid::Uuid;
 use chrono::Utc;
@@ -38,6 +38,7 @@ pub struct WsPlugin {
     logger: Option<PluginLogger>,
     state:  ChannelState,
     addr:   String,
+    shutdown_tx: Option<broadcast::Sender<()>>,
 }
 
 impl Default for WsPlugin {
@@ -52,7 +53,9 @@ impl Default for WsPlugin {
             routing: DefaultRoutingSupport::default(),
             logger: None, 
             state: ChannelState::Stopped, 
-            addr 
+            addr,
+            shutdown_tx: None,
+            //listener_handle: None,
         }
     }
 }
@@ -91,8 +94,8 @@ impl WsPlugin {
         stream: TcpStream,
         peer: SocketAddr,
         log: PluginLogger,
-        routing: DefaultRoutingSupport,
         name: String,
+        mut shutdown_rx: broadcast::Receiver<()>,
     ) {
         tokio::spawn(async move {
             let session = peer.to_string();
@@ -107,18 +110,25 @@ impl WsPlugin {
                     let _ = cmd_tx.send(Command::Register { session: session.clone(), sender: tx_out });
                     loop {
                         tokio::select! {
+                            _ = shutdown_rx.recv() => {
+                                println!("@@@ GOT HERE CONNECTION SHUTDOWN");
+                                break;
+                            }
                             // inbound
-                            msg = read.next() => match msg {
+                            msg = read.next() => match msg{
                                 Some(Ok(WsMsg::Text(txt))) => {
                                     println!("@@@ GOT HERE 8");
-                                    let _ = write.send(WsMsg::Text(txt.clone())).await;
-                                    let session_id = get_session_id(&name, &session).await;
+                                    let session_id = match SessionApi::get_session_id(&name, &session).await {
+                                        Some(session) => session,
+                                        None => SessionApi::get_or_create_session_id(&name, &session).await,
+                                    };
+                                    println!("@@@ GOT HERE 9: {:?}",session_id);
                                     log.log(LogLevel::Info, &name, &format!("recv {}: {}", session, txt));
-                                    let mut cm = ChannelMessage{
+                                    let cm = ChannelMessage{
                                         channel:name.clone().into(),
                                         node: None,
                                         flow: None,
-                                        session_id: session_id.clone(),
+                                        session_id: Some(session_id.clone()),
                                         direction:MessageDirection::Incoming,
                                         from:Participant{id:session.clone(),display_name:None,channel_specific_id:None},
                                         content:Some(MessageContent::Text(txt.to_string())),
@@ -126,24 +136,6 @@ impl WsPlugin {
                                         timestamp:Utc::now(),
                                         to:Vec::new(),thread_id:None,reply_to_id:None,metadata:DashMap::new(),
                                     };
-                                    if session_id.is_none() {
-                                        // if no active session, let's see if we can route another way
-                                        let ctx = HttpRouteContext {
-                                            path: None, // since we don’t have access to the original URI
-                                            participant_id: Some(session.clone()), // from peer socket address
-                                            thread_id: None,
-                                            custom: vec![],
-                                        };
-                                        let matchers = ctx.to_matchers();
-                                        for matcher in matchers {
-                                            if let Some(route) = routing.find_match(&matcher) {
-                                                cm.flow = Some(route.flow.clone());
-                                                cm.node = Some(route.node.clone());
-                                                break;
-                                            }
-                                        }
-                                    }
-
                                     let _ = msg_tx.send(cm);
 
                                 }
@@ -152,7 +144,7 @@ impl WsPlugin {
                             // outbound
                             frame = rx_out.recv() => match frame {
                                 Some(frame) => { 
-                                    println!("@@@ GOT HERE 9");
+                                    println!("@@@ GOT HERE 10");
                                     let _ = write.send(frame).await; 
                                 }
                                 None => break,
@@ -204,35 +196,51 @@ impl ChannelPlugin for WsPlugin {
         let incoming_tx = self.incoming_tx.clone();
         // spawn accept loop on Tokio runtime
         let addr = self.addr.clone();
-        println!("@@@ GOT HERE 3");
-        //tokio::spawn(async move {
-            let listener = TcpListener::bind(addr).await.unwrap();
-            println!("@@@ GOT HERE 4");
-            while let Ok((stream, peer)) = listener.accept().await {
-                println!("@@@ GOT HERE 5");
-                WsPlugin::spawn_connection(
-                    cmd_tx.clone(),
-                    incoming_tx.clone(), // pass the sender
-                    stream,
-                    peer,
-                    log,
-                    self.routing.clone(),
-                    self.name().clone(),
-                );
-            }
-       // });
+        let (shutdown_tx, _) = broadcast::channel::<()>(16);
+        self.shutdown_tx = Some(shutdown_tx.clone());
+
         self.state = ChannelState::Running;
+        println!("@@@ GOT HERE 3");
+
+        let listener = TcpListener::bind(addr).await.unwrap();
+        println!("@@@ GOT HERE 4");
+        self.state = ChannelState::Running;
+
+        while let Ok((stream, peer)) = listener.accept().await {
+            println!("@@@ GOT HERE 5");
+            let conn_shutdown_rx = shutdown_tx.subscribe();
+            WsPlugin::spawn_connection(
+                cmd_tx.clone(),
+                incoming_tx.clone(),
+                stream,
+                peer,
+                log.clone(),
+                "ws".into(),
+                conn_shutdown_rx,
+            );
+        }
         Ok(())
     }
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
-        println!("@@@ REMOVE: SEND MESSAGE");
+        println!("@@@ REMOVE: SEND MESSAGE {:?}",msg);
         if let Some(txt) = msg.content.as_ref().and_then(|c| match c { MessageContent::Text(t) => Some(t.clone()), _=>None }) {
-            let _ = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone().unwrap(), msg: WsMsg::Text(txt.into()) });
+            println!("@@@ REMOVE: SENDING {:?}",txt);
+            let result = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone().unwrap(), msg: WsMsg::Text(txt.into()) });
+            if result.is_err() {
+                let error = format!("Got a send error: {:?}",result);
+                println!("@@@ REMOVE ERROR: {:?}",error);
+                if let Some(log) = self.get_logger() {
+                    log.log(LogLevel::Error, "ws", &error);
+                }
+                return Err(PluginError::Other(error));
+            } else {
+                println!("@@@@ REMOVE SENT");
+            }
         }
         Ok(())
     }
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError> {
-        println!("@@@ REMOVE: SEND MESSAGE");
+        println!("@@@ REMOVE: GOT TO RECEIVE MESSAGE");
         match self.msg_rx.recv().await {
             Some(msg) => {
                 Ok(msg)
@@ -241,9 +249,16 @@ impl ChannelPlugin for WsPlugin {
         }
     }
     fn drain(&mut self)->Result<(),PluginError>{ Ok(()) }
-    async fn wait_until_drained(&mut self,_u:u64)->Result<(),PluginError>{Ok(())}
-    async fn stop(&mut self)->Result<(),PluginError>{ Ok(()) }
-    fn state(&self)->ChannelState{ChannelState::Running}
+    async fn wait_until_drained(&mut self,_u:u64)->Result<(),PluginError>{self.stop().await}
+    async fn stop(&mut self)->Result<(),PluginError>{         
+        self.state = ChannelState::Stopped;
+        if let Some(tx) = self.shutdown_tx.take() {
+            let result = tx.send(());
+            println!("@@@ REMOVE: {:?}",result);
+        }
+        sleep(Duration::from_millis(200));
+        Ok(()) }
+    fn state(&self)->ChannelState{self.state}
     fn set_secrets(&mut self,_s:DashMap<String,String>){ }
     fn list_secrets(&self)->Vec<String>{ vec![] }
 }
@@ -324,6 +339,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ws_plugin_stop() {
+        let mut plugin = WsPlugin::default();
+
+        // Set a dummy logger to satisfy start
+        plugin.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+
+        // Start the plugin
+        let result = plugin.start().await;
+        assert!(result.is_ok(), "Plugin failed to start");
+
+        // Stop the plugin
+        let stop_result = plugin.stop().await;
+        assert!(stop_result.is_ok(), "Plugin failed to stop");
+
+        // Give background task time to log shutdown
+        sleep(Duration::from_millis(500));
+
+        // Validate state
+        assert_eq!(plugin.state(), ChannelState::Stopped, "Plugin state should be Stopped after stop()");
+    }
+
+    #[tokio::test]
     async fn test_plain_ws_roundtrip() {
         // 1) Bind a TCP listener on an ephemeral port
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -343,7 +380,7 @@ mod tests {
         plugin.start().await.expect("start failed");
 
         // Give the server a moment to bind and begin listening
-        sleep(Duration::from_millis(200000));
+        sleep(Duration::from_millis(200));
 
         // 3) Connect a test client
         let url = format!("ws://127.0.0.1:{}", port);

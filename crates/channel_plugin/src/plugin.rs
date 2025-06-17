@@ -4,18 +4,11 @@ use dashmap::DashMap;
 // plugin_api/src/lib.rs
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CString};
 use thiserror::Error;
 use crate::{message::{ChannelCapabilities, ChannelMessage, RouteBinding, RouteMatcher}, PluginHandle};
 use std::sync::RwLock;
-use async_ffi::BorrowingFfiFuture;
 
-unsafe extern "C" {
-    pub unsafe fn greentic_get_session(plugin_name: *const c_char, key: *const c_char) -> BorrowingFfiFuture<'static, *mut c_char>;
-    pub unsafe fn greentic_get_or_create_session(plugin_name: *const c_char, key: *const c_char) -> BorrowingFfiFuture<'static, *mut c_char>;
-    pub unsafe fn greentic_invalidate_session(session_id: *const c_char) -> BorrowingFfiFuture<'static, ()>;
-    pub unsafe fn plugin_free_string(ptr: *mut c_char);
-}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Default)]
 pub struct DefaultRoutingSupport {
@@ -158,46 +151,6 @@ pub trait RoutingSupport {
     fn find_match(&self, matcher: &RouteMatcher) -> Option<RouteBinding>;
 }
 
-/// Try to get session by unique plugin identifier and and run route matching if no session is available
-pub async fn get_session_id(plugin: &str, key: &str) -> Option<String>{
-    let c_plugin = CString::new(plugin).unwrap();
-    let c_key = CString::new(key).unwrap();
-
-    let fut = unsafe { greentic_get_session(c_plugin.as_ptr(), c_key.as_ptr()) };
-    let ptr = fut.await;
-
-    if ptr.is_null() {
-        None
-    } else {
-        let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
-        unsafe { plugin_free_string(ptr) }; // if this is how you're freeing strings
-        Some(s)
-    }
-}
-
-/// Try to get or create session by plugin name + key and rely on session routing
-pub async fn get_or_create_session_id(plugin: &str, key: &str) -> String{
-    let c_plugin = CString::new(plugin).unwrap();
-    let c_key = CString::new(key).unwrap();
-
-    let fut = unsafe { greentic_get_or_create_session(c_plugin.as_ptr(), c_key.as_ptr()) };
-    let ptr = fut.await;
-
-    if ptr.is_null() {
-        panic!("Session creation failed");
-    }
-
-    let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
-    unsafe { plugin_free_string(ptr) }; // always free with the correct allocator
-    s
-}
-
-/// Explicitly removes a session from the store.
-pub async fn invalidate_session_id(session_id: &str){
-    let c_id = CString::new(session_id).unwrap();
-    let fut = unsafe { greentic_invalidate_session(c_id.as_ptr()) };
-    fut.await;
-}
 
 /// The one trait plugin authors implement.
 #[async_trait]

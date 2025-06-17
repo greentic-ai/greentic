@@ -4,7 +4,7 @@ use std::{
 
 fn main() {
     // 1) List your channel crate names here:
-    let channels = [
+    let all_channels = [
         "channel_telegram",
         "channel_mock_inout",
         "channel_mock_middle",
@@ -12,6 +12,22 @@ fn main() {
         "channel_tester",
         // add more as needed…
     ];
+
+    let args: Vec<String> = env::args().collect();
+
+    // Optional filtering via CLI: cargo run -- channel_ws
+    let selected_channels: Vec<&str> = if args.len() > 1 {
+        let wanted: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+        for ch in &wanted {
+            if !all_channels.contains(ch) {
+                eprintln!("Unknown channel `{}`", ch);
+                exit(1);
+            }
+        }
+        wanted
+    } else {
+        all_channels.to_vec()
+    };
 
     // Path to the `channel_telegram` crate
     let crate_dir = PathBuf::from(".");
@@ -22,7 +38,7 @@ fn main() {
         exit(1);
     }
 
-    for pkg in &channels {
+    for pkg in &selected_channels {
         println!("Building `{}`…", pkg);
 
         // 3) Run `cargo build --release --package {pkg}`

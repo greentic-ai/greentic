@@ -16,10 +16,9 @@ macro_rules! export_plugin {
         pub type GetSessionFn = extern "C" fn(*const c_char, *const c_char) -> FfiFuture<*mut c_char>;
         pub type GetOrCreateSessionFn = extern "C" fn(*const c_char, *const c_char) -> FfiFuture<*mut c_char>;
         pub type InvalidateSessionFn = extern "C" fn(*const c_char) -> FfiFuture<()>;
-        static GET_SESSION: once_cell::sync::OnceCell<GetSessionFn> = once_cell::sync::OnceCell::new();
-        static GET_OR_CREATE: once_cell::sync::OnceCell<GetOrCreateSessionFn> = once_cell::sync::OnceCell::new();
-        static INVALIDATE_SESSION: once_cell::sync::OnceCell<InvalidateSessionFn> = once_cell::sync::OnceCell::new();
-        static SESSION_API: once_cell::sync::OnceCell<SessionApi> = once_cell::sync::OnceCell::new();
+        static mut GET_SESSION_FN: Option<GetSessionFn> = None;
+        static mut GET_OR_CREATE_FN: Option<GetOrCreateSessionFn> = None;
+        static mut INVALIDATE_SESSION_FN: Option<InvalidateSessionFn> = None;
 
         pub struct SessionApi {
             pub get: GetSessionFn,
@@ -27,8 +26,57 @@ macro_rules! export_plugin {
             pub invalidate: InvalidateSessionFn,
         }
 
-       
+        impl SessionApi {                
+            /// Try to get session by unique plugin identifier and and run route matching if no session is available
+            pub async fn get_session_id(plugin: &str, key: &str) -> Option<String>{
+                let plugin_c = CString::new(plugin).unwrap();
+                let key_c = CString::new(key).unwrap();
 
+                let ptr = unsafe {
+                    GET_OR_CREATE_FN
+                        .expect("❌ Session callback not registered")(plugin_c.as_ptr(), key_c.as_ptr())
+                        .await
+                };
+
+                if ptr.is_null() {
+                    Some("unknown".to_string())
+                } else {
+                    let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+                    unsafe { plugin_free_string(ptr) };
+                    Some(s)
+                }
+            }
+
+            /// Try to get or create session by plugin name + key and rely on session routing
+            pub async fn get_or_create_session_id(plugin: &str, key: &str) -> String {
+                let plugin_c = CString::new(plugin).unwrap();
+                let key_c = CString::new(key).unwrap();
+
+                let ptr = unsafe {
+                    GET_OR_CREATE_FN
+                        .expect("❌ get_or_create_session callback not registered")(plugin_c.as_ptr(), key_c.as_ptr())
+                        .await
+                };
+
+                if ptr.is_null() {
+                    "unknown".to_string()
+                } else {
+                    let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+                    unsafe { plugin_free_string(ptr) };
+                    s
+                }
+            }
+            /// Explicitly removes a session from the store.
+            pub async fn invalidate_session_id(session_id: &str) {
+                let id_c = CString::new(session_id).unwrap();
+
+                unsafe {
+                    INVALIDATE_SESSION_FN
+                        .expect("❌ invalidate_session callback not registered")(id_c.as_ptr())
+                        .await;
+                }
+            }
+        }
 
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn plugin_create() -> $crate::PluginHandle {
@@ -325,12 +373,13 @@ macro_rules! export_plugin {
             get_or_create_fn: GetOrCreateSessionFn,
             invalidate_fn: InvalidateSessionFn,
         ) {
+            println!("@@@ REMOVE PLUGIN RECEIVED SESSION FNS!!!!");
             // Store these in a static or thread-safe once cell for use by plugin
-            SESSION_API.set(SessionApi {
-                get: get_fn,
-                get_or_create: get_or_create_fn,
-                invalidate: invalidate_fn,
-            }).ok();
+            unsafe {
+                GET_SESSION_FN = Some(get_fn);
+                GET_OR_CREATE_FN = Some(get_or_create_fn);
+                INVALIDATE_SESSION_FN = Some(invalidate_fn);
+            }
         }
 
         /// Get an existing session for a plugin-specific key
@@ -347,7 +396,7 @@ macro_rules! export_plugin {
             let key = unsafe { CStr::from_ptr(key).to_owned() };
 
             BorrowingFfiFuture::new(async move {
-                if let Some(f) = GET_SESSION.get() {
+                if let Some(f) = unsafe { GET_SESSION_FN } {
                     // Safety: we convert back to raw pointer for the FFI function
                     f(plugin_name.as_ptr(), key.as_ptr()).await
                 } else {
@@ -362,17 +411,24 @@ macro_rules! export_plugin {
             plugin_name: *const c_char,
             key: *const c_char,
         ) -> BorrowingFfiFuture<'static, *mut c_char> {
+            println!("@@@ REMOVE GOT SESSION CALL");
             if plugin_name.is_null() || key.is_null() {
                 return BorrowingFfiFuture::new(async { std::ptr::null_mut() });
             }
+            println!("@@@ REMOVE FFI received request for plugin `{:?}` with key `{:?}`", plugin_name, key);
 
             let plugin_name = unsafe { CStr::from_ptr(plugin_name).to_owned() };
             let key = unsafe { CStr::from_ptr(key).to_owned() };
 
             BorrowingFfiFuture::new(async move {
-                if let Some(f) = GET_OR_CREATE.get() {
-                    f(plugin_name.as_ptr(), key.as_ptr()).await
+                if let Some(f) = unsafe { GET_OR_CREATE_FN } {
+                    let ptr = f(plugin_name.as_ptr(), key.as_ptr()).await;
+                    if ptr.is_null() {
+                        eprintln!("⚠️  GET_OR_CREATE FFI returned null for plugin: {:?}, key: {:?}", plugin_name, key);
+                    }
+                    ptr
                 } else {
+                    eprintln!("❌ GET_OR_CREATE session function was never registered!");
                     std::ptr::null_mut()
                 }
             })
@@ -388,7 +444,7 @@ macro_rules! export_plugin {
             let session_id = unsafe { CStr::from_ptr(session_id).to_owned() };
 
             BorrowingFfiFuture::new(async move {
-                if let Some(f) = INVALIDATE_SESSION.get() {
+                if let Some(f) = unsafe {INVALIDATE_SESSION_FN} {
                     f(session_id.as_ptr()).await;
                 }
             })

@@ -35,10 +35,12 @@ impl PluginWrapper {
     }
     /// Set the session callbacks so the plugins can request a session 
     pub fn set_session_callbacks(&mut self) {
+        println!("@@@ REMOVE set session callbacks");
         if self.channel_capabilities().supports_routing {
             if let Some(lib) = &self.inner.lib {
                 let result: std::result::Result<libloading::Symbol<RegisterSessionFns>, libloading::Error> =
                     unsafe { lib.get(b"greentic_register_session_fns") };
+                println!("@@@ REMOVE set session callbacks result: {:?}",result);
                 match result {
                     Ok(register) => {
                         // Register our session handlers
@@ -48,10 +50,13 @@ impl PluginWrapper {
                                 plugin_get_or_create_session,
                                 plugin_invalidate_session,
                         )};
+
+                        println!("@@@ REMOVE registered");
                         
                         tracing::info!("✅ Registered session callbacks for plugin `{}`", self.name());
                     }
                     Err(e) => {
+                        println!("@@@ REMOVE registration error: {:?}",e);
                         tracing::warn!(
                             "⚠️ Plugin `{}` does not expose `greentic_register_session_fns`: {}",
                             self.name(),
@@ -238,6 +243,7 @@ impl ChannelPlugin for PluginWrapper {
     }
 
     async fn start(&mut self) -> Result<(),PluginError> {
+        self.set_session_callbacks();
         let fut: FfiFuture<bool> = unsafe {
             (self.inner.start)(self.inner.handle)
         };

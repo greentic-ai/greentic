@@ -6,7 +6,7 @@ use std::{
 use crate::{
     agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, flow::session::SessionStore, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, watcher::{DirectoryWatcher, WatchedType}
 };
-use anyhow::Error;
+use anyhow::{Error};
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
 use thiserror::Error;
 use std::fmt::Debug;
@@ -351,8 +351,20 @@ impl Flow {
         let mut early_err: Option<(String, NodeError)> = None;
         let mut outputs: HashMap<NodeIndex, Vec<Message>> = HashMap::new();
 
-        let start_idx = *self.index_of.get(start)
-            .unwrap_or_else(|| panic!("run(): no plan for start `{}`", start));
+        let start_idx = match self.index_of.get(start) {
+                Some(idx) => *idx,
+                None => {
+                    early_err = Some((
+                        self.id.clone(),
+                        NodeError::ExecutionFailed(format!("No plan for start node `{}`", start)),
+                    ));
+                    return ExecutionReport {
+                        records,
+                        error: early_err,
+                        total: Utc::now() - run_start,
+                    };
+                }
+            };
         outputs.insert(start_idx, vec![msg.clone()]);
         ctx.set_nodes(vec![start.to_string()]);
 
