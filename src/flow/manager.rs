@@ -51,6 +51,8 @@ pub struct ExecutionReport {
     pub error: Option<(String, NodeError)>,
     /// total elapsed wall time
     pub total: TimeDelta,
+    /// finished (ran till the end) or partial (ran until an out channel)
+    pub finished: bool,
 }
 
 impl ExecutionReport {
@@ -59,6 +61,7 @@ impl ExecutionReport {
             records: vec![],
             error: Some(("skipped".to_string(), NodeError::ExecutionFailed("Flow not allowed".to_string()))),
             total: chrono::Duration::zero(),
+            finished: false,
         }
     }
 }
@@ -342,6 +345,7 @@ impl Flow {
                         NodeError::ExecutionFailed("flow not allowed".to_string()),
                     )),
                     total: TimeDelta::zero(),
+                    finished: true,
                 };
             }
         }
@@ -362,13 +366,21 @@ impl Flow {
                         records,
                         error: early_err,
                         total: Utc::now() - run_start,
+                        finished: true,
                     };
                 }
             };
         outputs.insert(start_idx, vec![msg.clone()]);
         ctx.set_nodes(vec![start.to_string()]);
 
-        while let Some(next_id) = ctx.pop_next_node() {
+        let mut reply_2_channel = false;
+
+        loop {
+            // If no more nodes need to be processed, break
+            let Some(next_id) = ctx.pop_next_node() else {
+                break;
+            };
+
             let &nx = match self.index_of.get(&next_id) {
                 Some(ix) => ix,
                 None => break,
@@ -479,9 +491,17 @@ impl Flow {
                             Routing::FollowGraph => {
                                 self.connections.get(&node_id).cloned().unwrap_or_default()
                             }
-                            Routing::ToNode(n) => vec![n.clone()],
-                            Routing::ToNodes(v) => v.clone(),
+                            Routing::ToNode(n) => {
+
+                                vec![n.clone()]
+                            },
+                            Routing::ToNodes(v) => {
+                                v.clone()}
+                            ,
                             Routing::ReplyToOrigin => {
+                                // break at the end of this loop
+                                reply_2_channel = true;
+                                ctx.set_node(node_id.clone());
                                 if let Some(origin) = ctx.channel_origin() {
                                     match origin.reply(
                                         &node_id,
@@ -490,6 +510,7 @@ impl Flow {
                                         ctx,
                                     ).map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))) {
                                         Ok(cm) => {
+                                            // Trying to remove ctx.add_node(node_id.clone());
                                             if let Err(e) = ctx.channel_manager().send_to_channel(&origin.channel(), cm).await {
                                                 early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
                                             }
@@ -506,6 +527,7 @@ impl Flow {
                                     records,
                                     error: None,
                                     total: Utc::now() - run_start,
+                                    finished: true,
                                 };
                             }
                         };
@@ -522,10 +544,19 @@ impl Flow {
                     Err(err) => {
                         let routing = err.routing();
                         let targets = match routing {
-                            Routing::FollowGraph => self.connections.get(&node_id).cloned().unwrap_or_default(),
-                            Routing::ToNode(n) => vec![n.clone()],
-                            Routing::ToNodes(v) => v.clone(),
+                            Routing::FollowGraph => {
+                                self.connections.get(&node_id).cloned().unwrap_or_default()
+                            },
+                            Routing::ToNode(n) => {
+                                vec![n.clone()]
+                            },
+                            Routing::ToNodes(v) => {
+                                v.clone()
+                            },
                             Routing::ReplyToOrigin => {
+                                // break at the end of this loop
+                                reply_2_channel = true;
+                                ctx.set_node(node_id.clone());
                                 if let Some(origin) = ctx.channel_origin() {
                                     match origin.reply(
                                         &node_id,
@@ -579,12 +610,17 @@ impl Flow {
                     }
                 }
             }
-        }
 
+            // If the flow needs to go back to the user, break
+            if reply_2_channel {
+                break;
+            } 
+        }
         ExecutionReport {
             records,
             error: early_err,
             total: Utc::now() - run_start,
+            finished: !reply_2_channel,
         }
     }
 
@@ -879,10 +915,9 @@ impl WatchedType for FlowWatcher {
         path.extension().and_then(|e| e.to_str()) == Some("greentic")
     }
     async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
-        let name = path.file_stem().unwrap().to_str().unwrap().to_string();
         let flow = FlowManager::load_flow_from_file(path.to_str().unwrap())?
             .build();
-        self.manager.register_flow(&name, flow);
+        self.manager.register_flow(flow);
         Ok(())
     }
     async fn on_remove(&self, path: &Path) -> anyhow::Result<()> {
@@ -917,20 +952,20 @@ impl FlowManager {
         guard.push(h);
     }
 
-    pub fn register_flow(&self, name: &str, flow: Flow) {
+    pub fn register_flow(&self, flow: Flow) {
+        let id = flow.id.clone();
         // insert into the map
-        self.flows.insert(name.to_string(), flow.clone());
+        self.flows.insert(id.clone(), flow.clone());
 
-        info!("Registered flow: {}", name);
+        info!("Registered flow: {}", id);
 
         // fire the callbacks without blocking this thread
         let me = self.clone();
-        let name = name.to_string();
         let flow = flow.clone();
         tokio::spawn(async move {
             let handlers = me.on_added.lock().await;
             for h in handlers.iter() {
-                h(&name, &flow);
+                h(&id, &flow);
             }
         });
     }
@@ -1034,11 +1069,10 @@ impl FlowManager {
             channel_origin.clone(),
         );
 
-        println!("@@@ REMOVE flows: {:?}",ctx.flows());
         match ctx.flows() {
             None => {
                 // Lazily allow the current flow
-                ctx.add_flow(flow.id.clone());
+                ctx.add_flow(flow_name.to_string());
                 trace!("👣 Registering flow `{}` for session `{}`", flow.id, ctx.get_session_id());
             }
             Some(ref allowed) if !allowed.contains(&flow.id) => {
@@ -1063,7 +1097,7 @@ impl FlowManager {
                 let name = path.file_stem().unwrap().to_string_lossy();
 
                 match Self::load_flow_from_file(&path.to_string_lossy()) {
-                    Ok(flow) => self.register_flow(&name, flow.build()),
+                    Ok(flow) => self.register_flow(flow.build()),
                     Err(e) => error!("Failed to load {}: {}", name, e),
                 }
             }

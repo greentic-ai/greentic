@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
         ctx: std::ptr::null_mut(),
         log_fn: test_log_fn,
     };
-    plugin.set_logger(ffi_logger);
+    plugin.set_logger(ffi_logger, LogLevel::Debug);
 
     // 3) Start the WebSocket server
     println!("Starting WS server on {}", plugin.address());

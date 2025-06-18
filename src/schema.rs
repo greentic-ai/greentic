@@ -3,6 +3,7 @@
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::Error;
+use channel_plugin::plugin::LogLevel;
 use schemars::schema_for;
 use serde_json::{json, Value};
 
@@ -45,7 +46,7 @@ pub async fn write_schema(
     // 4) channel schemas
     let config = ConfigManager(MapConfigManager::new());
     
-    let host_logger = HostLogger::new();
+    let host_logger = HostLogger::new(LogLevel::Warn);
     let store =InMemorySessionStore::new(10);
     let channel_mgr = ChannelManager::new( config, secrets, store.clone(), host_logger)
         .await

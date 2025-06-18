@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     // Create the plugin and set your Telegram bot token
     let mut plugin = TelegramPlugin::default();
     let logger = PluginLogger{ ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-    plugin.set_logger(logger);
+    plugin.set_logger(logger, LogLevel::Debug);
     let secrets = DashMap::new();
     secrets.insert("TELEGRAM_TOKEN".to_string(), std::env::var("TELEGRAM_TOKEN").expect("TELEGRAM_TOKEN was not set"));
     plugin.set_secrets(secrets);

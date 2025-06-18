@@ -12,6 +12,7 @@ pub struct MockPlugin {
     config: DashMap<String,String>,
     secrets: DashMap<String,String>,
     logger: Option<PluginLogger>,
+    log_level: Option<LogLevel>,
     queue: Arc<(Mutex<VecDeque<ChannelMessage>>, Condvar)>,
 }
 #[async_trait]
@@ -20,12 +21,17 @@ impl ChannelPlugin for MockPlugin {
         "mock_middle".to_string()
     }
 
-    fn set_logger(&mut self, logger: PluginLogger) {
+    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
         self.logger = Some(logger);
+        self.log_level = Some(log_level);
     }
-    
+
     fn get_logger(&self) -> Option<PluginLogger> {
         self.logger
+    }
+
+    fn get_log_level(&self) -> Option<LogLevel>{
+        self.log_level
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
@@ -57,9 +63,7 @@ impl ChannelPlugin for MockPlugin {
     }
     
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
-        if let Some(log) = &self.logger {
-            log.log(LogLevel::Info, "mock_middle", &format!("enqueueing message {:?}", msg));
-        }
+        self.info( &format!("enqueueing message {:?}", msg));
         let (lock, cvar) = &*self.queue;
         let mut q = lock.lock().unwrap();
         q.push_back(msg);
@@ -68,9 +72,7 @@ impl ChannelPlugin for MockPlugin {
     }
     
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError> {
-        if let Some(log) = &self.logger {
-            log.log(LogLevel::Info, "mock_middle", "polling queue");
-        }
+        self.info("polling queue");
         let (lock, cvar) = &*self.queue;
         let mut q = lock.lock().unwrap();
         // wait until there is something in the queue

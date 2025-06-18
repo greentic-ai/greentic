@@ -1,7 +1,7 @@
 use std::{ffi::{c_char, CStr, CString, OsStr}, fs, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::SystemTime};
 use anyhow::{Context, Error};
 use async_trait::async_trait;
-use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelState, PluginLogger}, PluginHandle};
+use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelState, PluginLogger, LogLevel}, PluginHandle};
 use dashmap::DashMap;
 use libloading::{Library, Symbol};
 use once_cell::sync::OnceCell;
@@ -24,7 +24,7 @@ pub struct PluginSessionCallbacks {
 // function‐pointer types matching your `export_plugin!` C API:
 type PluginCreate           = unsafe extern "C" fn() -> PluginHandle;
 type PluginDestroy          = unsafe extern "C" fn(PluginHandle);
-type PluginSetLogger        = unsafe extern "C" fn(PluginHandle, PluginLogger);
+type PluginSetLogger        = unsafe extern "C" fn(PluginHandle, PluginLogger, LogLevel);
 type PluginName             = unsafe extern "C" fn(PluginHandle) -> *mut c_char;
 type PluginStart            = unsafe extern "C" fn(PluginHandle) -> FfiFuture<bool>;
 type PluginDrain            = unsafe extern "C" fn(PluginHandle) -> bool;
@@ -223,7 +223,7 @@ pub extern "C" fn plugin_get_session(plugin_name: *const c_char, key: *const c_c
         let store = SESSION_STORE.get().cloned().expect("SESSION_STORE not initialized correctly");
         BorrowingFfiFuture::new(async move {
             if let Some(session_id) = store.get_channel(&plugin, &key).await {
-                CString::new(session_id).unwrap().into_raw()
+                CString::new(session_id.as_str()).unwrap().into_raw()
             } else {
                 std::ptr::null_mut()
             }
@@ -237,7 +237,7 @@ pub extern "C" fn plugin_get_or_create_session(plugin_name: *const c_char, key: 
     let store = SESSION_STORE.get().cloned().expect("SESSION_STORE not initialized correctly");
     BorrowingFfiFuture::new(async move {
         let session_id = store.get_or_create_channel(&plugin, &key).await;
-        CString::new(session_id).unwrap().into_raw()
+        CString::new(session_id.as_str()).unwrap().into_raw()
     })
 }
 
@@ -312,24 +312,26 @@ impl PluginWatcher {
     }
 
     /// Subscribe for plugin add/reload/remove events.
-    pub async fn subscribe(&self, handler: Arc<dyn PluginEventHandler>) {
+    pub async fn subscribe(&self, handler: Arc<dyn PluginEventHandler>, notify: bool) {
         // First, register the handler
         {
             let mut subs = self.subscribers.lock().unwrap();
             subs.push(handler.clone());
         }
 
-        // Then notify it of all existing plugins
-        for entry in self.plugins.iter() {
-            // entry.key()  -> &String
-            // entry.value() -> &Arc<Plugin>
-            let name = entry.key();                         // borrow key
-            let plugin = Arc::clone(entry.value());         // clone the Arc so you own one
-            if let Err(err) = handler
-                .plugin_added_or_reloaded(name, plugin)
-                .await
-            {
-                warn!("Could not load plugin {}: {:?}", name, err);
+        if notify {
+            // Then notify it of all existing plugins
+            for entry in self.plugins.iter() {
+                // entry.key()  -> &String
+                // entry.value() -> &Arc<Plugin>
+                let name = entry.key();                         // borrow key
+                let plugin = Arc::clone(entry.value());         // clone the Arc so you own one
+                if let Err(err) = handler
+                    .plugin_added_or_reloaded(name, plugin)
+                    .await
+                {
+                    warn!("Could not load plugin {}: {:?}", name, err);
+                }
             }
         }
     }
@@ -444,7 +446,7 @@ pub mod tests {
     use std::{
         collections::VecDeque, fs::{self, File}, path::PathBuf, sync::Condvar,
     };
-    use channel_plugin::plugin::{ChannelPlugin, PluginError};
+    use channel_plugin::plugin::{ChannelPlugin, LogLevel, PluginError};
     use tempfile::TempDir;
     //use tokio::sync::Notify;
 
@@ -459,6 +461,7 @@ pub mod tests {
         secrets: DashMap<String, String>,
         //notify: Arc<Notify>,
         logger: Option<PluginLogger>,
+        log_level: Option<LogLevel>,
     }
 
     impl MockChannel {
@@ -472,6 +475,7 @@ pub mod tests {
                     secrets: DashMap::new(),
                     //notify: Arc::new(Notify::new()),
                     logger: None,
+                    log_level: None,
                 }
             }
 
@@ -499,12 +503,17 @@ pub mod tests {
         fn name(&self) -> String {
             "mock".into()
         }
-        fn set_logger(&mut self, logger: PluginLogger) {
+        fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
             self.logger = Some(logger);
+            self.log_level = Some(log_level);
         }
 
         fn get_logger(&self) -> Option<PluginLogger> {
             self.logger
+        }
+
+        fn get_log_level(&self) -> Option<LogLevel> {
+            self.log_level
         }
 
         fn capabilities(&self) -> ChannelCapabilities {

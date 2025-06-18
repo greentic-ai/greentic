@@ -1,3 +1,4 @@
+use channel_plugin::plugin::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
     apps::{cmd_init, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
@@ -220,6 +221,7 @@ async fn run(root: PathBuf,
         processes_dir.clone(),
         config_mgr,
         logger,
+        convert_level(log_level),
         secrets_mgr,
     )
     .await;
@@ -284,5 +286,18 @@ r#"
     println!("Goodbye!");
 
     process::exit(0);
+
+}
+
+fn convert_level(level: String) -> LogLevel {
+    match level.to_lowercase().as_str() {
+        "trace" => LogLevel::Trace,
+        "debug" => LogLevel::Debug,
+        "info"  => LogLevel::Info,
+        "warn"  => LogLevel::Warn,
+        "error" => LogLevel::Error,
+        "critical" => LogLevel::Critical,
+        _ => LogLevel::Info,
+    }
 
 }

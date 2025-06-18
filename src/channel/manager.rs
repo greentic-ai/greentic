@@ -148,7 +148,7 @@ impl ChannelManager {
         // 1) build the watcher
         let watcher = Arc::new(crate::channel::plugin::PluginWatcher::new(plugins_dir.clone()));
         // 2) subscribe us to get add/remove events
-        watcher.subscribe(self.clone() as Arc<dyn crate::channel::plugin::PluginEventHandler>).await;
+        watcher.subscribe(self.clone() as Arc<dyn crate::channel::plugin::PluginEventHandler>, false).await;
         // 3) spawn the fs watcher
         match watcher.watch().await{
             Ok(handle) => Ok(handle),
@@ -214,7 +214,7 @@ impl PluginEventHandler for ChannelManager {
 
         // Wire in the host’s logger callback
         let ffi_logger = self.host_logger.clone().as_ffi();
-        wrapper.set_logger(ffi_logger);
+        wrapper.set_logger(ffi_logger,self.host_logger.log_level());
 
         // 1) Config values
         let cfg_map = DashMap::new();
@@ -275,9 +275,7 @@ impl PluginEventHandler for ChannelManager {
                     }
 
                     let mut w = poller_wrapper.clone();
-                    println!("@@@@ REMOVE receive message before");
                     let poll_result = w.receive_message().await;
-                    println!("@@@@ REMOVE receive message after");
                     match poll_result {
                         Ok(mut msg) => {
                             // got a real message
@@ -294,7 +292,6 @@ impl PluginEventHandler for ChannelManager {
                                 let m = msg.clone();
                                 let store = store.clone();
                                 tokio::spawn(async move {
-                                    println!("@@@ REMOVE GOT MESSAGE {:?}",m);
                                     let _ = h.handle_incoming(m, store.clone()).await;
                                 });
                             }
@@ -432,11 +429,17 @@ extern "C" fn host_log_fn(
 /// A logger you hand to each plugin so that
 /// plugin.log(...) calls turn into host tracing calls.
 #[derive(Clone, Debug)]
-pub struct HostLogger;
+pub struct HostLogger{
+    log_level: LogLevel,
+}
 
 impl HostLogger {
-    pub fn new() -> Arc<Self> {
-        Arc::new(HostLogger)
+    pub fn new(log_level: LogLevel) -> Arc<Self> {
+        Arc::new(HostLogger{log_level})
+    }
+
+    pub fn log_level(&self) -> LogLevel {
+        self.log_level
     }
 
     /// build a PluginLogger without consuming `self`
@@ -472,7 +475,7 @@ pub mod tests {
                 secrets: SecretsManager(EmptySecretsManager::new()), 
                 store: InMemorySessionStore::new(10),
                 channels: Arc::new(DashMap::new()), 
-                host_logger: HostLogger::new(), 
+                host_logger: HostLogger::new(LogLevel::Debug), 
                 incoming_subscribers: Arc::new(Mutex::new(Vec::new())), 
             })
         }
@@ -483,7 +486,7 @@ pub mod tests {
         // All the extern-C functions:
         unsafe extern "C" fn create() -> PluginHandle { std::ptr::null_mut() }
         unsafe extern "C" fn destroy(_: PluginHandle) {}
-        unsafe extern "C" fn set_logger(_: PluginHandle, _logger_ptr: PluginLogger) {}
+        unsafe extern "C" fn set_logger(_: PluginHandle, _logger_ptr: PluginLogger, _log_level_ptr: LogLevel) {}
         unsafe extern "C" fn name(_: PluginHandle) -> *mut i8 { std::ptr::null_mut() }
         unsafe extern "C" fn start(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
         unsafe extern "C" fn drain(_: PluginHandle) -> bool { true }
@@ -581,7 +584,7 @@ pub mod tests {
         let secrets = SecretsManager(EmptySecretsManager::new());
         let config = ConfigManager(MapConfigManager::new());
         let store =InMemorySessionStore::new(10);
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let ffi_logger  = host_logger.as_ffi(); 
         let mgr = ChannelManager::new(config, secrets, store.clone(), host_logger)
             .await
@@ -589,7 +592,7 @@ pub mod tests {
 
         let plugin = make_noop_plugin();
         let mut wrapper = PluginWrapper::new(plugin.clone(), store);
-        wrapper.set_logger(ffi_logger);
+        wrapper.set_logger(ffi_logger, LogLevel::Debug);
         mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);
         mgr.unload_channel("foo").await.unwrap();

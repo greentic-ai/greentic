@@ -1,6 +1,6 @@
 use std::{ffi::{c_char, CStr, CString}, sync::Arc};
 use dashmap::DashMap;
-use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, PluginError, PluginLogger}};
+use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{schema::{Metadata}, schema_for};
 use serde_json::json;
@@ -17,6 +17,7 @@ pub struct PluginWrapper {
     inner: Arc<Plugin>,
     state:   Arc<AtomicCell<ChannelState>>,
     logger: Option<PluginLogger>,
+    log_level: Option<LogLevel>,
     session_store: SessionStore,
 }
 
@@ -26,6 +27,7 @@ impl PluginWrapper {
             inner,
             state:   Arc::new(AtomicCell::new(ChannelState::Running)),
             logger: None,
+            log_level: None,
             session_store,
         }
     }
@@ -35,12 +37,10 @@ impl PluginWrapper {
     }
     /// Set the session callbacks so the plugins can request a session 
     pub fn set_session_callbacks(&mut self) {
-        println!("@@@ REMOVE set session callbacks");
         if self.channel_capabilities().supports_routing {
             if let Some(lib) = &self.inner.lib {
                 let result: std::result::Result<libloading::Symbol<RegisterSessionFns>, libloading::Error> =
                     unsafe { lib.get(b"greentic_register_session_fns") };
-                println!("@@@ REMOVE set session callbacks result: {:?}",result);
                 match result {
                     Ok(register) => {
                         // Register our session handlers
@@ -50,13 +50,10 @@ impl PluginWrapper {
                                 plugin_get_or_create_session,
                                 plugin_invalidate_session,
                         )};
-
-                        println!("@@@ REMOVE registered");
                         
                         tracing::info!("✅ Registered session callbacks for plugin `{}`", self.name());
                     }
                     Err(e) => {
-                        println!("@@@ REMOVE registration error: {:?}",e);
                         tracing::warn!(
                             "⚠️ Plugin `{}` does not expose `greentic_register_session_fns`: {}",
                             self.name(),
@@ -292,15 +289,21 @@ impl ChannelPlugin for PluginWrapper {
         }
     }
     
-    fn set_logger(&mut self, logger: channel_plugin::plugin::PluginLogger) {
+    fn set_logger(&mut self, logger: channel_plugin::plugin::PluginLogger, log_level: channel_plugin::plugin::LogLevel) {
             // call into the plugin’s FFI entry‐point:
             unsafe {
-                (self.inner.set_logger)(self.inner.handle, logger);
+                (self.inner.set_logger)(self.inner.handle, logger, log_level);
             }
+            self.logger = Some(logger);
+            self.log_level = Some(log_level);
     }
 
     fn get_logger(&self) -> Option<channel_plugin::plugin::PluginLogger> {
         self.logger
+    }
+
+    fn get_log_level(&self) -> Option<channel_plugin::plugin::LogLevel> {
+        self.log_level
     }
     
     #[tracing::instrument(name = "channel_send_message_async", skip(self, msg))]
@@ -321,14 +324,11 @@ impl ChannelPlugin for PluginWrapper {
     #[tracing::instrument(name = "channel_receive_message_async", skip(self))]
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
         // Call the FFI shim that returns an FfiFuture<ChannelMessage>
-        println!("@@@ REMOVE before ffi");
         let fut: FfiFuture<*mut c_char> = unsafe {
             (self.inner.receive_message)(self.inner.handle)
         };
         // 2) Await it
-        println!("@@@ REMOVE await fut before");
         let ptr = fut.await;
-        println!("@@@ REMOVE await fut after");
         if ptr.is_null() {
             return Err(PluginError::Other("receive_message returned null".into()).into());
         }
@@ -373,6 +373,7 @@ pub mod tests {
         caps: ChannelCapabilities,
         send_ok: bool,
         logger: Mutex<Option<PluginLogger>>,
+        log_level: Mutex<Option<LogLevel>>,
         //routes: DashSet<String>,
         session_callbacks: Mutex<Option<PluginSessionCallbacks>>,
     }
@@ -386,6 +387,7 @@ pub mod tests {
                 caps: ChannelCapabilities { name: "Fake".into(), ..Default::default() },
                 send_ok: true,
                 logger: Mutex::new(None),
+                log_level: Mutex::new(None),
                 //routes: DashSet::new(),
                 session_callbacks: Mutex::new(None),
             })
@@ -396,10 +398,13 @@ pub mod tests {
         unsafe extern "C" fn set_logger_fn(
             handle: PluginHandle,
             logger: PluginLogger,
+            log_level: LogLevel,
         ) {
             let plugin = unsafe { &*(handle as *const FakePlugin) };
-            let mut slot = plugin.logger.lock().unwrap();
-            *slot = Some(logger);
+            let mut logger_guard = plugin.logger.lock().unwrap();
+            let mut log_level_guard = plugin.log_level.lock().unwrap();
+            *logger_guard = Some(logger);
+            *log_level_guard = Some(log_level);
         }
         // helper for tests to invoke the logger:
         fn call_logged(&self, level: LogLevel, ctx: &str, msg: &str) {
@@ -621,7 +626,7 @@ pub mod tests {
         };
 
         // 2) build a TestLogger and install it
-        wrapper.set_logger(ffi_logger);
+        wrapper.set_logger(ffi_logger, LogLevel::Debug);
 
         // 3) now simulate the plugin “logging” something by calling into our helper
         let fake = unsafe { &*(wrapper.inner.handle as *const FakePlugin) };

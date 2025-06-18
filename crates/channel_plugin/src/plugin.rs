@@ -1,14 +1,18 @@
 
 use async_trait::async_trait;
+use chrono::Utc;
 use dashmap::DashMap;
 // plugin_api/src/lib.rs
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::ffi::{c_char, c_void, CString};
+use std::{ffi::{c_char, c_void, CString}, sync::Arc};
 use thiserror::Error;
 use crate::{message::{ChannelCapabilities, ChannelMessage, RouteBinding, RouteMatcher}, PluginHandle};
 use std::sync::RwLock;
-
+use tokio::sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
+use chrono::DateTime;
+use std::time::Duration;
+use tokio::time::interval;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Default)]
 pub struct DefaultRoutingSupport {
@@ -103,6 +107,64 @@ pub enum LogLevel {
     Critical = 5,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq,)]
+pub struct LogEntry {
+    pub level: LogLevel,
+    pub timestamp: DateTime<Utc>,
+    pub context: String,
+    pub message: String,
+}
+
+impl LogEntry {
+    pub fn new(level: LogLevel, context: &str, message: &str) -> Self {
+        LogEntry {
+            level,
+            timestamp: Utc::now(),
+            context: context.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
+pub struct LogBatcher {
+    sender: UnboundedSender<LogEntry>,
+}
+
+impl LogBatcher {
+    pub fn new<F>(mut flush: F) -> Self
+    where
+        F: FnMut(Vec<LogEntry>) + Send + 'static,
+    {
+        let (tx, mut rx): (UnboundedSender<LogEntry>, UnboundedReceiver<LogEntry>) = unbounded_channel();
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let buffer_clone = Arc::clone(&buffer);
+
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    Some(entry) = rx.recv() => {
+                        buffer.lock().await.push(entry);
+                    }
+                    _ = ticker.tick() => {
+                        let mut batch = Vec::new();
+                        std::mem::swap(&mut *buffer_clone.lock().await, &mut batch);
+                        if !batch.is_empty() {
+                            flush(batch);
+                        }
+                    }
+                }
+            }
+        });
+
+        Self { sender: tx }
+    }
+
+    pub fn log(&self, entry: LogEntry) {
+        let _ = self.sender.send(entry);
+    }
+}
+
 
 /// Plain‐old‐data FFI logger handle.
 /// Plugins will call `log_fn(ctx, level, context, message)` when they want to log.
@@ -155,6 +217,7 @@ pub trait RoutingSupport {
 /// The one trait plugin authors implement.
 #[async_trait]
 pub trait ChannelPlugin {//: Send + Sync {
+
     /// The name of the plugin
     fn name(&self) -> String;
 
@@ -220,9 +283,38 @@ pub trait ChannelPlugin {//: Send + Sync {
 
     /// Called by the host to give the plugin a logger handle.
     /// Plugins should store this in their struct and use it in place of
-    /// any direct calls to `tracing::info!`.
-    fn set_logger(&mut self, logger: PluginLogger);
+    /// any direct calls to `tracing::info!` will not work.
+    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel);
     fn get_logger(&self) -> Option<PluginLogger>;
+    fn get_log_level(&self) -> Option<LogLevel>;
+
+    fn trace(&self, log: &str) {
+        self.log(LogLevel::Trace, log);
+    }
+    fn debug(&self, log: &str) {
+        self.log(LogLevel::Debug, log);
+    }
+    fn info(&self, log: &str) {
+        self.log(LogLevel::Info, log);
+    }
+    fn warn(&self, log: &str) {
+        self.log(LogLevel::Warn, log);
+    }
+    fn error(&self, log: &str) {
+        self.log(LogLevel::Error, log);
+    }
+    fn critical(&self, log: &str) {
+        self.log(LogLevel::Critical, log);
+    }
+    fn log(&self, level: LogLevel, log: &str) {
+        if let Some(log_level) = self.get_log_level(){
+            if level >= log_level {
+                if let Some(logger) = self.get_logger() {
+                    logger.log(level, &self.name(), log);
+                }
+            }
+        }
+    }
 
     /// Called by host to push a message out.
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError>;

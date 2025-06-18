@@ -9,7 +9,7 @@ mod tests {
     use async_ffi::{BorrowingFfiFuture, FfiFuture};
     use async_trait::async_trait;
     use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
-    use channel_plugin::plugin::{ChannelState, PluginLogger};
+    use channel_plugin::plugin::{ChannelState, LogLevel, PluginLogger};
     use channel_plugin::PluginHandle;
     use dashmap::DashMap;
     use schemars::schema::RootSchema;
@@ -91,7 +91,7 @@ mod tests {
         // All the extern-C functions:
         unsafe extern "C" fn create() -> PluginHandle { std::ptr::null_mut() }
         unsafe extern "C" fn destroy(_: PluginHandle) {}
-        unsafe extern "C" fn set_logger(_: PluginHandle, _logger_ptr: PluginLogger) {}
+        unsafe extern "C" fn set_logger(_: PluginHandle, _logger_ptr: PluginLogger, _log_level_ptr: LogLevel) {}
         unsafe extern "C" fn name(_: PluginHandle) -> *mut i8 { std::ptr::null_mut() }
         unsafe extern "C" fn start(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
         unsafe extern "C" fn drain(_: PluginHandle) -> bool { true }
@@ -224,6 +224,85 @@ mod tests {
             Box::new(self.clone())
         }
     }
+
+
+    #[tokio::test]
+    async fn test_reply_to_origin_stops_flow_and_tracks_state() {
+
+        // 1. Setup: flow manager, fake channel, and mock context
+        let mut manager = FlowManager::new_test();
+
+        // 2. Create flow
+        let flow_id = "reply_flow".to_string();
+        let channel_id = "chan_out".to_string();
+        let script_id = "script_reply".to_string();
+
+        let flow = Flow::new(&flow_id,"title", "description")
+            .channel_node(&channel_id, "test", true)
+            .process_node(
+                &script_id,
+                ScriptProcessNode::new_inline(
+                    "reply_test",
+                    r#"
+                    if payload.text == "fail" {
+                        return reply("oops!")
+                    } else {
+                        return reply("ok!")
+                    }
+                    "#,
+                ),
+            )
+            .connect(&channel_id, &script_id)
+            .build();
+
+        manager.register(flow);
+
+        // 3. Send a triggering message
+        let session_id = "session-123".to_string();
+        let msg = Message::new("chan_out", json!({ "text": "fail" }), session_id.clone());
+
+        // Setup test context (captures channel replies)
+        let mut ctx = TestNodeContext::new_with_channel("test", session_id.clone());
+        ctx.add_flow(flow_id.clone());
+
+        // 4. Run the flow
+        let report = manager
+            .run_flow("reply_flow", msg.clone(), &mut ctx)
+            .await;
+
+        // 5. Assert: Execution is not "done" (ReplyToOrigin triggered)
+        assert!(report.error.is_none(), "Flow execution should not fail");
+        assert!(
+            report.records.len() == 1,
+            "Flow should stop after reply call, got {} records",
+            report.records.len()
+        );
+
+        // 6. Assert: Reply message was queued to channel
+        let sent = ctx.take_sent("test").await;
+        assert_eq!(sent.len(), 1);
+        let content = sent[0].content.as_ref().unwrap().to_string();
+        assert!(
+            content.contains("oops!"),
+            "Expected reply message content to be 'oops!', got: {}",
+            content
+        );
+
+        // 7. Assert: state still tracks current node and flow
+        let node_state = ctx.nodes();
+        assert_eq!(
+            node_state.as_ref().unwrap(),
+            &[script_id.clone()],
+            "Expected current node to remain set after reply"
+        );
+
+        let flows = ctx.flows().unwrap();
+        assert!(
+            flows.contains(&flow_id),
+            "Expected flow ID to still be tracked after reply"
+        );
+    }
+
 
 
     #[tokio::test]
@@ -446,8 +525,6 @@ mod tests {
         let input = Message::new("m-o", json!({"ok":true}), "123".to_string());
         let report = flow.run(input.clone(), "A", &mut ctx).await;
 
-        println!("@@@ REMOVE report: {:?}",report);
-
         assert!(report.error.is_none()); // ✅ Flow handled error via err route
 
         let ids: Vec<_> = report.records.iter().map(|r| r.node_id.as_str()).collect();
@@ -564,7 +641,7 @@ mod tests {
         let executor = make_executor();
         let secrets = SecretsManager(EmptySecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let store =InMemorySessionStore::new(10);
         let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, host_logger)
             .await
@@ -610,7 +687,7 @@ mod tests {
         let executor = make_executor();
         let secrets = SecretsManager(EmptySecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let store =InMemorySessionStore::new(10);
         let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, host_logger)
             .await
@@ -1024,7 +1101,7 @@ mod tests {
         let executor = make_executor();
         let secrets = SecretsManager(EmptySecretsManager::new());
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
         let tempdir = TempDir::new().unwrap();
         let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
@@ -1038,7 +1115,7 @@ mod tests {
         channel_manager.register_channel("mock".into(), ManagedChannel::new(wrapper,None,None)).await.expect("failed to register noop channel");
         // **4.** *tell* the FlowManager about your new flow so that it fires
         //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.
-        fm.register_flow(flow.id().as_str(), flow.clone());
+        fm.register_flow(flow.clone());
 
         let participant = Participant{ id: "id".to_string(), display_name:None, channel_specific_id: None };
         let co = ChannelOrigin::new("channel".to_string(), None, None, participant);
@@ -1070,7 +1147,7 @@ mod tests {
         let session_store =InMemorySessionStore::new(15);
         let flow = dummy_flow("lazy_flow");
         let manager = FlowManager::new_test(session_store.clone());
-        manager.register_flow("lazy_flow",flow.clone());
+        manager.register_flow(flow.clone());
 
         let msg = Message::new("1", serde_json::json!({"q": "hello"}), "sess1".to_string());
         let report = manager.process_message("lazy_flow", "start", msg.clone(), None).await;
@@ -1088,7 +1165,7 @@ mod tests {
         let session_store = InMemorySessionStore::new(15);
         let flow = dummy_flow("blocked_flow");
         let manager = FlowManager::new_test(session_store.clone());
-        manager.register_flow("blocked_flow",flow.clone());
+        manager.register_flow(flow.clone());
 
         let session = session_store.get_or_create("sess2").await;
         session.set_flows(vec!["allowed_flow".to_string()]);
@@ -1108,7 +1185,7 @@ mod tests {
         let session_store =InMemorySessionStore::new(15);
         let flow = dummy_flow("valid_flow");
         let manager = FlowManager::new_test(session_store.clone());
-        manager.register_flow("valid_flow",flow.clone());
+        manager.register_flow(flow.clone());
 
         let session = session_store.get_or_create("sess3").await;
         session.set_flows(vec!["valid_flow".to_string()]);

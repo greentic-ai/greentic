@@ -21,6 +21,7 @@ pub trait SessionStateType: Send + Sync + Debug {
     fn nodes(&self) -> Option<Vec<String>>;
     fn add_node(&self, node: String);
     fn pop_node(&self) -> Option<String>;
+    fn peek_node(&self) -> Option<String>;
     fn set_nodes(&self, nodes: Vec<String>);
 
     /// Gets the value associated with a key, if present.
@@ -236,26 +237,32 @@ impl SessionStateType for InMemoryState {
         self.nodes.lock().unwrap().pop_front()
     }
 
+    fn peek_node(&self) -> Option<String> {
+        self.nodes().and_then(|nodes| nodes.first().cloned())
+    }
+
     fn nodes(&self) -> Option<Vec<String>> {
         let nodes = self.nodes.lock().unwrap().iter().cloned().collect::<Vec<String>>();
-        if nodes.is_empty() {
+        //println!("@@@ STATE PTR (nodes): {:p} and {:?}", self, nodes);
+        let all_nodes = if nodes.is_empty() {
             None
         } else {
             Some(nodes)
-        }
+        };
+        all_nodes
     }
 
     fn add_node(&self, node: String) {
         let mut q = self.nodes.lock().unwrap();
         if !q.contains(&node) {
-            q.push_back(node);
+            q.push_back(node.clone());
         }
     }
 
     fn set_nodes(&self, nodes: Vec<String>) {
         let mut q = self.nodes.lock().unwrap();
         q.clear();
-        q.extend(nodes);
+        q.extend(nodes.clone());
     }
 }
 

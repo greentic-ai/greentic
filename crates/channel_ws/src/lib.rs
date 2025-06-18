@@ -13,18 +13,24 @@ use channel_plugin::{
 };
 use uuid::Uuid;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize,)]
+struct Message {
+    text: String
+}
 
 /// Commands sent to the manager task
 enum Command {
     Register {
-        session: String,
+        peer: String,
         sender: UnboundedSender<WsMsg>,
     },
     Unregister {
-        session: String,
+        peer: String,
     },
     SendMessage {
-        session: String,
+        peer: String,
         msg: WsMsg,
     },
 }
@@ -36,6 +42,7 @@ pub struct WsPlugin {
     msg_rx: UnboundedReceiver<ChannelMessage>,
     routing: DefaultRoutingSupport,
     logger: Option<PluginLogger>,
+    log_level: Option<LogLevel>,
     state:  ChannelState,
     addr:   String,
     shutdown_tx: Option<broadcast::Sender<()>>,
@@ -52,6 +59,7 @@ impl Default for WsPlugin {
             msg_rx: incoming_rx,
             routing: DefaultRoutingSupport::default(),
             logger: None, 
+            log_level: None,
             state: ChannelState::Stopped, 
             addr,
             shutdown_tx: None,
@@ -72,15 +80,18 @@ impl WsPlugin {
         let map: DashMap<String, UnboundedSender<WsMsg>> = DashMap::new();
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
-                Command::Register { session, sender } => {
-                    map.insert(session, sender);
+                Command::Register { peer, sender } => {
+                    map.insert(peer, sender);
                 }
-                Command::Unregister { session } => {
-                    map.remove(&session);
+                Command::Unregister { peer } => {
+                    map.remove(&peer);
                 }
-                Command::SendMessage { session, msg } => {
-                    if let Some(tx) = map.get(&session) {
-                        let _ = tx.send(msg);
+                Command::SendMessage {peer, msg } => {
+                    println!("@@@ REMOVE trying to get sender");
+                    if let Some(tx) = map.get(&peer) {
+                        println!("@@@ REMOVE found sender");
+                        let result = tx.send(msg);
+                        println!("@@@ REMOVE sent: {:?}",result);
                     }
                 }
             }
@@ -98,7 +109,7 @@ impl WsPlugin {
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
         tokio::spawn(async move {
-            let session = peer.to_string();
+            let peer = peer.to_string();
             let name = name.clone();
             match accept_async(stream).await {
                     Ok(ws_stream) => {
@@ -107,7 +118,7 @@ impl WsPlugin {
                     // channel for outbound frames
                     let (tx_out, mut rx_out) = unbounded_channel();
                     // register
-                    let _ = cmd_tx.send(Command::Register { session: session.clone(), sender: tx_out });
+                    let _ = cmd_tx.send(Command::Register { peer: peer.clone(), sender: tx_out });
                     loop {
                         tokio::select! {
                             _ = shutdown_rx.recv() => {
@@ -118,19 +129,19 @@ impl WsPlugin {
                             msg = read.next() => match msg{
                                 Some(Ok(WsMsg::Text(txt))) => {
                                     println!("@@@ GOT HERE 8");
-                                    let session_id = match SessionApi::get_session_id(&name, &session).await {
+                                    let session_id = match SessionApi::get_session_id(&name, &peer).await {
                                         Some(session) => session,
-                                        None => SessionApi::get_or_create_session_id(&name, &session).await,
+                                        None => SessionApi::get_or_create_session_id(&name, &peer).await,
                                     };
                                     println!("@@@ GOT HERE 9: {:?}",session_id);
-                                    log.log(LogLevel::Info, &name, &format!("recv {}: {}", session, txt));
+                                    log.log(LogLevel::Info, &name, &format!("recv {}: {}", peer, txt));
                                     let cm = ChannelMessage{
                                         channel:name.clone().into(),
                                         node: None,
                                         flow: None,
                                         session_id: Some(session_id.clone()),
                                         direction:MessageDirection::Incoming,
-                                        from:Participant{id:session.clone(),display_name:None,channel_specific_id:None},
+                                        from:Participant{id:peer.clone(),display_name:None,channel_specific_id:None},
                                         content:Some(MessageContent::Text(txt.to_string())),
                                         id:Uuid::new_v4().to_string(),
                                         timestamp:Utc::now(),
@@ -151,7 +162,7 @@ impl WsPlugin {
                             }
                         }
                     }
-                    let _ = cmd_tx.send(Command::Unregister { session });
+                    let _ = cmd_tx.send(Command::Unregister { peer });
                 }
                 Err(e) => {
                     log.log(LogLevel::Error, "ws", &format!("WebSocket handshake failed: {}", e));
@@ -165,8 +176,18 @@ impl WsPlugin {
 impl ChannelPlugin for WsPlugin {
     fn name(&self) -> String { "ws".into() }
     fn get_routing_support(&self) -> Option<&dyn RoutingSupport> { Some(&self.routing) }
-    fn set_logger(&mut self, lg: PluginLogger) { self.logger = Some(lg); }
-    fn get_logger(&self) -> Option<PluginLogger> { self.logger  }
+    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
+        self.logger = Some(logger);
+        self.log_level = Some(log_level);
+    }
+
+    fn get_logger(&self) -> Option<PluginLogger> {
+        self.logger
+    }
+
+    fn get_log_level(&self) -> Option<LogLevel>{
+        self.log_level
+    }
     fn set_config(&mut self, cfg: DashMap<String,String>) { 
         let address: String = cfg
             .get("address")                          // Option<Ref<_, String, String>>
@@ -186,6 +207,7 @@ impl ChannelPlugin for WsPlugin {
         ChannelCapabilities { name:"ws".into(),supports_routing: true,supports_sending:true,supports_receiving:true,supports_text:true,..Default::default() }
     }
     async fn start(&mut self) -> Result<(),PluginError> {
+        self.info("ws: starting");
         // Use the current runtime’s handle:
         let (cmd_tx, cmd_rx) = unbounded_channel();
         println!("@@@ GOT HERE 1");
@@ -223,15 +245,18 @@ impl ChannelPlugin for WsPlugin {
     }
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
         println!("@@@ REMOVE: SEND MESSAGE {:?}",msg);
+        self.info("ws: send message");
         if let Some(txt) = msg.content.as_ref().and_then(|c| match c { MessageContent::Text(t) => Some(t.clone()), _=>None }) {
             println!("@@@ REMOVE: SENDING {:?}",txt);
-            let result = self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ session: msg.session_id.clone().unwrap(), msg: WsMsg::Text(txt.into()) });
+            let result = match serde_json::from_str::<Message>(&txt) 
+            {
+                Ok(json) => self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ peer: msg.from.id.clone(), msg: WsMsg::Text(json.text.into()) }),
+                Err(_) =>  self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ peer: msg.from.id.clone(), msg: WsMsg::Text(txt.into()) }),
+            };
             if result.is_err() {
                 let error = format!("Got a send error: {:?}",result);
                 println!("@@@ REMOVE ERROR: {:?}",error);
-                if let Some(log) = self.get_logger() {
-                    log.log(LogLevel::Error, "ws", &error);
-                }
+                self.error(&error);
                 return Err(PluginError::Other(error));
             } else {
                 println!("@@@@ REMOVE SENT");
@@ -243,6 +268,7 @@ impl ChannelPlugin for WsPlugin {
         println!("@@@ REMOVE: GOT TO RECEIVE MESSAGE");
         match self.msg_rx.recv().await {
             Some(msg) => {
+                self.info("ws: receive message");
                 Ok(msg)
             }
             None => Err(PluginError::Other("receive_message channel closed".into())),
@@ -252,6 +278,7 @@ impl ChannelPlugin for WsPlugin {
     async fn wait_until_drained(&mut self,_u:u64)->Result<(),PluginError>{self.stop().await}
     async fn stop(&mut self)->Result<(),PluginError>{         
         self.state = ChannelState::Stopped;
+        self.info("ws: stopping");
         if let Some(tx) = self.shutdown_tx.take() {
             let result = tx.send(());
             println!("@@@ REMOVE: {:?}",result);
@@ -343,7 +370,7 @@ mod tests {
         let mut plugin = WsPlugin::default();
 
         // Set a dummy logger to satisfy start
-        plugin.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        plugin.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
 
         // Start the plugin
         let result = plugin.start().await;
@@ -375,7 +402,7 @@ mod tests {
         cfg.insert("port".into(),"8888".to_string());
         plugin.set_config(cfg);
         let logger = PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn };
-        plugin.set_logger(logger);
+        plugin.set_logger(logger, LogLevel::Debug);
 
         plugin.start().await.expect("start failed");
 

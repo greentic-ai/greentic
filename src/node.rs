@@ -351,6 +351,9 @@ impl NodeContext
         self.state.pop_node()
     }
 
+    pub fn peek_next_node(&mut self) -> Option<String> {
+        self.state.peek_node()
+    }
 
     pub fn add_node(&self, node: String) {
         self.state.add_node(node);
@@ -845,6 +848,7 @@ pub mod tests {
     use crate::message::Message;
     use crate::secret::{EmptySecretsManager, SecretsManager};
     use crate::flow::state::{InMemoryState, StateValue};
+    use channel_plugin::plugin::LogLevel;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1023,7 +1027,7 @@ pub mod tests {
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(),logging);
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let store =InMemorySessionStore::new(10);
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(),store.clone(), host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
@@ -1064,7 +1068,7 @@ pub mod tests {
         let watcher = executor.watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf()).await;
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let store =InMemorySessionStore::new(10);
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(),host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
@@ -1091,7 +1095,7 @@ pub mod tests {
         let watcher = executor.watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf()).await;
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let store =InMemorySessionStore::new(10);
         let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();

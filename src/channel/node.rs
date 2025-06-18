@@ -46,36 +46,39 @@ pub enum FlowRouterConfig {
     Script(ScriptFlowRouter),
 }
 
+pub async fn handle_message(flow_name: &str, node_id: &str, msg: &ChannelMessage, fm: &Arc<FlowManager>){
+    let session_id = msg.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let input = Message::new(&msg.id,  serde_json::to_value(msg).unwrap(),session_id,);
+    let channel_origin = ChannelOrigin::new(
+        msg.channel.clone(),
+        msg.reply_to_id.clone(),
+        msg.thread_id.clone(),
+        msg.from.clone());
+    if let Some(report) = fm
+        .process_message(flow_name, node_id, input, Some(channel_origin))
+        .await
+    {
+        let payload_json = serde_json::to_string(&report)
+            .expect("cannot serialize report");
+
+        tracing::event!(
+            target: "request",                    // picked up by your JSON‐file “reports” layer
+            tracing::Level::INFO,
+            flow = %flow_name,
+            node = %node_id,
+            report = %payload_json,
+            "flow run completed"
+        );
+        
+    }
+}
+
 
 impl ChannelNode {
     /// When an actual plugin yields an incoming ChannelMessage,
     /// this helper will route it into one or more flows.
     pub async fn handle_message(&self, msg: &ChannelMessage, fm: &Arc<FlowManager>) {
-        let session_id = msg.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let input = Message::new(&msg.id,  serde_json::to_value(msg).unwrap(),session_id,);
-        let channel_origin = ChannelOrigin::new(
-            msg.channel.clone(),
-            msg.reply_to_id.clone(),
-            msg.thread_id.clone(),
-            msg.from.clone());
-        if let Some(report) = fm
-            .process_message(&self.flow_name, &self.node_id, input, Some(channel_origin))
-            .await
-        {
-            let payload_json = serde_json::to_string(&report)
-                .expect("cannot serialize report");
-
-            tracing::event!(
-                target: "request",                    // picked up by your JSON‐file “reports” layer
-                tracing::Level::INFO,
-                flow = %self.flow_name,
-                node = %self.node_id,
-                report = %payload_json,
-                "flow run completed"
-            );
-            
-        }
-        
+        handle_message(&self.flow_name, &self.node_id, msg, fm).await;
     }
 }
 
@@ -99,18 +102,27 @@ impl ChannelsRegistry {
         let registry = me.clone();
         flow_manager
             .subscribe_flow_added(Arc::new(move |flow_id: &str, flow: &Flow| {
+                // First, build a set of all node names that appear as targets in flow connections
+                let mut incoming_targets = std::collections::HashSet::new();
+                for (_from,tos) in flow.connections() {
+                    for to in tos {
+                        incoming_targets.insert(to.clone());
+                    }
+                }
                 // find all nodes of kind Channel in this flow
                 for (node_name, cfg) in flow.nodes().iter() {
                     if let NodeKind::Channel { cfg} = &cfg.kind {
-                        //ensure_channel_running(channel_manager.clone(), &cfg.channel_name).expect("Could not find the channel or it was not started, i.e. is it in plugins/channels/running?");
-                        registry.register(ChannelNode {
-                            channel_name: cfg.channel_name.clone(),
-                            flow_name:    flow_id.to_string(),
-                            node_id:      node_name.clone(),
-                            poll_messages: cfg.channel_in.clone(),
-                            send_messages: cfg.channel_out.clone(),
-                            router_config: FlowRouterConfig::Channel(ChannelFlowRouter::new()),
-                        });
+                        // Only register the ChannelNode if it is not a target of any connection
+                        if !incoming_targets.contains(node_name.as_str()) {
+                            registry.register(ChannelNode {
+                                channel_name: cfg.channel_name.clone(),
+                                flow_name:    flow_id.to_string(),
+                                node_id:      node_name.clone(),
+                                poll_messages: cfg.channel_in.clone(),
+                                send_messages: cfg.channel_out.clone(),
+                                router_config: FlowRouterConfig::Channel(ChannelFlowRouter::new()),
+                            });
+                        }
                     }
                 }
             }))
@@ -119,16 +131,13 @@ impl ChannelsRegistry {
         me
     }
 
-    /// Find a specific ChannelNode by flow name and node ID
-    pub fn find_node(&self, flow: &str, node: &str) -> Option<ChannelNode> {
-        for entry in self.map.iter() {
-            for ch_node in entry.value().iter() {
-                if ch_node.flow_name == flow && ch_node.node_id == node {
-                    return Some(ch_node.clone());
-                }
-            }
+    /// Find if a specific Flow has a node ID
+    pub fn find_if_node_in_flow(&self, flow: &str, node: &str) -> bool {
+        if let Some(flow) = self.flow_manager.flows().get(flow) {
+            flow.nodes().contains_key(node)
+        } else {
+            false
         }
-        None
     }
 
     pub fn subscribe(&self) {
@@ -165,8 +174,8 @@ impl IncomingHandler for ChannelsRegistry {
 
                         for flow in session_flows.iter() {
                             for node in session_nodes.iter() {
-                                if let Some(target_node) = self.find_node(flow, node) {
-                                    target_node.handle_message(&msg, &self.flow_manager).await;
+                                if self.find_if_node_in_flow(flow, node) {
+                                    handle_message(flow, node, &msg, &self.flow_manager).await;
                                     routed = true;
                                 }
                             }
@@ -178,13 +187,19 @@ impl IncomingHandler for ChannelsRegistry {
                                 node.handle_message(&msg, &self.flow_manager).await;
                             }
                         }
-                    }
+                    
              
-                } else {
-                    info!("No flows/nodes recorded in session state. Broadcasting to all for {}", msg.channel);
-                    for node in nodes.iter().cloned() {
-                        node.handle_message(&msg, &self.flow_manager).await;
+                    } else {
+                        info!("No flows/nodes recorded in session state. Broadcasting to all the starting nodes for {}", msg.channel);
+                        for node in nodes.iter().cloned() {
+                            node.handle_message(&msg, &self.flow_manager).await;
+                        }
                     }
+                } else {
+                    error!(
+                        channel = %msg.channel,
+                        "received message but no session included"
+                    );
                 }
 
             }
@@ -283,6 +298,7 @@ mod tests {
     use crate::secret::SecretsManager;
     use crate::logger::Logger;
     use channel_plugin::message::{ChannelMessage, MessageDirection};
+    use channel_plugin::plugin::LogLevel;
 
     #[tokio::test]
     async fn test_registry_dispatches_safely() {
@@ -291,7 +307,7 @@ mod tests {
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let exec = Executor::new(secrets.clone(), logger);
         let config = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let cm = ChannelManager::new(config, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
         let pm = ProcessManager::dummy();
         let fm = FlowManager::new(store.clone(), exec, cm.clone(), pm.clone(), secrets);

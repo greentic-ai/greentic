@@ -168,6 +168,7 @@ pub struct TelegramPlugin {
     secrets: DashMap<String,String>,
     bot:     Option<Bot>,
     logger: Option<PluginLogger>,
+    log_level: Option<LogLevel>,
 }
 
 impl Default for TelegramPlugin {
@@ -186,7 +187,9 @@ impl Default for TelegramPlugin {
             config: DashMap::new(), 
             secrets: DashMap::new(),
             bot:None, 
-            logger: None}
+            logger: None,
+            log_level: None,
+        }
     }
 }
 
@@ -309,14 +312,20 @@ impl ChannelPlugin for TelegramPlugin {
         Some(&self.routing)
     }
 
-    fn set_logger(&mut self, logger: PluginLogger) {
+
+    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
         self.logger = Some(logger);
+        self.log_level = Some(log_level);
     }
 
     fn get_logger(&self) -> Option<PluginLogger> {
         self.logger
     }
-    
+
+    fn get_log_level(&self) -> Option<LogLevel>{
+        self.log_level
+    }
+
     fn capabilities(&self) -> ChannelCapabilities {
         ChannelCapabilities {
             name:                    "telegram".into(),
@@ -652,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn test_state_transitions_async() {
         let mut p = TelegramPlugin::default();
-        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
 
         assert_eq!(p.state(), ChannelState::Stopped);
 
@@ -669,7 +678,7 @@ mod tests {
     #[test]
     fn test_capabilities() {
         let mut p = TelegramPlugin::default();
-        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
         let caps = p.capabilities();
         assert_eq!(caps.name, "telegram");
         assert!(caps.supports_text);
@@ -680,7 +689,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_without_content_errors_async() {
         let mut p = TelegramPlugin::default();
-        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
         p.start().await.expect("start");
 
         // default msg has no content
@@ -693,7 +702,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_and_receive_roundtrip_async() {
         let mut p = TelegramPlugin::default();
-        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
         p.set_secrets({
             let m = DashMap::new();
             m.insert("TELEGRAM_TOKEN".into(), "fake".into());
@@ -753,7 +762,7 @@ mod tests {
     #[tokio::test]
     async fn test_wait_until_drained_async() {
         let mut p = TelegramPlugin::default();
-        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
         p.start().await.expect("start");
         p.drain().expect("drain");
 
@@ -764,7 +773,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_config_and_secrets_async() {
         let mut p = TelegramPlugin::default();
-        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        p.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
         {
             let cfg = DashMap::new();
             cfg.insert("foo".into(), "bar".into());

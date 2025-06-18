@@ -2,6 +2,7 @@
 use std::{fs, io::Write, path::PathBuf, sync::Arc};
 use anyhow::{Context, Error};
 
+use channel_plugin::plugin::LogLevel;
 use tokio::task::JoinHandle;
 use tracing::error;
 
@@ -48,6 +49,7 @@ impl App {
         processes_dir: PathBuf,
         config:       ConfigManager,
         logger:       Logger,
+        log_level:    LogLevel,
         secrets:      SecretsManager,
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
@@ -94,7 +96,7 @@ impl App {
         });
 
         // Channel manager (internally starts its own PluginWatcher over channels_dir)
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(log_level);
         let channel_manager = ChannelManager::new(config, secrets.clone(),store.clone(),host_logger).await?;
         self.channel_manager = Some(channel_manager.clone());
 

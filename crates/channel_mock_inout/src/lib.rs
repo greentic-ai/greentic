@@ -11,6 +11,7 @@ pub struct MockPlugin {
     config: DashMap<String,String>,
     secrets: DashMap<String,String>,
     logger: Option<PluginLogger>,
+    log_level: Option<LogLevel>,
 }
 #[async_trait]
 impl ChannelPlugin for MockPlugin {
@@ -18,12 +19,17 @@ impl ChannelPlugin for MockPlugin {
         "mock_inout".to_string()
     }
 
-    fn set_logger(&mut self, logger: PluginLogger) {
+    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
         self.logger = Some(logger);
+        self.log_level = Some(log_level);
     }
 
     fn get_logger(&self) -> Option<PluginLogger> {
         self.logger
+    }
+
+    fn get_log_level(&self) -> Option<LogLevel>{
+        self.log_level
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
@@ -55,16 +61,13 @@ impl ChannelPlugin for MockPlugin {
     }
     
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
-        if let Some(log) = &self.logger {
-            log.log(LogLevel::Info, "mock_out", format!("got a new message {:?}",msg).as_str());
-        }
+        
+        self.info(format!("got a new message {:?}",msg).as_str());
         Ok(())
     }
     
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage,PluginError> {
-        if let Some(log) = &self.logger {
-            log.log(LogLevel::Info, "mock_in", "receive_message");
-        }
+        self.info("receive_message");
         thread::sleep(Duration::from_secs(10));
         // Generate your message here (this example just uses the default)
         let mut msg = ChannelMessage::default();

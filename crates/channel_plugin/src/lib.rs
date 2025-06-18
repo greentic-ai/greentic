@@ -16,9 +16,11 @@ macro_rules! export_plugin {
         pub type GetSessionFn = extern "C" fn(*const c_char, *const c_char) -> FfiFuture<*mut c_char>;
         pub type GetOrCreateSessionFn = extern "C" fn(*const c_char, *const c_char) -> FfiFuture<*mut c_char>;
         pub type InvalidateSessionFn = extern "C" fn(*const c_char) -> FfiFuture<()>;
+        pub type LogFn = extern "C" fn(ctx: *mut std::ffi::c_void,level: LogLevel,context: *const c_char,message: *const c_char,);
         static mut GET_SESSION_FN: Option<GetSessionFn> = None;
         static mut GET_OR_CREATE_FN: Option<GetOrCreateSessionFn> = None;
         static mut INVALIDATE_SESSION_FN: Option<InvalidateSessionFn> = None;
+        static mut LOG_BATCHER_FN: Option<(LogFn, *mut std::ffi::c_void)> = None;
 
         pub struct SessionApi {
             pub get: GetSessionFn,
@@ -94,15 +96,27 @@ macro_rules! export_plugin {
             unsafe{drop(Box::from_raw(raw))};
         }
 
+        pub fn log_batched(level: LogLevel, context: &str, message: &str) {
+            let c_ctx = CString::new(context).unwrap();
+            let c_msg = CString::new(message).unwrap();
+
+            unsafe {
+                if let Some((log_fn, ctx)) = LOG_BATCHER_FN {
+                    log_fn(ctx, level, c_ctx.as_ptr(), c_msg.as_ptr());
+                }
+            }
+        }
+
         /// Plugin authors implement this in their `#[typetag]` impl:
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn plugin_set_logger(handle: $crate::PluginHandle, logger: PluginLogger) {
-            if handle.is_null() {
-                return;
-            }
-            // plugin is really a pointer to your concrete type
-            let plugin = unsafe{&mut *(handle as *mut $ty) as &mut dyn ChannelPlugin};
-            plugin.set_logger(logger);
+        pub unsafe extern "C" fn plugin_set_logger(handle: PluginHandle, logger: PluginLogger, log_level: LogLevel) {
+            // store logger directly
+            let plugin = unsafe { &mut *(handle as *mut $ty) as &mut dyn ChannelPlugin };
+            plugin.set_logger(logger, log_level);
+
+            // setup static log batcher fn
+            unsafe{LOG_BATCHER_FN = Some((logger.log_fn, logger.ctx))};
+            println!("@@@ REMOVE LOGGER SET");
         }
 
         #[unsafe(no_mangle)]

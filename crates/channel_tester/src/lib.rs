@@ -34,6 +34,7 @@ struct SingleTest {
 pub struct TesterPlugin {
     routing: DefaultRoutingSupport,
     logger:    Option<PluginLogger>,
+    log_level: Option<LogLevel>,
     state:     ChannelState,
     watcher: Option<PollWatcher>,
     config: DashMap<String,String>,
@@ -57,6 +58,7 @@ impl Default for TesterPlugin {
         TesterPlugin {
             routing:    DefaultRoutingSupport::default(),
             logger:     None,
+            log_level:  None,
             state:      ChannelState::Stopped,
             config:     DashMap::new(),
             incoming_tx,
@@ -76,12 +78,17 @@ impl ChannelPlugin for TesterPlugin {
         Some(&self.routing)
     }
 
-    fn set_logger(&mut self, logger: PluginLogger) {
+    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
         self.logger = Some(logger);
+        self.log_level = Some(log_level);
     }
 
     fn get_logger(&self) -> Option<PluginLogger> {
-        self.logger.clone()
+        self.logger
+    }
+
+    fn get_log_level(&self) -> Option<LogLevel>{
+        self.log_level
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
@@ -239,6 +246,7 @@ impl TesterPlugin {
         TesterPlugin {
             routing:     self.routing.clone(),
             logger:      self.logger.clone(),
+            log_level:   self.log_level.clone(),
             state:       self.state.clone(),
             config:      self.config.clone(),
             incoming_tx: self.incoming_tx.clone(),
@@ -252,8 +260,8 @@ impl TesterPlugin {
     /// Actually parse & drive one `.test` file.
     async fn run_test_file(&mut self, path: &Path) -> anyhow::Result<()> {
             println!("@@@ REMOVE 9");
-        let logger = self.logger.clone().unwrap();
-        logger.log(LogLevel::Info, "tester", &format!("⏳ loading {}", path.display()));
+       
+        self.info(&format!("⏳ loading {}", path.display()));
         let yaml: String = fs::read_to_string(path).await.expect("could not read test file");
         let tf: TestFile = serde_yaml_bw::from_str(&yaml)?;
     println!("@@@ REMOVE 10");
@@ -265,7 +273,7 @@ impl TesterPlugin {
     println!("@@@ REMOVE 11");
         let mut results = Vec::new();
         for test in tf.tests {
-            logger.log(LogLevel::Info, "tester", &format!("→ `{}` sending “{}”", test.name, test.send));
+            self.info(&format!("→ `{}` sending “{}”", test.name, test.send));
 
             let key = Uuid::new_v4().to_string();
             let sesssion_id = SessionApi::get_or_create_session_id(&self.name(), &key).await;
@@ -289,11 +297,7 @@ impl TesterPlugin {
 
             let pass = got.as_deref() == Some(&test.expect);
             results.push(format!("{}: {}", test.name, if pass {"PASS"} else {"FAIL"}));
-            logger.log(
-                LogLevel::Info,
-                "tester",
-                &format!("→ `{}` {} (got {:?})", test.name, if pass {"PASS"} else {"FAIL"}, got),
-            );
+            self.info(&format!("→ `{}` {} (got {:?})", test.name, if pass {"PASS"} else {"FAIL"}, got));
     println!("@@@ REMOVE 13");
             // Drain any extra replies before next test
             tokio::task::block_in_place(|| {
@@ -307,7 +311,7 @@ impl TesterPlugin {
         // write results
         let out = path.with_extension("test.result");
         fs::write(&out, results.join("\n")).await?;
-        logger.log(LogLevel::Info, "tester", &format!("wrote {}", out.display()));
+        self.info(&format!("wrote {}", out.display()));
         Ok(())
     }
 }
@@ -438,7 +442,7 @@ tests:
             flow: "pass".into(),
             node: "t_in".into(),
         });
-        plugin.set_logger(make_logger());
+        plugin.set_logger(make_logger(), LogLevel::Debug);
         plugin.start().await.expect("start");
 
         // 4) invoke run_test_file directly
@@ -487,7 +491,7 @@ tests:
             flow: "pass".into(),
             node: "t_in".into(),
         });
-        plugin.set_logger(make_logger());
+        plugin.set_logger(make_logger(), LogLevel::Debug);
         plugin.start().await.expect("start");
 
         plugin.clone_inner()
@@ -559,7 +563,7 @@ connections:
         config.insert("GREENTIC_DIR".to_string(),tmp.path().to_string_lossy().into());
         plugin.set_config(config);
         // give it a no‐op logger so it won't panic
-        plugin.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn });
+        plugin.set_logger(PluginLogger { ctx: std::ptr::null_mut(), log_fn: test_log_fn }, LogLevel::Debug);
         plugin.start().await?;
 
         // 6) Wait up to 1s for the .test.result file to appear
@@ -593,7 +597,7 @@ connections:
         let test_path = write_test_file(&tmp, "./greentic/flows/pass.ygtc", "unexpected").await;
 
         let mut plugin = TesterPlugin::default();
-        plugin.set_logger(make_logger());
+        plugin.set_logger(make_logger(), LogLevel::Debug);
 
         // 🔸 No route added for "unexpected"
 
@@ -622,7 +626,7 @@ connections:
         let test_path = write_test_file(&tmp, "./greentic/flows/pass.ygtc", "target").await;
 
         let mut plugin = TesterPlugin::default();
-        plugin.set_logger(make_logger());
+        plugin.set_logger(make_logger(), LogLevel::Debug);
 
         plugin.add_route(RouteBinding {
             matcher: RouteMatcher::Custom("wrong".into()),

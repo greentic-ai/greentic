@@ -177,13 +177,11 @@ impl NodeType for QAProcessNode {
             .unwrap_or(StateValue::Number(0.0));
 
         // 1) first‐time visitor?
-        if idx == StateValue::Number(0.0) {
-            // clear out any previous answers
+        if ctx.get_state("qa.current_question").is_none() {
             for q in &self.config.questions {
                 ctx.delete_state(&q.state_key);
             }
-            // prime the counter
-            ctx.set_state("qa.current_question", StateValue::Number(0.));
+            ctx.set_state("qa.current_question", StateValue::Number(1.));
         }
 
         // if we haven't asked this question yet, ask it
@@ -198,6 +196,8 @@ impl NodeType for QAProcessNode {
                 json!({ "text": prompt }),
                 session.to_string(),
             );
+            let next = (pos + 1) as f64;
+            ctx.set_state("qa.current_question", StateValue::Number(next));
             return Ok(NodeOut::reply(out));
         }
 
@@ -606,7 +606,7 @@ mod tests {
     use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EnvSecretsManager, SecretsManager}};
 
     use super::*;
-    use channel_plugin::message::Participant;
+    use channel_plugin::{message::Participant, plugin::LogLevel};
     use dashmap::DashMap;
     use serde_json::json;
     use chrono::Utc;
@@ -1020,7 +1020,6 @@ connections:
         .add_connection("qa_ask".into(), vec!["debug_node".into()])
         .build();
 
-        //println!("@@@ REMOVE {:?}",serde_yaml_bw::to_string(&expected).expect("yaml could not be printed"));
         // 2. Parse the flow
         let mut flow: Flow = serde_yaml_bw::from_str(&yaml).expect("invalid flow YAML");
         flow = flow.build();
@@ -1035,7 +1034,7 @@ connections:
         let state = InMemoryState::new();
         let config = DashMap::<String,String>::new();
         let config_manager = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new();
+        let host_logger = HostLogger::new(LogLevel::Debug);
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
         let channel_origin = ChannelOrigin::new("mock".to_string(), None, None, Participant::new("id".to_string(), None, None));
         let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), host_logger).await.expect("could not make channel manager");
