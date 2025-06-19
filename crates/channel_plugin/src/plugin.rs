@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{ffi::{c_char, c_void, CString}, sync::Arc};
 use thiserror::Error;
-use crate::{message::{ChannelCapabilities, ChannelMessage, RouteBinding, RouteMatcher}, PluginHandle};
+use crate::{message::{ChannelCapabilities, ChannelMessage, MessageContent, RouteBinding, RouteMatcher}, PluginHandle};
 use std::sync::RwLock;
 use tokio::{runtime::{Builder, Handle}, sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}};
 use chrono::DateTime;
@@ -65,6 +65,19 @@ impl RoutingSupport for DefaultRoutingSupport {
 
         None
     }
+
+    fn find_route(&self, msg: &ChannelMessage) -> Option<RouteBinding> {
+        let matcher = RouteMatcher::Custom(
+            msg.content
+                .as_ref()
+                .and_then(|c| match c {
+                    MessageContent::Text(t) => Some(t.clone()),
+                    _ => None,
+                })?
+        );
+        self.find_match(&matcher)
+    }
+
 }
 
 impl Clone for DefaultRoutingSupport {
@@ -211,6 +224,7 @@ pub trait RoutingSupport {
     fn list(&self) -> Vec<RouteBinding>;
     fn set(&self, new_routes: Vec<RouteBinding>);
     fn find_match(&self, matcher: &RouteMatcher) -> Option<RouteBinding>;
+    fn find_route(&self, msg: &ChannelMessage) -> Option<RouteBinding>;
 }
 
 
@@ -401,6 +415,7 @@ macro_rules! run_async_or_sync {
         $crate::plugin::run_with_runtime($fut)
     }};
 }
+    */
 
 /// Runs the given async block, creating a runtime if necessary
 pub async fn run_with_runtime<F, R>(fut: F) -> R
@@ -408,6 +423,7 @@ where
     F: Future<Output = R> + Send + 'static,
     R: Send + 'static,
 {
+    /* 
     match Handle::try_current() {
         Ok(_) => fut.await,
         Err(_) => {
@@ -422,7 +438,7 @@ where
             .unwrap()
         }
     }
-    /* 
+    */
     match Handle::try_current() {
         Ok(handle) => handle.block_on(fut),
         Err(_) => {
@@ -433,9 +449,9 @@ where
             rt.block_on(fut)
         }
     }
-    */
+    
 }
-*/
+
 /// Errors that a ChannelPlugin implementation can return.
 #[derive(Error, Debug, Serialize, Deserialize, JsonSchema)]
 #[repr(C)]

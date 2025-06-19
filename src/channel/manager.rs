@@ -242,7 +242,7 @@ impl PluginEventHandler for ChannelManager {
         let plugin_name = name.to_string();
 
         // Add the session callbacks so the channel can get sessions
-        wrapper.set_session_callbacks();
+        //wrapper.set_session_callbacks();
 
         // run start() under that runtime
         match wrapper_cloned.start().await {

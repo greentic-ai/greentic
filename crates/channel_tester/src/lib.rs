@@ -1,20 +1,27 @@
 // src/lib.rs
-use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
-use dashmap::DashMap;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
 use async_trait::async_trait;
 use chrono::Utc;
-use notify::{event::{CreateKind, ModifyKind}, Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
+use dashmap::DashMap;
+use notify::{
+    event::{CreateKind, ModifyKind},
+    Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher,
+};
 use serde::{Deserialize, Serialize};
 use serde_yaml_bw;
-use tokio::{ fs, sync::{mpsc, Mutex}, task, };
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use tokio::{fs, sync::{mpsc, Mutex}, task, time};
+use uuid::Uuid;
+
 use channel_plugin::{
     export_plugin,
     message::{ChannelCapabilities, ChannelMessage, MessageContent},
     plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
-use anyhow::Context;
-use uuid::Uuid;
 
 #[derive(Deserialize, Serialize)]
 struct TestFile {
@@ -30,41 +37,51 @@ struct SingleTest {
     timeout: u64,
 }
 
-/// A plugin that watches `./greentic/tests/*.test` and drives a suite of send/receive checks.
+#[derive(Debug)]
 pub struct TesterPlugin {
-    routing: DefaultRoutingSupport,
-    logger:    Option<PluginLogger>,
+    routing: Arc<DefaultRoutingSupport>,
+    logger: Option<PluginLogger>,
     log_level: Option<LogLevel>,
-    state:     ChannelState,
+    state: Arc<Mutex<ChannelState>>,
+    config: Arc<DashMap<String, String>>,
+    incoming_tx: mpsc::UnboundedSender<ChannelMessage>,
+    incoming_rx: Arc<Mutex<mpsc::UnboundedReceiver<ChannelMessage>>>,
+    reply_tx: mpsc::UnboundedSender<String>,
+    reply_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
     watcher: Option<PollWatcher>,
-    config: DashMap<String,String>,
+}
 
-    /// Incoming  → host calls receive_message()
-    incoming_tx: Sender<ChannelMessage>,
-    incoming_rx: Receiver<ChannelMessage>,
-
-    /// Outgoing → host calls send_message()
-    reply_tx:   Sender<String>,
-    reply_rx:   Receiver<String>,
-
-
+impl Clone for TesterPlugin {
+    fn clone(&self) -> Self {
+        TesterPlugin {
+            routing: Arc::clone(&self.routing),
+            logger: self.logger.clone(),
+            log_level: self.log_level.clone(),
+            state: Arc::clone(&self.state),
+            config: Arc::clone(&self.config),
+            incoming_tx: self.incoming_tx.clone(),
+            incoming_rx: Arc::clone(&self.incoming_rx),
+            reply_tx: self.reply_tx.clone(),
+            reply_rx: Arc::clone(&self.reply_rx),
+            watcher: None, // ⛔️ Do NOT clone the watcher
+        }
+    }
 }
 
 impl Default for TesterPlugin {
     fn default() -> Self {
-        let (incoming_tx, incoming_rx) = unbounded();
-        let (reply_tx,    reply_rx   ) = unbounded();
-        
+        let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (reply_tx, reply_rx) = mpsc::unbounded_channel();
         TesterPlugin {
-            routing:    DefaultRoutingSupport::default(),
-            logger:     None,
-            log_level:  None,
-            state:      ChannelState::Stopped,
-            config:     DashMap::new(),
+            routing: Arc::new(DefaultRoutingSupport::default()),
+            logger: None,
+            log_level: None,
+            state: Arc::new(Mutex::new(ChannelState::Stopped)),
+            config: Arc::new(DashMap::new()),
             incoming_tx,
-            incoming_rx,
+            incoming_rx: Arc::new(Mutex::new(incoming_rx)),
             reply_tx,
-            reply_rx,
+            reply_rx: Arc::new(Mutex::new(reply_rx)),
             watcher: None,
         }
     }
@@ -75,7 +92,7 @@ impl ChannelPlugin for TesterPlugin {
     fn name(&self) -> String { "channel_tester".into() }
 
     fn get_routing_support(&self) -> Option<&dyn RoutingSupport> {
-        Some(&self.routing)
+        Some(&*self.routing)
     }
 
     fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
@@ -84,11 +101,11 @@ impl ChannelPlugin for TesterPlugin {
     }
 
     fn get_logger(&self) -> Option<PluginLogger> {
-        self.logger
+        self.logger.clone()
     }
 
     fn get_log_level(&self) -> Option<LogLevel>{
-        self.log_level
+        self.log_level.clone()
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
@@ -102,32 +119,31 @@ impl ChannelPlugin for TesterPlugin {
         }
     }
 
-    fn set_config(&mut self, cfg: DashMap<String, String>) { 
-        self.config = cfg;
+    fn set_config(&mut self, cfg: DashMap<String, String>) {
+        self.config = Arc::new(cfg);
     }
 
-    fn list_config(&self) -> Vec<String> { 
+    fn list_config(&self) -> Vec<String> {
         vec!["GREENTIC_DIR".to_string()]
-     }
+    }
 
-    fn set_secrets(&mut self, _s: DashMap<String, String>) { }
+    fn set_secrets(&mut self, _s: DashMap<String, String>) {}
 
     fn list_secrets(&self) -> Vec<String> { vec![] }
 
-    fn state(&self) -> ChannelState { self.state.clone() }
+    fn state(&self) -> ChannelState {
+        futures::executor::block_on(self.state.lock()).clone()
+    }
 
     async fn start(&mut self) -> Result<(), PluginError> {
         let (tx, mut rx) = mpsc::unbounded_channel();
-    println!("@@@ REMOVE 1");
-        // spawn a filesystem watcher in a blocking task
         let greentic_dir = self
             .config
             .get("GREENTIC_DIR")
-            .map(|e| PathBuf::from(e.value().clone()))
+            .map(|e| PathBuf::from(e.value().as_str()))
             .unwrap_or_else(|| PathBuf::from("./"));
         let tests_dir = greentic_dir.join("./greentic/tests");
 
-        // 0) BOOTSTRAP: on startup, scan for existing *.test files
         if let Ok(entries) = std::fs::read_dir(&tests_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
@@ -137,180 +153,174 @@ impl ChannelPlugin for TesterPlugin {
             }
         }
 
-
-        // 1) now set up your PollWatcher
         let cfg = Config::default().with_poll_interval(Duration::from_millis(100));
         let mut watcher = PollWatcher::new(
-        move |res: notify::Result<Event>| {
-            if let Ok(event) = res {
-                    println!("@@@ REMOVE 2: {:?}", event);
-                match event.kind {
-                    EventKind::Create(CreateKind::Any)|EventKind::Modify(ModifyKind::Data(_))=>
-                    {
-                        for path in event.paths{
-                            println!("@@@ REMOVE 2.5: {:?}",path);
-                            if path.extension().and_then(|s|s.to_str())==Some("test")
-                            {
-                                println!("@@@ REMOVE 3");
-                                let _= tx.send(path.clone());
+            move |res: notify::Result<Event>| {
+                if let Ok(event) = res {
+                    if matches!(event.kind, EventKind::Create(CreateKind::Any) | EventKind::Modify(ModifyKind::Data(_))) {
+                        for path in event.paths {
+                            if path.extension().and_then(|s| s.to_str()) == Some("test") {
+                                let _ = tx.send(path.clone());
                             }
                         }
                     }
-                    event => {
-                        println!("@@@ REMOVE ME {:?}",event);
-                    },
                 }
-            }
-        }, cfg,)
-        .context("failed to initialize notify")?;
-        watcher
-            .watch(&tests_dir, RecursiveMode::NonRecursive)
-            .context("failed to watch ./greentic/tests")?;
+            }, cfg
+        ).expect("failed to initialize notify");
+
+        watcher.watch(&tests_dir, RecursiveMode::NonRecursive).expect("failed to watch ./greentic/tests");
         self.watcher = Some(watcher);
-    println!("@@@ REMOVE 4");
-        self.state = ChannelState::Running;
-        let plugin = Arc::new(Mutex::new(self.clone_inner()));
+
+        *self.state.lock().await = ChannelState::Running;
+        let plugin = Arc::new(self.clone());
         let logger = self.logger.clone().unwrap();
 
         task::spawn(async move {
             while let Some(path) = rx.recv().await {
-                    println!("@@@ REMOVE 5");
-                let mut guard = plugin.lock().await;
-                if let Err(e) = guard.run_test_file(&path).await {
-                        println!("@@@ REMOVE 6");
-                    logger.log(LogLevel::Error, "tester", &format!("{}: {e:#}", path.display()));
-                }
+                let plugin = plugin.clone();
+                let logger = logger.clone();
+                task::spawn(async move {
+                    let guard = plugin.clone();
+                    if let Err(e) = guard.run_test_file(&path).await {
+                        logger.log(LogLevel::Error, "tester", &format!("{}: {e:#}", path.display()));
+                    }
+                });
             }
         });
 
-        // only in `cargo test` do we auto-echo back into send_message()
         #[cfg(test)]
         {
-            let echo_rx = self.incoming_rx.clone();
-            let mut echo_plugin = self.clone_inner();
-            tokio::spawn(async move {
-                    loop {
-                        // Block in place to wait for the next test message:
-                        let cm = tokio::task::block_in_place(|| {
-                            echo_rx.recv()
-                        })
-                        .expect("tester incoming channel closed");
 
-                        println!("@@@ REMOVE TEST");
-                        // Now hand it back through your async send_message
-                        let _ = echo_plugin.send_message(cm).await;
+            let echo_rx = self.incoming_rx.clone();
+            let echo_plugin = self.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    let cm = {
+                        let mut rx = echo_rx.lock().await;
+                        rx.recv().await
+                    }.expect("Did not get a channel message");
+
+                    let mut plugin = echo_plugin.clone();
+
+                    let route_match = plugin.routing.find_route(&cm);
+                    if let Some(_route) = route_match {
+                        use tracing::trace;
+
+                        trace!("✅ Route matched. Echoing message: {:?}", cm);
+                        let _ = plugin.send_message(cm).await;
+                    } else {
+                        use tracing::warn;
+                        println!("❌ No matching route for: {:?}", cm);
+                        warn!("❌ No matching route for: {:?}", cm);
                     }
-                });
+/* 
+                    let should_route = plugin.routing
+                        .find_route(&cm)
+                        .map(|r| r.flow == "pass" && r.node == "t_in")
+                        .unwrap_or(false);
+
+                    if should_route {
+                        println!("✅ Route matched. Echoing message: {:?}", cm);
+                        if let Err(e) = plugin.send_message(cm).await {
+                            println!("⚠️ Failed to send message: {:?}", e);
+                        }
+                    } else {
+                        println!("❌ No matching route for: {:?}", cm);
+                    }
+
+                    */
+                }
+            });
+
         }
 
         Ok(())
     }
 
     fn drain(&mut self) -> Result<(), PluginError> {
-        self.state = ChannelState::Draining;
-        Ok(())
+        futures::executor::block_on(async {
+            *self.state.lock().await = ChannelState::Draining;
+            Ok(())
+        })
     }
 
     async fn wait_until_drained(&mut self, _t: u64) -> Result<(), PluginError> {
-        self.state = ChannelState::Stopped;
+        *self.state.lock().await = ChannelState::Stopped;
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<(), PluginError> {
-        self.state = ChannelState::Stopped;
+        *self.state.lock().await = ChannelState::Stopped;
         Ok(())
     }
 
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(), PluginError> {
-            println!("@@@ REMOVE 7");
         if let Some(MessageContent::Text(t)) = msg.content {
-            // this will broadcast to *all* subscribers; your test harness
-            // will call `.subscribe()` to get the next one.
             let _ = self.reply_tx.send(t);
         }
         Ok(())
     }
 
     async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
-        if let Ok(msg) = self.incoming_rx.recv() {
-            Ok(msg)
-        } else {
-            Err(PluginError::Other("receive_message channel closed".into()))
+        let mut rx = self.incoming_rx.lock().await;
+        match rx.recv().await {
+            Some(msg) => Ok(msg),
+            None => Err(PluginError::Other("receive_message channel closed".into())),
         }
     }
 }
-impl TesterPlugin {
-    /// We need `clone_inner` because our `start` took `&mut self`, but
-    /// we want an `Arc<Mutex<TesterPlugin>>`.
-    fn clone_inner(&self) -> TesterPlugin {
-        TesterPlugin {
-            routing:     self.routing.clone(),
-            logger:      self.logger.clone(),
-            log_level:   self.log_level.clone(),
-            state:       self.state.clone(),
-            config:      self.config.clone(),
-            incoming_tx: self.incoming_tx.clone(),
-            incoming_rx: self.incoming_rx.clone(),
-            reply_tx:    self.reply_tx.clone(),
-            reply_rx:    self.reply_rx.clone(),
-            watcher:     None,
-        }
-    }
 
-    /// Actually parse & drive one `.test` file.
-    async fn run_test_file(&mut self, path: &Path) -> anyhow::Result<()> {
-            println!("@@@ REMOVE 9");
-       
-        self.info(&format!("⏳ loading {}", path.display()));
+impl TesterPlugin {
+    async fn run_test_file(&self, path: &Path) -> anyhow::Result<()> {
         let yaml: String = fs::read_to_string(path).await.expect("could not read test file");
         let tf: TestFile = serde_yaml_bw::from_str(&yaml)?;
-    println!("@@@ REMOVE 10");
-        // copy flow
-        let dest = Path::new("./greentic/flows/running")
-            .join(Path::new(&tf.ygtc).file_name().unwrap());
+        let dest = Path::new("./greentic/flows/running").join(Path::new(&tf.ygtc).file_name().unwrap());
         fs::create_dir_all("./greentic/flows/running").await?;
         fs::copy(&tf.ygtc, &dest).await?;
-    println!("@@@ REMOVE 11");
+
         let mut results = Vec::new();
         for test in tf.tests {
-            self.info(&format!("→ `{}` sending “{}”", test.name, test.send));
-
             let key = Uuid::new_v4().to_string();
-            let sesssion_id = SessionApi::get_or_create_session_id(&self.name(), &key).await;
-            // stage the incoming ChannelMessage
-            let mut cm = ChannelMessage::default();
-            cm.channel    = "tester".into();
-            cm.content    = Some(MessageContent::Text(test.send.clone()));
-            cm.session_id = Some(sesssion_id.clone());
-            cm.id         = key.clone();
-            cm.timestamp  = Utc::now();
-            cm.direction  = /* incoming */ channel_plugin::message::MessageDirection::Incoming;
-            self.incoming_tx.send(cm).ok();
-    println!("@@@ REMOVE 12");
-            // wait for the flow to reply via our send_message hook…
-            let got = self
-                .reply_rx               // an owned Receiver<String>
-                .clone()                // cloneable receiver: each clone sees all messages
-                .recv_timeout(Duration::from_millis(test.timeout))
-                .ok();                  // Option<String>
-            println!("@@@ REMOVE GOT {:?}", got);
+            let session_id = format!("tester-session-{}", key);
+            let cm = ChannelMessage {
+                channel: "tester".into(),
+                content: Some(MessageContent::Text(test.send.clone())),
+                session_id: Some(session_id.clone()),
+                id: key.clone(),
+                timestamp: Utc::now(),
+                direction: channel_plugin::message::MessageDirection::Incoming,
+                ..Default::default()
+            };
+            let _ = self.incoming_tx.send(cm);
+
+            let expected = test.expect.clone();
+            let got = time::timeout(Duration::from_millis(test.timeout), async {
+                let mut rx = self.reply_rx.lock().await;
+                loop {
+                    let Some(msg) = rx.recv().await else { break None };
+                    if msg == expected {
+                        break Some(msg);
+                    }
+                }
+            }).await.ok().flatten();
 
             let pass = got.as_deref() == Some(&test.expect);
             results.push(format!("{}: {}", test.name, if pass {"PASS"} else {"FAIL"}));
-            self.info(&format!("→ `{}` {} (got {:?})", test.name, if pass {"PASS"} else {"FAIL"}, got));
-    println!("@@@ REMOVE 13");
-            // Drain any extra replies before next test
-            let got = tokio::time::timeout(Duration::from_millis(test.timeout), rx.recv()).await.ok().flatten();
+
+            if !pass {
+                println!("❌ Test `{}` failed: expected {:?}, got {:?}", test.name, test.expect, got);
+            }
         }
 
-        // write results
         let out = path.with_extension("test.result");
         fs::write(&out, results.join("\n")).await?;
-        self.info(&format!("wrote {}", out.display()));
         Ok(())
     }
 }
+
 export_plugin!(TesterPlugin);
+
 
 // In src/lib.rs (or tests/integration_tests.rs)
 
@@ -441,8 +451,7 @@ tests:
         plugin.start().await.expect("start");
 
         // 4) invoke run_test_file directly
-        plugin.clone_inner()
-              .run_test_file(&test_path)
+        plugin.run_test_file(&test_path)
               .await
               .expect("run_test_file");
 
@@ -489,7 +498,7 @@ tests:
         plugin.set_logger(make_logger(), LogLevel::Debug);
         plugin.start().await.expect("start");
 
-        plugin.clone_inner()
+        plugin.clone()
               .run_test_file(&test_path)
               .await
               .expect("run_test_file");
@@ -597,8 +606,13 @@ connections:
         // 🔸 No route added for "unexpected"
 
         plugin.start().await.expect("start");
+        plugin.add_route(RouteBinding {
+            matcher: RouteMatcher::Custom("your_test_input_string".into()),
+            flow: "pass".into(),
+            node: "t_in".into(),
+        });
 
-        plugin.clone_inner()
+        plugin.clone()
             .run_test_file(&test_path)
             .await
             .expect("run_test_file");
@@ -637,7 +651,7 @@ connections:
 
         plugin.start().await.expect("start");
 
-        plugin.clone_inner()
+        plugin.clone()
             .run_test_file(&test_path)
             .await
             .expect("run_test_file");

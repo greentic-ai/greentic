@@ -1,10 +1,10 @@
 // src/ws_plugin.rs
 
-use std::{net::SocketAddr, thread::sleep, time::Duration};
+use std::{net::SocketAddr, thread::{sleep}, time::Duration};
 use dashmap::DashMap;
 use async_trait::async_trait;
 
-use tokio::{net::{TcpListener, TcpStream}, sync::{broadcast, mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}}};
+use tokio::{net::{TcpListener, TcpStream}, sync::{broadcast, mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}}, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 use futures_util::{StreamExt, SinkExt};
 use channel_plugin::{
@@ -42,6 +42,8 @@ pub struct WsPlugin {
     state:  ChannelState,
     addr:   String,
     shutdown_tx: Option<broadcast::Sender<()>>,
+    manager_task: Option<JoinHandle<()>>,
+    ws_task: Option<JoinHandle<()>>,
 }
 
 impl Default for WsPlugin {
@@ -59,7 +61,8 @@ impl Default for WsPlugin {
             state: ChannelState::Stopped, 
             addr,
             shutdown_tx: None,
-            //listener_handle: None,
+            manager_task: None,
+            ws_task: None,
         }
     }
 }
@@ -238,8 +241,8 @@ impl ChannelPlugin for WsPlugin {
         let (shutdown_tx, _) = broadcast::channel::<()>(16);
         self.shutdown_tx = Some(shutdown_tx.clone());
         let shutdown_rx = shutdown_tx.subscribe();
-        tokio::spawn(WsPlugin::manager_loop(cmd_rx, incoming_tx.clone(), name.clone(), shutdown_rx,));
-
+        let manager = tokio::spawn(WsPlugin::manager_loop(cmd_rx, incoming_tx.clone(), name.clone(), shutdown_rx,));
+        self.manager_task = Some(manager);
         // spawn accept loop on Tokio runtime
         let addr = self.addr.clone();
 
@@ -250,7 +253,7 @@ impl ChannelPlugin for WsPlugin {
         println!("@@@ GOT HERE 4: {}",addr);
         self.state = ChannelState::Running;
         let name = self.name();
-        let result = tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             while let Ok((stream, peer)) = listener.accept().await {
                 println!("@@@ GOT HERE 5");
                 let conn_shutdown_rx = shutdown_tx.subscribe();
@@ -265,7 +268,9 @@ impl ChannelPlugin for WsPlugin {
                 );
             }
         });
-        println!("@@@ GOT HERE 4.5: {:?}",result);
+        self.ws_task = Some(task);
+
+
         Ok(())
     }
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
@@ -309,6 +314,12 @@ impl ChannelPlugin for WsPlugin {
             println!("@@@ REMOVE: {:?}",result);
         }
         sleep(Duration::from_millis(200));
+        if let Some(handle) = self.manager_task.take() {
+            handle.abort(); // or optionally: `handle.await.ok();` to wait for graceful exit
+        }
+        if let Some(handle) = self.ws_task.take() {
+            handle.abort(); // or optionally: `handle.await.ok();` to wait for graceful exit
+        }
         Ok(()) }
     fn state(&self)->ChannelState{self.state}
     fn set_secrets(&mut self,_s:DashMap<String,String>){ }
