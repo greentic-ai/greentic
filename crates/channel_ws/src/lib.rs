@@ -3,22 +3,18 @@
 use std::{net::SocketAddr, thread::sleep, time::Duration};
 use dashmap::DashMap;
 use async_trait::async_trait;
+
 use tokio::{net::{TcpListener, TcpStream}, sync::{broadcast, mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}}};
 use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 use futures_util::{StreamExt, SinkExt};
 use channel_plugin::{
     export_plugin,
-    message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant},
+    message::{build_user_joined_event, build_user_left_event, get_user_joined_left_events, ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant, TextMessage},
     plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use uuid::Uuid;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize,)]
-struct Message {
-    text: String
-}
 
 /// Commands sent to the manager task
 enum Command {
@@ -76,22 +72,38 @@ impl WsPlugin {
     /// manager task: runs single-threaded, no locks needed for map
     async fn manager_loop(
         mut cmd_rx: UnboundedReceiver<Command>,
+        msg_tx: UnboundedSender<ChannelMessage>,
+        name: String,
+        mut shutdown_rx: broadcast::Receiver<()>,
     ) {
         let map: DashMap<String, UnboundedSender<WsMsg>> = DashMap::new();
-        while let Some(cmd) = cmd_rx.recv().await {
-            match cmd {
-                Command::Register { peer, sender } => {
-                    map.insert(peer, sender);
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    println!("@@@ SHUTTING DOWN MANAGER LOOP");
+                    break;
                 }
-                Command::Unregister { peer } => {
-                    map.remove(&peer);
-                }
-                Command::SendMessage {peer, msg } => {
-                    println!("@@@ REMOVE trying to get sender");
-                    if let Some(tx) = map.get(&peer) {
-                        println!("@@@ REMOVE found sender");
-                        let result = tx.send(msg);
-                        println!("@@@ REMOVE sent: {:?}",result);
+                Some(cmd) = cmd_rx.recv() => {
+                    match cmd {
+                        Command::Register { peer, sender } => {
+                            map.insert(peer, sender);
+                        }
+                        Command::Unregister { peer } => {
+                            if let Some(session_id) = SessionApi::get_session_id(&name, &peer).await {
+                                let user_left_event = build_user_left_event(&name.clone(), &peer.clone(), Some(session_id.clone()));
+                                let _ = msg_tx.send(user_left_event);
+                                SessionApi::invalidate_session_id(&session_id).await;
+                            }
+                            map.remove(&peer);
+                        }
+                        Command::SendMessage {peer, msg } => {
+                            println!("@@@ REMOVE trying to get sender");
+                            if let Some(tx) = map.get(&peer) {
+                                println!("@@@ REMOVE found sender");
+                                let result = tx.send(msg);
+                                println!("@@@ REMOVE sent: {:?}",result);
+                            }
+                        }
                     }
                 }
             }
@@ -119,6 +131,13 @@ impl WsPlugin {
                     let (tx_out, mut rx_out) = unbounded_channel();
                     // register
                     let _ = cmd_tx.send(Command::Register { peer: peer.clone(), sender: tx_out });
+                    let session_id = match SessionApi::get_session_id(&name, &peer).await {
+                        Some(session) => session,
+                        None => SessionApi::get_or_create_session_id(&name, &peer).await,
+                    };
+                    // emit UserJoined event
+                    let user_joined_event = build_user_joined_event(&name.clone(), &peer.clone(), Some(session_id));
+                    let _ = msg_tx.send(user_joined_event);
                     loop {
                         tokio::select! {
                             _ = shutdown_rx.recv() => {
@@ -133,7 +152,7 @@ impl WsPlugin {
                                         Some(session) => session,
                                         None => SessionApi::get_or_create_session_id(&name, &peer).await,
                                     };
-                                    println!("@@@ GOT HERE 9: {:?}",session_id);
+                                    println!("@@@ GOT HERE 9: {:?} {:?}",session_id, txt);
                                     log.log(LogLevel::Info, &name, &format!("recv {}: {}", peer, txt));
                                     let cm = ChannelMessage{
                                         channel:name.clone().into(),
@@ -190,21 +209,21 @@ impl ChannelPlugin for WsPlugin {
     }
     fn set_config(&mut self, cfg: DashMap<String,String>) { 
         let address: String = cfg
-            .get("address")                          // Option<Ref<_, String, String>>
+            .get("WS_ADDRESS")                          // Option<Ref<_, String, String>>
             .map(|e| e.value().clone())              // Option<String>
             .unwrap_or_else(|| "0.0.0.0".to_string());
 
         // port as a String
         let port: String = cfg
-            .get("port")
+            .get("WS_PORT")
             .map(|e| e.value().clone())
             .unwrap_or_else(|| "8888".to_string());
         let addr = format!("{}:{}", address, port);
         self.addr = addr;
     }
-    fn list_config(&self) -> Vec<String> { vec!["address".into(),"port".into()] }
+    fn list_config(&self) -> Vec<String> { vec!["WS_ADDRESS".into(),"WS_PORT".into()] }
     fn capabilities(&self) -> ChannelCapabilities {
-        ChannelCapabilities { name:"ws".into(),supports_routing: true,supports_sending:true,supports_receiving:true,supports_text:true,..Default::default() }
+        ChannelCapabilities { name:"ws".into(),supports_routing: true,supports_sending:true,supports_receiving:true,supports_text:true,supported_events:get_user_joined_left_events(),..Default::default() }
     }
     async fn start(&mut self) -> Result<(),PluginError> {
         self.info("ws: starting");
@@ -212,35 +231,41 @@ impl ChannelPlugin for WsPlugin {
         let (cmd_tx, cmd_rx) = unbounded_channel();
         println!("@@@ GOT HERE 1");
         self.cmd_tx = Some(cmd_tx.clone());
-        tokio::spawn(WsPlugin::manager_loop(cmd_rx));
+        let name = self.name().clone();
         println!("@@@ GOT HERE 2");
-        let log =self.logger.clone().expect("Logger was not passed to channel ws");
+        let log = self.logger.clone().expect("Logger was not passed to channel ws");
         let incoming_tx = self.incoming_tx.clone();
-        // spawn accept loop on Tokio runtime
-        let addr = self.addr.clone();
         let (shutdown_tx, _) = broadcast::channel::<()>(16);
         self.shutdown_tx = Some(shutdown_tx.clone());
+        let shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(WsPlugin::manager_loop(cmd_rx, incoming_tx.clone(), name.clone(), shutdown_rx,));
+
+        // spawn accept loop on Tokio runtime
+        let addr = self.addr.clone();
 
         self.state = ChannelState::Running;
         println!("@@@ GOT HERE 3");
 
-        let listener = TcpListener::bind(addr).await.unwrap();
-        println!("@@@ GOT HERE 4");
+        let listener = TcpListener::bind(addr.clone()).await.unwrap();
+        println!("@@@ GOT HERE 4: {}",addr);
         self.state = ChannelState::Running;
-
-        while let Ok((stream, peer)) = listener.accept().await {
-            println!("@@@ GOT HERE 5");
-            let conn_shutdown_rx = shutdown_tx.subscribe();
-            WsPlugin::spawn_connection(
-                cmd_tx.clone(),
-                incoming_tx.clone(),
-                stream,
-                peer,
-                log.clone(),
-                "ws".into(),
-                conn_shutdown_rx,
-            );
-        }
+        let name = self.name();
+        let result = tokio::spawn(async move {
+            while let Ok((stream, peer)) = listener.accept().await {
+                println!("@@@ GOT HERE 5");
+                let conn_shutdown_rx = shutdown_tx.subscribe();
+                WsPlugin::spawn_connection(
+                    cmd_tx.clone(),
+                    incoming_tx.clone(),
+                    stream,
+                    peer,
+                    log.clone(),
+                    name.clone(),
+                    conn_shutdown_rx,
+                );
+            }
+        });
+        println!("@@@ GOT HERE 4.5: {:?}",result);
         Ok(())
     }
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
@@ -248,7 +273,7 @@ impl ChannelPlugin for WsPlugin {
         self.info("ws: send message");
         if let Some(txt) = msg.content.as_ref().and_then(|c| match c { MessageContent::Text(t) => Some(t.clone()), _=>None }) {
             println!("@@@ REMOVE: SENDING {:?}",txt);
-            let result = match serde_json::from_str::<Message>(&txt) 
+            let result = match serde_json::from_str::<TextMessage>(&txt) 
             {
                 Ok(json) => self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ peer: msg.from.id.clone(), msg: WsMsg::Text(json.text.into()) }),
                 Err(_) =>  self.cmd_tx.clone().expect("send called before start").send(Command::SendMessage{ peer: msg.from.id.clone(), msg: WsMsg::Text(txt.into()) }),

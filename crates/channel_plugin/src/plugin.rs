@@ -9,7 +9,7 @@ use std::{ffi::{c_char, c_void, CString}, sync::Arc};
 use thiserror::Error;
 use crate::{message::{ChannelCapabilities, ChannelMessage, RouteBinding, RouteMatcher}, PluginHandle};
 use std::sync::RwLock;
-use tokio::sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
+use tokio::{runtime::{Builder, Handle}, sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}};
 use chrono::DateTime;
 use std::time::Duration;
 use tokio::time::interval;
@@ -353,6 +353,89 @@ pub trait ChannelPlugin {//: Send + Sync {
     async fn stop(&mut self) -> Result<(),PluginError>;
 }
 
+pub fn run_blocking<F: Future<Output = R> + Send + 'static, R: Send + 'static>(fut: F) -> R {
+    match Handle::try_current() {
+        Ok(handle) => handle.block_on(fut),
+        Err(_) => {
+            let rt = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build Tokio runtime");
+            rt.block_on(fut)
+        }
+    }
+}
+/* 
+
+/// Runs an async block from sync context. Creates a Tokio runtime if needed.
+pub fn run_with_runtime<F: Future<Output = R> + Send + 'static, R: Send + 'static>(fut: F) -> R {
+    if let Ok(handle) = Handle::try_current() {
+        handle.block_on(fut)
+    } else {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(fut)
+    }
+}
+
+/// Use this inside `#[tokio::main]` or any `async fn` if you're already in an async context.
+/// It's just a passthrough for clarity/consistency.
+pub async fn run_async_flexible<F: Future<Output = R>, R>(fut: F) -> R {
+    fut.await
+}
+
+/// Same as `run_with_runtime`, but named for clarity when used in sync contexts.
+pub fn run_sync_with_runtime<F: Future<Output = R> + Send + 'static, R: Send + 'static>(fut: F) -> R {
+    run_with_runtime(fut)
+}
+
+/// Macro for running async blocks in either async or sync context.
+///
+/// - In **async** context: use like `run_async_or_sync!(async { ... }).await`
+/// - In **sync** context:  use like `run_async_or_sync!(async { ... })`
+#[macro_export]
+macro_rules! run_async_or_sync {
+    ($fut:expr) => {{
+        $crate::plugin::run_with_runtime($fut)
+    }};
+}
+
+/// Runs the given async block, creating a runtime if necessary
+pub async fn run_with_runtime<F, R>(fut: F) -> R
+where
+    F: Future<Output = R> + Send + 'static,
+    R: Send + 'static,
+{
+    match Handle::try_current() {
+        Ok(_) => fut.await,
+        Err(_) => {
+            tokio::task::spawn_blocking(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(fut)
+            })
+            .await
+            .unwrap()
+        }
+    }
+    /* 
+    match Handle::try_current() {
+        Ok(handle) => handle.block_on(fut),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(fut)
+        }
+    }
+    */
+}
+*/
 /// Errors that a ChannelPlugin implementation can return.
 #[derive(Error, Debug, Serialize, Deserialize, JsonSchema)]
 #[repr(C)]

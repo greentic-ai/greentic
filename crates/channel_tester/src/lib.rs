@@ -300,12 +300,7 @@ impl TesterPlugin {
             self.info(&format!("→ `{}` {} (got {:?})", test.name, if pass {"PASS"} else {"FAIL"}, got));
     println!("@@@ REMOVE 13");
             // Drain any extra replies before next test
-            tokio::task::block_in_place(|| {
-                let rx = self.reply_rx.clone();
-                while let Ok(_) = rx.try_recv() {
-                    // discard
-                }
-            });
+            let got = tokio::time::timeout(Duration::from_millis(test.timeout), rx.recv()).await.ok().flatten();
         }
 
         // write results

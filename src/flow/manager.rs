@@ -651,8 +651,8 @@ impl Flow {
         self
     }
 
-    pub fn add_connection(mut self, name: String, flows: Vec<String>) -> Self {
-        self.connections.insert(name, flows);
+    pub fn add_connection(mut self, name: String, nodes: Vec<String>) -> Self {
+        self.connections.insert(name, nodes);
         self
     }
 

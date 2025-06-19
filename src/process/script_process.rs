@@ -86,6 +86,79 @@ use crate::{
 /// { "output": "Session is active" }
 /// ```
 ///
+/// /// ---
+///
+/// # ⚙️ Advanced Usage: Structured Flow Control via `__greentic`
+///
+/// In addition to returning a simple value, you can return a structured object under the special `__greentic` key:
+///
+/// - `payload`: What to send in the output message
+/// - `out`: List of next node IDs to call on success
+/// - `err`: List of next node IDs to call on error
+///
+/// ## 🔄 Example 5: Structured Output with Routing
+///
+/// ```rhai
+/// return #{ 
+///     __greentic: {
+///         payload: #{ confirmed: true, name: state["name"] },
+///         out: ["next_node"]
+///     } 
+/// };
+/// ```
+///
+/// Output:
+/// ```json
+/// { "confirmed": true, "name": "Alice" }
+/// ```
+///
+/// Routing: → `next_node`
+///
+/// ---
+///
+/// ## ⚠️ Example 6: Structured Error Routing
+///
+/// ```rhai
+/// if payload["age"] < 18 {
+///     return #{ 
+///         __greentic: {
+///             payload: #{ error: "User must be over 18" },
+///             err: ["error_node"]
+///         }
+///     };
+/// }
+/// ```
+///
+/// This will **trigger a failure** and route to `error_node`.
+///
+/// ---
+///
+/// ## 🔁 Example 7: Fallback Without `__greentic`
+///
+/// If you return a basic value:
+///
+/// ```rhai
+/// "Hi there!"
+/// ```
+///
+/// It will be wrapped like this:
+/// ```json
+/// { "output": "Hi there!" }
+/// ```
+///
+/// ---
+///
+/// ## 🧠 State Writes Even on Error
+///
+/// Even when the script fails, updates to `state` will be committed:
+///
+/// ```rhai
+/// state["attempts"] = 3;
+/// throw("something broke");
+/// ```
+///
+/// `"attempts"` will be stored in state even though the node returns an error.
+///
 /// ---
 ///
 /// # 📚 Notes:

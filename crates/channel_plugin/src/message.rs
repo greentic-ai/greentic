@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+use uuid::Uuid;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -196,4 +197,98 @@ impl HttpRouteContext {
 
         v
     }
+}
+
+pub const USER_JOINED: &str = "UserJoined";
+pub const USER_LEFT: &str = "UserLeft";
+
+
+pub fn build_user_joined_event(channel: &str, user_id: &str, session_id: Option<String>) -> ChannelMessage {
+    ChannelMessage {
+        id: Uuid::new_v4().to_string(),
+        timestamp: Utc::now(),
+        channel: channel.into(),
+        node: None,
+        flow: None,
+        session_id: session_id.clone(),
+        direction: MessageDirection::Incoming,
+        from: Participant {
+            id: user_id.into(),
+            display_name: None,
+            channel_specific_id: None,
+        },
+        to: vec![],
+        thread_id: None,
+        reply_to_id: None,
+        content: Some(MessageContent::Event(Event{
+            event_type: USER_JOINED.to_string(),
+            event_payload: Some(json!({ "user_id": user_id })),
+        })),
+        metadata: DashMap::new(),
+    }
+}
+
+pub fn build_user_left_event(channel: &str, user_id: &str, session_id: Option<String>) -> ChannelMessage {
+    ChannelMessage {
+        id: Uuid::new_v4().to_string(),
+        timestamp: Utc::now(),
+        channel: channel.into(),
+        node: None,
+        flow: None,
+        session_id: session_id.clone(),
+        direction: MessageDirection::Incoming,
+        from: Participant {
+            id: user_id.into(),
+            display_name: None,
+            channel_specific_id: None,
+        },
+        to: vec![],
+        thread_id: None,
+        reply_to_id: None,
+        content: Some(MessageContent::Event(Event{
+            event_type: USER_LEFT.to_string(),
+            event_payload: Some(json!({ "user_id": user_id })),
+        })),
+        metadata: DashMap::new(),
+    }
+}
+
+pub fn get_user_joined_left_events() -> Vec<EventType> {
+    vec![
+        EventType {
+            event_type: USER_JOINED.to_string(),
+            description: "Event sent when a user connects".to_string(),
+            payload_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "user_id": {
+                        "type": "string",
+                        "format": "channel specific unique user_id",
+                        "description": "A channel specific and potentially only session unique user_id"
+                    }
+                },
+                "required": ["user_id"]
+            })),
+        },
+        EventType {
+            event_type: USER_LEFT.to_string(),
+            description: "Event sent when a user disconnects".to_string(),
+            payload_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "user_id": {
+                        "type": "string",
+                        "format": "channel specific unique user_id",
+                        "description": "A channel specific and potentially only session unique user_id"
+                    }
+                },
+                "required": ["user_id"]
+            })),
+        },
+    ]
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize,)]
+pub struct TextMessage {
+    pub text: String
 }

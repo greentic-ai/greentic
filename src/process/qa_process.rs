@@ -177,11 +177,13 @@ impl NodeType for QAProcessNode {
             .unwrap_or(StateValue::Number(0.0));
 
         // 1) first‐time visitor?
+        let mut first_time = false;
         if ctx.get_state("qa.current_question").is_none() {
             for q in &self.config.questions {
                 ctx.delete_state(&q.state_key);
             }
             ctx.set_state("qa.current_question", StateValue::Number(1.));
+            first_time = true;
         }
 
         // if we haven't asked this question yet, ask it
@@ -189,11 +191,16 @@ impl NodeType for QAProcessNode {
         if pos < self.config.questions.len() {
             // prompt
             
-            let qcfg = &self.config.questions.get(pos).unwrap();
+            let qcfg = self.config.questions.get(pos).unwrap();
+            let welcome = render_handlebars(&self.config.welcome_template, &ctx.get_all_state());
             let prompt = render_handlebars(&qcfg.prompt, &ctx.get_all_state());
+            let msg_text = match first_time {
+                true => format!("{}\n{}",welcome,prompt),
+                false => prompt,
+            };
             let out = Message::new(
                 &msg.id(),
-                json!({ "text": prompt }),
+                json!({ "text": msg_text }),
                 session.to_string(),
             );
             let next = (pos + 1) as f64;

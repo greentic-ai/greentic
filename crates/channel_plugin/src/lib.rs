@@ -1,5 +1,6 @@
 pub mod plugin;
 pub mod message;
+pub mod fakse_session;
 use std::ffi::c_void;
 pub type PluginHandle = *mut c_void;
 

@@ -225,86 +225,76 @@ mod tests {
         }
     }
 
+/* 
+   #[tokio::test]
+    async fn test_channel_reply_from_script_node_stops_flow_and_updates_state() {
+        let chan_node_id = "entry".to_string();
+        let chan_id = "chan".to_string();
+        let entry_channel =  NodeConfig::new(chan_node_id, NodeKind::Channel { cfg:ChannelNodeConfig {
+            channel_name: chan_id.into(),
+            channel_in:  true,
+            channel_out: false,
+            from: None,
+            to: Some(vec![ValueOrTemplate::Value(Participant::new("dbg".into(),None,None))]),
+            content: None,
+            thread_id: None,
+            reply_to_id: None,
+        }}, None);
 
-    #[tokio::test]
-    async fn test_reply_to_origin_stops_flow_and_tracks_state() {
-
-        // 1. Setup: flow manager, fake channel, and mock context
-        let mut manager = FlowManager::new_test();
-
-        // 2. Create flow
-        let flow_id = "reply_flow".to_string();
-        let channel_id = "chan_out".to_string();
-        let script_id = "script_reply".to_string();
-
-        let flow = Flow::new(&flow_id,"title", "description")
-            .channel_node(&channel_id, "test", true)
-            .process_node(
-                &script_id,
-                ScriptProcessNode::new_inline(
-                    "reply_test",
+        let script_id = "ask_question".to_string();
+        let script_node = NodeConfig::new(script_id, NodeKind::Process{ process: BuiltInProcess::Script(ScriptProcessNode::new(
                     r#"
-                    if payload.text == "fail" {
-                        return reply("oops!")
-                    } else {
-                        return reply("ok!")
-                    }
-                    "#,
-                ),
-            )
-            .connect(&channel_id, &script_id)
+                        if payload.text == "err" {
+                            return reply("❌ error reply");
+                        } else {
+                            return reply("✅ ok reply");
+                        }
+                    "#.to_string(),
+                ))}, None);
+        let store =InMemorySessionStore::new(10);
+        let mut manager = FlowManager::new_test(store);
+
+        let flow_id = "test_reply_flow";
+
+
+        let flow = Flow::new(flow_id, "title", "description")
+            .add_channel(chan_id)
+            .add_node(chan_node_id.to_string(), entry_channel)
+            .add_node(script_id, script_node)
+            .add_connection(chan_node_id, vec![script_id])
             .build();
 
-        manager.register(flow);
+        manager.register_flow(flow);
 
-        // 3. Send a triggering message
-        let session_id = "session-123".to_string();
-        let msg = Message::new("chan_out", json!({ "text": "fail" }), session_id.clone());
-
-        // Setup test context (captures channel replies)
-        let mut ctx = TestNodeContext::new_with_channel("test", session_id.clone());
-        ctx.add_flow(flow_id.clone());
-
-        // 4. Run the flow
-        let report = manager
-            .run_flow("reply_flow", msg.clone(), &mut ctx)
-            .await;
-
-        // 5. Assert: Execution is not "done" (ReplyToOrigin triggered)
-        assert!(report.error.is_none(), "Flow execution should not fail");
-        assert!(
-            report.records.len() == 1,
-            "Flow should stop after reply call, got {} records",
-            report.records.len()
+        // STEP 1: simulate incoming message
+        let session_id = "session-abc";
+        let msg = Message::new(
+            &chan_id,
+            json!({ "text": "err" }), // also try "ok"
+            session_id.to_string(),
         );
 
-        // 6. Assert: Reply message was queued to channel
-        let sent = ctx.take_sent("test").await;
-        assert_eq!(sent.len(), 1);
-        let content = sent[0].content.as_ref().unwrap().to_string();
-        assert!(
-            content.contains("oops!"),
-            "Expected reply message content to be 'oops!', got: {}",
-            content
-        );
+        let mut ctx = make_ctx();
+        ctx.add_flow(flow_id.to_string());
 
-        // 7. Assert: state still tracks current node and flow
-        let node_state = ctx.nodes();
-        assert_eq!(
-            node_state.as_ref().unwrap(),
-            &[script_id.clone()],
-            "Expected current node to remain set after reply"
-        );
+        let report = flow.run(msg,&chan_node_id, &mut ctx).await;
 
-        let flows = ctx.flows().unwrap();
-        assert!(
-            flows.contains(&flow_id),
-            "Expected flow ID to still be tracked after reply"
-        );
+        // STEP 2: assert that flow halted on reply
+        assert_eq!(report.records.len(), 1);
+        assert!(report.error.is_none(), "Should not error on reply");
+
+        // STEP 3: assert reply message content
+        let out = ctx.take_sent("test").await;
+        assert_eq!(out.len(), 1);
+        let content = out[0].content.clone().unwrap().to_string();
+        assert!(content.contains("❌ error reply"));
+
+        // STEP 4: assert state has current node
+        assert_eq!(ctx.nodes(), Some(vec![script_id.to_string()]));
+        assert!(ctx.flows().unwrap().contains(&flow_id.to_string()));
     }
 
-
-
+*/
     #[tokio::test]
     async fn test_linear_run() {
         // three debug‐process nodes

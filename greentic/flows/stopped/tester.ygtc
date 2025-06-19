@@ -1,0 +1,55 @@
+id: testing_flow
+title: test different aspects
+description: >
+  This flow tests different aspects
+channels:
+  - ws
+nodes:
+  ws_in:
+    channel: ws
+    in: true
+  ask_location_and_days:
+    qa:
+      # No separate welcome—first question is our “greeting + ask location”
+      welcome_template: "Hi there, I am the weather bot. Let's get your weather forecast."
+      questions:
+        - id: q_location
+          prompt: "👉 What location would you like a forecast for?"
+          answer_type: text
+          state_key: q
+        - id: q_days
+          prompt: "👉 Over how many days? (enter a number)"
+          answer_type: number
+          state_key: days
+          validate:
+            range:
+              min: 0.0
+              max: 7.0
+      fallback_agent:
+        type: ollama
+        model: llama3.2:1b
+        # task: you can repeat the same instruction you used before
+        task: |
+          The user responded in free text.  Extract exactly two fields from
+          their reply: `"q"` (string location) and `"days"` (integer number of days).
+          Return **exactly** a JSON object like:
+          {
+            "q": "<location text>",
+            "days": <integer>
+          }
+      routing:
+        - to: debug_process
+  debug_process:
+    debug:
+        print: false
+  ws_out:
+    channel: ws
+    out: true
+connections:
+  ws_in:
+    - ask_location_and_days
+  ask_location_and_days:
+    - debug_process
+  debug_process:
+    - ws_out
+    
