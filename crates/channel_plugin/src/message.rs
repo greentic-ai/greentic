@@ -64,6 +64,7 @@ impl Participant {
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum MessageContent {
     Text(String),
     File(FileMetadata),
@@ -83,6 +84,7 @@ pub struct MediaMetadata {
     pub file: FileMetadata,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Image,
     Video,
@@ -288,7 +290,8 @@ pub fn get_user_joined_left_events() -> Vec<EventType> {
     ]
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize,)]
+#[derive(Clone, Debug, Serialize, Deserialize,JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub struct TextMessage {
     pub text: String
 }

@@ -14,7 +14,7 @@ prelude::*, types::{InputFile, MediaKind, Message as TelegramMessage}, utils::co
 use channel_plugin::{
     export_plugin,
     message::{
-        build_user_joined_event, ChannelCapabilities, ChannelMessage, Event, EventType, FileMetadata, MediaMetadata, MediaType, MessageContent, MessageDirection, MessagingRouteContext, Participant, TextMessage
+        build_user_joined_event, get_user_joined_left_events, ChannelCapabilities, ChannelMessage, Event, EventType, FileMetadata, MediaMetadata, MediaType, MessageContent, MessageDirection, MessagingRouteContext, Participant, TextMessage
     },
     plugin::{run_with_runtime, ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
@@ -357,6 +357,54 @@ impl ChannelPlugin for TelegramPlugin {
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
+        let mut events = get_user_joined_left_events();
+        events.push(
+            EventType {
+                event_type:     "ContactShared".into(),
+                description:    "User shared a contact".into(),
+                payload_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "name":         { "type": "string" },
+                        "phone_number": { "type": "string" }
+                    },
+                    "required": ["name", "phone_number"]
+                })),
+            });
+        events.push(
+            EventType {
+                event_type:     "LocationShared".into(),
+                description:    "User shared a location".into(),
+                payload_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "latitude":  { "type": "number" },
+                        "longitude": { "type": "number" }
+                    },
+                    "required": ["latitude", "longitude"]
+                })),
+            });
+        events.push(
+            EventType {
+                event_type:     "VenueShared".into(),
+                description:    "User shared a venue".into(),
+                payload_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "title":   { "type": "string" },
+                        "address": { "type": "string" },
+                        "location": {
+                            "type": "object",
+                            "properties": {
+                                "lat": { "type": "number" },
+                                "lon": { "type": "number" }
+                            },
+                            "required": ["lat", "lon"]
+                        }
+                    },
+                    "required": ["title", "address", "location"]
+                })),
+            });
         ChannelCapabilities {
             name:                    "telegram".into(),
             supports_sending:        true,
@@ -373,52 +421,7 @@ impl ChannelPlugin for TelegramPlugin {
             supports_buttons:        false,
             supports_links:          true,
             supports_custom_payloads:false,    
-            supported_events: vec![
-                EventType {
-                    event_type:     "ContactShared".into(),
-                    description:    "User shared a contact".into(),
-                    payload_schema: Some(json!({
-                        "type": "object",
-                        "properties": {
-                            "name":         { "type": "string" },
-                            "phone_number": { "type": "string" }
-                        },
-                        "required": ["name", "phone_number"]
-                    })),
-                },
-                EventType {
-                    event_type:     "LocationShared".into(),
-                    description:    "User shared a location".into(),
-                    payload_schema: Some(json!({
-                        "type": "object",
-                        "properties": {
-                            "latitude":  { "type": "number" },
-                            "longitude": { "type": "number" }
-                        },
-                        "required": ["latitude", "longitude"]
-                    })),
-                },
-                EventType {
-                    event_type:     "VenueShared".into(),
-                    description:    "User shared a venue".into(),
-                    payload_schema: Some(json!({
-                        "type": "object",
-                        "properties": {
-                            "title":   { "type": "string" },
-                            "address": { "type": "string" },
-                            "location": {
-                                "type": "object",
-                                "properties": {
-                                    "lat": { "type": "number" },
-                                    "lon": { "type": "number" }
-                                },
-                                "required": ["lat", "lon"]
-                            }
-                        },
-                        "required": ["title", "address", "location"]
-                    })),
-                },
-            ],
+            supported_events:        events,
         }
     }
 
@@ -636,6 +639,7 @@ async fn handle_start_command(
 
     let cm = build_user_joined_event("telegram", &user_id, Some(session_id));
     if let Err(e) = tx.send(cm) {
+        println!("@@@ REMOVE error: {:?}",e);
         log.log(LogLevel::Error, "telegram", &format!("queue send error: {}", e));
     }
 

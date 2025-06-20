@@ -27,6 +27,34 @@ pub enum Routing {
     EndFlow
 }
 
+impl Routing {
+    pub fn to_node(&self) -> Option<&str> {
+        match self {
+            Routing::ToNode(node) => Some(node),
+            _ => None,
+        }
+    }
+
+    pub fn to_nodes(&self) -> Option<&[String]> {
+        match self {
+            Routing::ToNodes(nodes) => Some(nodes),
+            _ => None,
+        }
+    }
+
+    pub fn is_follow_graph(&self) -> bool {
+        matches!(self, Routing::FollowGraph)
+    }
+
+    pub fn is_end_flow(&self) -> bool {
+        matches!(self, Routing::EndFlow)
+    }
+
+    pub fn is_reply_to_origin(&self) -> bool {
+        matches!(self, Routing::ReplyToOrigin)
+    }
+}
+
 /// NodeOut enables to send the messages coming out of the Node
 /// to either:
 /// * all connections (FollowGraph)

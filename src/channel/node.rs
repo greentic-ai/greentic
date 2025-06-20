@@ -48,7 +48,7 @@ pub enum FlowRouterConfig {
 
 pub async fn handle_message(flow_name: &str, node_id: &str, msg: &ChannelMessage, fm: &Arc<FlowManager>){
     let session_id = msg.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let input = Message::new(&msg.id,  serde_json::to_value(msg).unwrap(),session_id,);
+    let input = Message::new(&msg.id,  serde_json::to_value(msg.content.clone()).unwrap(),session_id,);
     let channel_origin = ChannelOrigin::new(
         msg.channel.clone(),
         msg.reply_to_id.clone(),

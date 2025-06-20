@@ -1,7 +1,9 @@
 use std::{collections::HashMap, fmt};
 
 use async_trait::async_trait;
+use channel_plugin::message::TextMessage;
 use chrono::{DateTime, Utc};
+use chrono_english::parse_date_string;
 use handlebars::Handlebars;
 use regex::Regex;
 use schemars::{schema::RootSchema, schema_for, JsonSchema};
@@ -13,83 +15,138 @@ use serde::{
 };
 
 use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
-/// QAProcessNode
+/// A QA process allows asking users a series of questions and storing their answers.
+/// It supports different types of questions like text, number, choice, date, and LLM (AI-powered).
+/// Each answer type can define validation rules (like number range or regex), and some types can specify constraints (like `max_words`).
+/// If an answer is missing or doesn’t match the expectations, the fallback mechanism can route the input to an LLM to interpret or correct it.
+/// Based on the collected answers, different follow-up paths (routing) can be taken.
 ///
-/// A “stateful” question‐and‐answer node that guides a user through a series of prompts,
-/// validates and stores their answers in flow‐state, and finally routes the completed
-/// responses along one of several connections based on configurable rules.
+/// ### Example: Ask a user's name and age
+/// ```yaml
+/// welcome_template: "Hi! Let's get started."
+/// questions:
+///   - id: "name"
+///     prompt: "What's your name?"
+///     answer_type: text
+///     state_key: "user_name"
 ///
-/// ## Configuration (`QAProcessConfig`)
+///   - id: "age"
+///     prompt: "How old are you?"
+///     answer_type: number
+///     state_key: "user_age"
+///     validate:
+///       range:
+///         min: 0
+///         max: 120
 ///
-/// - `welcome_template: String`  
-///   A Handlebars template sent only once at the very start of a session.  
-///   You can reference any existing `{{state.foo}}` keys here.
+/// routing:
+///   - condition:
+///       less_than:
+///         question_id: "age"
+///         threshold: 18
+///     to: "minor_flow"
+///   - to: "adult_flow"
+/// ```
 ///
-/// - `questions: Vec<QuestionConfig>`  
-///   The ordered list of questions to ask.  Each question has:
-///   ```
-///   QuestionConfig {
-///       id:          String,               // unique identifier for routing
-///       prompt:      String,               // what to send as “text”
-///       answer_type: AnswerType,           // how to parse user reply
-///       state_key:   String,               // where to store in flow‐state
-///       validate:    Option<ValidationRule>, // optional regex or numeric range
-///   }
-///   ```
-///   Available `AnswerType`s:
-///   ```text
-///   Text               → free‐form string (optional regex validation)
-///   Number             → parse as f64  (optional Range { min, max })
-///   Date               → ISO8601 / RFC3339 dates
-///   Choice { options } → user must pick one of the provided strings
-///   ```
-///   Optional `ValidationRule`s:
-///   ```text
-///   Regex(String)             // e.g. Regex("^\\d{4}-\\d{2}-\\d{2}$")
-///   Range { min: f64, max: f64 } // numeric bounds
-///   ```
+/// ### Answer types:
 ///
-/// - `fallback_agent: Option<BuiltInAgent>`  
-///   If the raw reply doesn’t parse or validate, you can hand it off to an LLM agent
-///   for interpretation (e.g. spell‐check, free‐text name parsing).  
+/// **Text:** Free-form input like a name, place, or sentence.
+/// ```yaml
+/// answer_type: text
+/// ```
+/// Optional constraints:
+/// ```yaml
+/// answer_type:
+///   text:
+///     max_words: 3       # If longer, LLM fallback is used
+///     regex: "^[A-Za-z]+$"  # If fails, LLM fallback is used
+/// ```
+/// **Fallback for text:** `max_words` or `regex` don't reject the answer outright. Instead, if they don't match, the fallback LLM can attempt to extract or clean the correct response.
 ///
-/// - `routing: Vec<RoutingRule>`  
-///   After all questions are answered, pick the next connection based on a `Condition`.
-///   Each `RoutingRule` is:
-///   ```
-///   RoutingRule {
-///     condition: Condition,    // one of Always, Equals, GreaterThan, LessThan, Custom
-///     to:        String,       // node ID or channel name to send the final payload to
-///   }
-///   ```
-///   ```markdown
-///   Conditions (all inside a top-level `condition:` key; omit or set to `null` for “always”):
+/// **Number:** Numerical input like age, count, or temperature.
+/// ```yaml
+/// answer_type: number
+/// ```
+/// Optional validation:
+/// ```yaml
+/// validate:
+///   range:
+///     min: 0
+///     max: 100
+/// ```
+/// **Fallback for number:** If not a valid number, or out of the `range`, fallback LLM is triggered to correct or interpret it.
+///
+/// **Choice:** User must select from a predefined list.
+/// ```yaml
+/// answer_type:
+///   choice:
+///     options: ["Yes", "No", "Maybe"]
+///     max_words: 1
+/// ```
+/// - Matching is case-insensitive.
+/// - If the answer doesn’t match any option or exceeds `max_words`, fallback LLM is used.
+///
+/// **Date:** Natural date input like "next Friday" or "1st June".
+/// ```yaml
+/// answer_type:
+///   date:
+///     dialect: uk  # or "us" for MM/DD/YYYY format
+///     max_words: 5
+/// ```
+/// - If parsing fails or `max_words` is exceeded, fallback LLM is used to extract a valid date.
+///
+/// **LLM:** Always sends the answer directly to the LLM.
+/// Useful for open-ended questions or when user intent needs interpretation.
+/// ```yaml
+/// answer_type: llm
+/// ```
+/// Example with LLM task:
+/// ```yaml
+/// prompt: "What do you want to achieve this week?"
+/// answer_type: llm
+/// state_key: "user_goal"
+/// fallback_agent:
+///   task: "Extract the user's main goal from their message."
+/// ```
+/// The `task` should be written in natural language to instruct the LLM clearly.
+///
+/// ### Fallback mechanism
+/// For **text**, **number**, **choice**, and **date**, the fallback is triggered *only* when validation or constraints fail (like regex mismatch, out-of-range number, unmatched choice, etc.).
 /// 
-///   ```yaml
-///   # exact equality
-///   condition:
-///     equals:
-///       question_id: "age"
-///       value: 21
-///   
-///   # numeric greater-than
-///   condition:
-///     greater_than:
-///       question_id: "score"
-///       threshold: 50.0
-///   
-///   # numeric less-than
-///   condition:
-///     less_than:
-///       question_id: "score"
-///       threshold: 20.0
-///   
-///   # arbitrary Handlebars boolean expr
-///   condition:
-///     custom:
-///       expr: "state.score >= 75 && state.passed == true"
-///   
-///   # omit entirely (or explicitly `condition: null`) → always matches
+/// The fallback agent does **not** reject the answer. Instead, it attempts to:
+/// - Clean or extract the intended meaning
+/// - Reformat the user’s response to match expected format
+/// - Or prompt the user to clarify
+///
+/// Example fallback:
+/// ```yaml
+/// fallback_agent:
+///   task: "Please rephrase the user's answer so it matches the expected format."
+/// ```
+///
+/// For **LLM** type questions, the answer *always* goes to the fallback agent (LLM), regardless of constraints.
+///
+/// ### Routing:
+/// Use previous answers to decide what comes next.
+/// ```yaml
+/// routing:
+///   - condition:
+///       less_than:
+///         question_id: "age"
+///         threshold: 18
+///     to: "minor_flow"
+///
+///   - to: "adult_flow"
+/// ```
+///
+/// This makes it easy to guide users through different paths based on their responses.
+///
+/// ### Summary:
+/// - `answer_type` defines the kind of expected input.
+/// - Constraints like `max_words` or `regex` don’t reject answers—they trigger the fallback LLM to help.
+/// - `validate` rules apply additional checks (especially for numbers).
+/// - Fallback agents enhance robustness by letting the LLM assist when user input is unclear.
+/// - Routing makes flows dynamic and context-aware.
 ///
 /// ## Example YAML Usage
 ///
@@ -102,36 +159,36 @@ use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Mess
 ///       questions:
 ///         - id:       "name"
 ///           prompt:   "👉 What is your full name?"
-///           answer_type: Text
+///           answer_type: text
 ///           state_key: "user_name"
 ///
 ///         - id:       "age"
 ///           prompt:   "👉 How old are you?"
-///           answer_type: Number
+///           answer_type: number
 ///           state_key: "user_age"
 ///           validate:
-///             Range:
+///             range:
 ///               min: 0
 ///               max: 120
 ///
 ///         - id:       "birthdate"
 ///           prompt:   "👉 When is your birthday? (YYYY-MM-DD)"
-///           answer_type: Date
+///           answer_type: date
 ///           state_key: "user_birthdate"
 ///           validate:
-///             Regex: "^\\d{4}-\\d{2}-\\d{2}$"
+///             regex: "^\\d{4}-\\d{2}-\\d{2}$"
 ///
 ///         - id:       "color"
 ///           prompt:   "👉 Pick a color: red, green or blue."
 ///           answer_type:
-///             Choice:
+///             choice:
 ///               options: ["red","green","blue"]
 ///           state_key: "favorite_color"
 ///
 ///       # if they are under 18, send to "underage" flow; else to "main_process"
 ///       routing:
 ///         - condition:
-///             Less_than:
+///             less_than:
 ///               question_id: "age"
 ///               threshold: 18
 ///           to: "underage"
@@ -169,16 +226,18 @@ impl NodeType for QAProcessNode {
     async fn process(&self, msg: Message, ctx: &mut NodeContext)
       -> Result<NodeOut, NodeErr>
     {
+        println!("@@@ REMOVE msg: {:?}",msg);
         let session = msg.session_id();
 
          // read (or default) our little counter
-        let idx = ctx
+        let idx_val = ctx
             .get_state("qa.current_question")
             .unwrap_or(StateValue::Number(0.0));
+        let idx = idx_val.as_number().unwrap() as usize;
 
         // 1) first‐time visitor?
         let mut first_time = false;
-        if ctx.get_state("qa.current_question").is_none() {
+        if ctx.get_state("qa.current_question").is_none() || idx > self.config.questions.len() {
             for q in &self.config.questions {
                 ctx.delete_state(&q.state_key);
             }
@@ -186,12 +245,77 @@ impl NodeType for QAProcessNode {
             first_time = true;
         }
 
-        // if we haven't asked this question yet, ask it
-        let pos = idx.as_number().unwrap() as usize;
-        if pos < self.config.questions.len() {
+
+        // 🧠 If this is *not* the first message, we should handle the answer from last_q
+        if !first_time && idx > 0 && idx <= self.config.questions.len() {
+            let last_q = &self.config.questions[idx - 1];
+            let payload_val = msg.payload();
+            println!("@@@ REMOVE paylod: {:?}",payload_val);
+            let text = extract_raw_text(&payload_val);
+            match parse_and_validate(&text, &last_q.answer_type, last_q.validate.clone()) {
+                Ok(parsed_json) => {
+                    let state_val = StateValue::try_from(parsed_json.clone())
+                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(
+                            format!("Failed to convert answer to StateValue: {:?}", e)
+                        )))?;
+                    ctx.set_state(&last_q.state_key, state_val);
+                }
+                Err(e) if e == "fallback_trigger" => {
+                    if let Some(agent) = &self.config.fallback_agent {
+                        // Prepare new message for the fallback agent
+                        let input_msg = Message::new(
+                            &msg.id(),
+                            msg.payload().clone(), // or wrap it in `{ "input": ... }` if needed
+                            msg.session_id(),
+                        );
+                        // Call the agent node
+                        let output = agent.process(input_msg, ctx).await.map_err(|e| 
+                            NodeErr::fail(NodeError::ExecutionFailed(format!("Fallback agent error: {:?}", e)))
+                        )?;
+
+                        // Extract payload from NodeOut (expecting single reply)
+                        let interpreted = output.message().payload();
+
+                        // Convert and store
+                        let state_val = StateValue::try_from(interpreted.clone()).map_err(|e| 
+                            NodeErr::fail(NodeError::ExecutionFailed(
+                                format!("Fallback value conversion failed: {:?}", e)
+                            ))
+                        )?;
+                        ctx.set_state(&last_q.state_key, state_val);
+                        ctx.set_state("qa.current_question", StateValue::Number((idx + 1) as f64));
+
+                    } else {
+                        let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
+                        let out = Message::new(
+                            &msg.id(),
+                            json!({ "text": format!("I couldn’t understand. Please try again.\n{}", prompt) }),
+                            session.to_string(),
+                        );
+                        return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
+                    }
+                }
+                Err(err) => {
+                    // re‐ask the same question
+                    let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
+                    let out = Message::new(
+                        &msg.id(),
+                        json!({ "text": format!("I didn’t understand: {}\n{}", err, prompt) }),
+                        session.to_string(),
+                    );
+                    return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
+                }
+                
+            }
+        }
+
+
+        // 🔁 Ask next question (if any)
+        
+        if idx < self.config.questions.len() {
             // prompt
             
-            let qcfg = self.config.questions.get(pos).unwrap();
+            let qcfg = self.config.questions.get(idx).unwrap();
             let welcome = render_handlebars(&self.config.welcome_template, &ctx.get_all_state());
             let prompt = render_handlebars(&qcfg.prompt, &ctx.get_all_state());
             let msg_text = match first_time {
@@ -203,63 +327,12 @@ impl NodeType for QAProcessNode {
                 json!({ "text": msg_text }),
                 session.to_string(),
             );
-            let next = (pos + 1) as f64;
+            let next = (idx + 1) as f64;
             ctx.set_state("qa.current_question", StateValue::Number(next));
+
             return Ok(NodeOut::reply(out));
         }
 
-        // now we have asked all questions, but haven't yet stored the last answer
-        // so idx == questions.len()
-        // (in practice, you'd store after receiving payload and then bump the counter,
-        //  but you can also interleave: ask → receive → store → ask → …)
-
-        // 2) Validate & store answer to question idx-1
-        let last_q = &self.config.questions[pos - 1];
-        let payload_val = msg.payload();
-        let raw = payload_val.as_str().unwrap_or("");
-        match parse_and_validate(raw, &last_q.answer_type, last_q.validate.clone()) {
-            Err(err) => {
-                // re‐ask the same question
-                let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
-                let out = Message::new(
-                    &msg.id(),
-                    json!({ "text": format!("I didn’t understand: {}\n{}", err, prompt) }),
-                    session.to_string(),
-                );
-                return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
-            }
-            Ok(parsed_json) => {
-                // first, convert the JSON value into your StateValue enum
-                let state_val = StateValue::try_from(parsed_json.clone())
-                    .map_err(|e| 
-                        NodeErr::fail(NodeError::ExecutionFailed(
-                        format!("Failed to convert answer to StateValue: {:?}", e)))
-                    )?;
-                
-                // store it under the user‐specified state_key
-                ctx.set_state(&last_q.state_key, state_val);
-
-                // bump counter to idx+1
-                let q = idx.as_number().unwrap()+1.0;
-                ctx.set_state(
-                    "qa.current_question",
-                    StateValue::Number(q),
-                );
-            }
-        }
-
-        // 3) Are there more questions?
-        let num: usize = idx.as_number().unwrap() as usize;
-        if num < self.config.questions.len() {
-            let next_q = &self.config.questions.get(num).unwrap();
-            let prompt = render_handlebars(&next_q.prompt, &ctx.get_all_state());
-            let out = Message::new(
-                &msg.id(),
-                json!({ "text": prompt }),
-                session.to_string(),
-            );
-            return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
-        }
 
         // 4) All done! run routing rules against ctx.state
         let answers = ctx.get_all_state();
@@ -278,10 +351,15 @@ impl NodeType for QAProcessNode {
                     payload,
                     msg.session_id(),
                 );
+                // reset
+                ctx.delete_state("qa.current_question");
+
                 return Ok(NodeOut::with_routing(out_msg, Routing::ToNode(rule.to.clone())));
             }
         }
 
+        // reset
+        ctx.delete_state("qa.current_question");
         Err(NodeErr::fail(NodeError::ExecutionFailed(
             "no routing rule matched".into())))
     }
@@ -291,6 +369,28 @@ impl NodeType for QAProcessNode {
     }
 }
 
+
+fn extract_raw_text(value: &serde_json::Value) -> String {
+    // 1. Try to parse as TextMessage
+    if let Ok(text_msg) = serde_json::from_value::<TextMessage>(value.clone()) {
+        return text_msg.text;
+    }
+
+    // 2. Check value["text"]
+    if let Some(text_val) = value.get("text").and_then(|v| v.as_str()) {
+        return text_val.to_string();
+    }
+
+    // 3. Check value["content"]["Text"]
+    if let Some(text_val) = value.get("content")
+                                 .and_then(|c| c.get("Text"))
+                                 .and_then(|v| v.as_str()) {
+        return text_val.to_string();
+    }
+
+    // 4. Fallback: stringify the full value
+    value.to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, )]
 struct SessionState {
@@ -332,6 +432,7 @@ pub struct QuestionConfig {
     pub prompt: String,
 
     /// How to parse the user’s reply.
+    #[serde(flatten)]
     pub answer_type: AnswerType,
 
     /// Where in `NodeContext.state` to store the parsed value.
@@ -343,12 +444,45 @@ pub struct QuestionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all="snake_case")]
+#[serde(tag = "answer_type", rename_all = "lowercase")]
 pub enum AnswerType {
-    Text,
-    Number,
-    Date,                     // ISO8601
-    Choice { options: Vec<String> },
+    Text {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_words: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        regex: Option<String>,
+    },
+    Number {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_words: Option<usize>,
+    },
+    Date {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_words: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dialect: Option<Dialect> 
+    },
+    Choice {
+        options: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_words: Option<usize>,
+    },
+    #[serde(rename = "llm")]
+    Llm,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub enum Dialect {
+    Uk,
+    Us,
+}
+impl Dialect {
+    pub fn to_chrono(&self) -> chrono_english::Dialect {
+        match self {
+            Dialect::Uk => chrono_english::Dialect::Uk,
+            Dialect::Us => chrono_english::Dialect::Us,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -435,20 +569,32 @@ pub fn parse_and_validate(
     answer_type: &AnswerType,
     validate: Option<ValidationRule>,
 ) -> Result<JsonValue, String> {
+    let word_count = raw.split_whitespace().count();
     match answer_type {
-        AnswerType::Text => {
-            // first apply regex if present
-            if let Some(ValidationRule::Regex(re)) = validate {
-                let regex = Regex::new(&re)
+        AnswerType::Text { max_words, regex } => {
+            // Too many words will trigger the LLM
+            if let Some(limit) = max_words {
+                if word_count > *limit {
+                    return Err("fallback_trigger".to_string());
+                }
+            }
+            // If the answer does not match the regex, fallback to LLM
+            if let Some(re) = regex {
+                let regex = Regex::new(re)
                     .map_err(|e| format!("internal regex error: {}", e))?;
                 if !regex.is_match(raw) {
-                    return Err(format!("must match /{}/", re));
+                    return Err("fallback_trigger".into());
                 }
             }
             Ok(JsonValue::String(raw.to_owned()))
         }
 
-        AnswerType::Number => {
+        AnswerType::Number { max_words } => {
+            if let Some(limit) = max_words {
+                if word_count > *limit {
+                    return Err("fallback_trigger".into());
+                }
+            }
             let v: f64 = raw.trim().parse().map_err(|_| "please enter a number".to_string())?;
             // range check if given
             if let Some(ValidationRule::Range { range: RangeParams{min, max }}) = validate {
@@ -460,15 +606,32 @@ pub fn parse_and_validate(
             Ok(json!(v))
         }
 
-        AnswerType::Date => {
-            // expect ISO8601 / RFC3339
-            let dt: DateTime<Utc> = DateTime::parse_from_rfc3339(raw)
-                .map_err(|_| "please use YYYY-MM-DD or full ISO8601 timestamp".to_string())?
-                .with_timezone(&Utc);
+        AnswerType::Date { max_words, dialect } => {
+            if let Some(limit) = max_words {
+                if word_count > *limit {
+                    return Err("fallback_trigger".into());
+                }
+            }
+            let chrono_dialect = dialect
+                .as_ref()
+                .map(|d| d.to_chrono())
+                .unwrap_or(chrono_english::Dialect::Uk);
+
+            let dt: DateTime<Utc> = parse_date_string(raw, Utc::now(), chrono_dialect)
+                .map_err(|_| {
+                    "sorry, I couldn’t understand the date. Try something like 'tomorrow', 'Monday at 9am', or 'June 17'".to_string()
+                })?;
             Ok(JsonValue::String(dt.to_rfc3339()))
         }
 
-        AnswerType::Choice { options } => {
+        AnswerType::Llm => Err("fallback_trigger".into()),
+
+        AnswerType::Choice { options, max_words } => {
+            if let Some(limit) = max_words {
+                if word_count > *limit {
+                    return Err("fallback_trigger".into());
+                }
+            }
             // find a case‐insensitive match
             let norm = raw.trim();
             // exact match first
@@ -482,13 +645,11 @@ pub fn parse_and_validate(
             {
                 return Ok(JsonValue::String(found.clone()));
             }
-            // not found
-            Err(format!(
-                "please choose one of: {}",
-                options.join(", ")
-            ))
-        }
-    }
+             // ❌ If no match, return user-friendly error instead of fallback_trigger
+            let choices = options.join(", ");
+            Err(format!("please choose one of: {}", choices))
+                }
+            }
 }
 
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
@@ -610,7 +771,7 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EnvSecretsManager, SecretsManager}};
+    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
 
     use super::*;
     use channel_plugin::{message::Participant, plugin::LogLevel};
@@ -621,72 +782,263 @@ mod tests {
     use serde_yaml_bw::Value as YamlValue;
 
     #[test]
-    fn parse_and_validate_text_no_regex() {
-        let v = parse_and_validate("hello", &AnswerType::Text, None).unwrap();
-        assert_eq!(v, JsonValue::String("hello".into()));
+    fn parse_and_validate_llm() {
+        let at = AnswerType::Llm;
+
+        let result = parse_and_validate("anything at all", &at, None);
+        assert_eq!(result.unwrap_err(), "fallback_trigger".to_string());
+
+        let result = parse_and_validate("", &at, None);
+        assert_eq!(result.unwrap_err(), "fallback_trigger".to_string());
+    }
+
+    #[tokio::test]
+    async fn qa_node_captures_answers_and_routes_correctly() {
+        let config = QAProcessConfig {
+            welcome_template: "Hi!".into(),
+            questions: vec![
+                QuestionConfig {
+                    id: "q1".into(),
+                    prompt: "What's your name?".into(),
+                    answer_type: AnswerType::Text {max_words: None, regex: None},
+                    state_key: "name".into(),
+                    validate: None,
+                },
+                QuestionConfig {
+                    id: "q2".into(),
+                    prompt: "How old are you?".into(),
+                    answer_type: AnswerType::Number{max_words: None,},
+                    state_key: "age".into(),
+                    validate: Some(ValidationRule::Range { range: RangeParams { min: 0.0, max: 130.0 }}),
+                },
+            ],
+            fallback_agent: None,
+            routing: vec![
+                RoutingRule {
+                    condition: Some(Condition::LessThan { question_id: "age".into(), threshold: 18.0 }),
+                    to: "underage_node".into(),
+                },
+                RoutingRule {
+                    condition: None,
+                    to: "default_node".into(),
+                },
+            ],
+        };
+
+        let qa_node = QAProcessNode { config };
+        let state = InMemoryState::new();
+        let ctx_config = DashMap::new();
+        let secrets = SecretsManager(EmptySecretsManager::new());
+        let logger = Logger(Box::new(OpenTelemetryLogger::new()));
+        let executor = Executor::new(secrets.clone(), logger.clone());
+        let config_manager = ConfigManager(MapConfigManager::new());
+        let store = InMemorySessionStore::new(10);
+        let host_logger = HostLogger::new(LogLevel::Debug);
+        let channel_origin = ChannelOrigin::new("test_channel".into(), None, None, Participant::new("user".into(), None, None));
+        let process_manager = ProcessManager::new(Path::new("./plugins/processes")).unwrap();
+        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), host_logger).await.unwrap();
+
+        let mut ctx = NodeContext::new(
+            "sess1".into(),
+            state,
+            ctx_config,
+            executor,
+            channel_manager,
+            Arc::new(process_manager),
+            secrets,
+            Some(channel_origin),
+        );
+
+        // First interaction — welcome + q1
+        let incoming1 = Message::new_uuid("test", json!({}));
+        let result1 = qa_node.process(incoming1.clone(), &mut ctx).await.unwrap();
+        let msg1 = result1.message();
+        assert!(msg1.payload()["text"].as_str().unwrap().contains("What's your name?"));
+
+        // Answer to q1
+        let incoming2 = Message::new_uuid("test", json!("Alice"));
+        let result2 = qa_node.process(incoming2.clone(), &mut ctx).await.unwrap();
+        let msg2 = result2.message();
+        assert!(msg2.payload()["text"].as_str().unwrap().contains("How old are you?"));
+
+        // Answer to q2
+        let incoming3 = Message::new_uuid("test", json!("25"));
+        let result3 = qa_node.process(incoming3.clone(), &mut ctx).await.unwrap();
+        let route3 = result3.routing();
+        assert_eq!(route3.to_node().unwrap(), "default_node");
+
+        // Check state
+        let all_vec = ctx.get_all_state();
+        let all: HashMap<_, _> = all_vec.into_iter().collect();
+
+        assert_eq!(all.get("name").and_then(|v| v.as_str()), Some("Alice"));
+        assert_eq!(all.get("age").and_then(|v| v.as_number()), Some(25.0));
     }
 
     #[test]
-    fn parse_and_validate_text_with_regex() {
-        // only digits
-        let vr = parse_and_validate("12345",
-            &AnswerType::Text,
-            Some(ValidationRule::Regex(r"^\d+$".into()))
-        ).unwrap();
+    fn parse_and_validate_text_no_regex() {
+        let answer_type = AnswerType::Text {
+            regex: None,
+            max_words: None,
+        };
+        // Valid non-empty string
+        let val = "hello";
+        let v = parse_and_validate(val, &answer_type, None).unwrap();
+        assert_eq!(v, JsonValue::String(val.into()));
+
+        // Valid empty string (if allowed)
+        let empty = parse_and_validate("", &answer_type, None).unwrap();
+        assert_eq!(empty, JsonValue::String("".into()));
+
+        // Invalid if regex provided (should still be covered in separate test)
+    }
+
+    #[test]
+    fn parse_and_validate_text_with_regex_and_max_words() {
+        // ✅ regex: only digits
+        let answer_type = AnswerType::Text {
+            regex: Some(r"^\d+$".into()),
+            max_words: None,
+        };
+
+        let vr = parse_and_validate("12345", &answer_type, None).unwrap();
         assert_eq!(vr, JsonValue::String("12345".into()));
 
-        // fail non-digit
-        let err = parse_and_validate("abc",
-            &AnswerType::Text,
-            Some(ValidationRule::Regex(r"^\d+$".into()))
-        ).unwrap_err();
-        assert!(err.contains("must match"));
+        // ❌ regex fail: non-digit
+        let err = parse_and_validate("abc", &answer_type, None).unwrap_err();
+        assert_eq!(err, "fallback_trigger");
+
+        // ✅ max_words OK
+        let answer_type_max = AnswerType::Text {
+            regex: None,
+            max_words: Some(3),
+        };
+        let short = parse_and_validate("one two three", &answer_type_max, None).unwrap();
+        assert_eq!(short, JsonValue::String("one two three".into()));
+
+        // ❌ max_words exceeded
+        let err = parse_and_validate("one two three four", &answer_type_max, None).unwrap_err();
+        assert_eq!(err, "fallback_trigger");
+
+        // ✅ regex + max_words combined
+        let both = AnswerType::Text {
+            regex: Some(r"^\w+( \w+)*$".into()), // allow words separated by single spaces
+            max_words: Some(2),
+        };
+        let ok = parse_and_validate("hello world", &both, None).unwrap();
+        assert_eq!(ok, JsonValue::String("hello world".into()));
+
+        // ❌ regex + max_words: fails both
+        let err = parse_and_validate("hello 123 !@#", &both, None).unwrap_err();
+        assert_eq!(err, "fallback_trigger");
     }
+
 
     #[test]
     fn parse_and_validate_number_and_range() {
-        // simple
-        let v = parse_and_validate("3.14", &AnswerType::Number, None).unwrap();
+        // ✅ Basic valid number
+        let number_type = AnswerType::Number {max_words: None,};
+        let v = parse_and_validate("3.14", &number_type, None).unwrap();
         assert_eq!(v, json!(3.14));
 
-        // invalid
-        assert!(parse_and_validate("foo", &AnswerType::Number, None).is_err());
+        // ❌ Invalid number input
+        let err = parse_and_validate("foo", &number_type, None).unwrap_err();
+        assert_eq!(err, "please enter a number");
 
-        // with range
-        let rule = ValidationRule::Range {range:RangeParams { min: 0.0, max: 10.0 } };
-        assert_eq!(parse_and_validate("5", &AnswerType::Number, Some(rule.clone())).unwrap(), json!(5.0));
-        assert!(parse_and_validate("-1", &AnswerType::Number, Some(rule)).is_err());
+        // ✅ Number within range
+        let number_type = AnswerType::Number {max_words: None,};
+        let rule = ValidationRule::Range {
+            range: RangeParams { min: 0.0, max: 10.0 },
+        };
+        let v = parse_and_validate("5", &number_type, Some(rule.clone())).unwrap();
+        assert_eq!(v, json!(5.0));
+
+        // ❌ Number below range
+        let err = parse_and_validate("-1", &number_type, Some(rule.clone())).unwrap_err();
+        assert_eq!(err, "must be between 0 and 10");
+
+        // ❌ Number above range
+        let err = parse_and_validate("42", &number_type, Some(rule)).unwrap_err();
+        assert_eq!(err, "must be between 0 and 10");
+
+        // ❌ Too many words should trigger fallback
+        let number_type_limited = AnswerType::Number { max_words: Some(1) };
+        let err = parse_and_validate("123 456", &number_type_limited, None).unwrap_err();
+        assert_eq!(err, "fallback_trigger");
     }
+
 
     #[test]
     fn parse_and_validate_date() {
-        // valid ISO8601
+        // ✅ Valid ISO8601 date-time string
         let dt = Utc::now().to_rfc3339();
-        let v = parse_and_validate(&dt, &AnswerType::Date, None).unwrap();
-        // It round-trips as a string
+        let date_type = AnswerType::Date {max_words: None, dialect: Some(Dialect::Uk)};
+        let v = parse_and_validate(&dt, &date_type, None).unwrap();
         assert_eq!(v, JsonValue::String(dt));
-        // invalid
-        assert!(parse_and_validate("not a date", &AnswerType::Date, None).is_err());
+
+        // ✅ Natural language date (e.g. "tomorrow")
+        let v2 = parse_and_validate("tomorrow", &date_type, None).unwrap();
+        assert!(
+            v2.as_str().unwrap().contains('T'),
+            "Expected a valid RFC3339 date string from natural language"
+        );
+
+        // ❌ Invalid date format
+        let invalid_input = "not a date";
+        let err = parse_and_validate(invalid_input, &date_type, None).unwrap_err();
+        assert_eq!(
+            err,
+            "sorry, I couldn’t understand the date. Try something like 'tomorrow', 'Monday at 9am', or 'June 17'".to_string(),
+        );
+
+        // ❌ Incorrect but realistic-looking input
+        let badly_formatted = "12-25-2025";
+        let err = parse_and_validate(badly_formatted, &date_type, None).unwrap_err();
+        assert_eq!(
+            err,
+            "sorry, I couldn’t understand the date. Try something like 'tomorrow', 'Monday at 9am', or 'June 17'".to_string(),
+        );
     }
+
 
     #[test]
     fn parse_and_validate_choice() {
         let opts = vec!["Yes".into(), "No".into()];
-        let at = AnswerType::Choice { options: opts.clone() };
-        // exact
+        let at = AnswerType::Choice { max_words:Some(1), options: opts.clone() };
+
+        // ✅ Exact match
         assert_eq!(
             parse_and_validate("Yes", &at, None).unwrap(),
             JsonValue::String("Yes".into())
         );
-        // case-insensitive
+
+        // ✅ Case-insensitive match
         assert_eq!(
             parse_and_validate("no", &at, None).unwrap(),
             JsonValue::String("No".into())
         );
-        // fail
+
+        // ❌ Invalid option
         let err = parse_and_validate("Maybe", &at, None).unwrap_err();
-        assert!(err.contains("please choose one of"));
+        assert!(
+            err.contains("please choose one of"),
+            "Unexpected error: {}",
+            err
+        );
+
+        // ❌ Empty string input
+        let err = parse_and_validate("", &at, None).unwrap_err();
+        assert!(
+            err.contains("please choose one of"),
+            "Unexpected error: {}",
+            err
+        );
+
+        // ❌ Too many words
+        let err = parse_and_validate("yes definitely", &at, None).unwrap_err();
+        assert_eq!(err, "fallback_trigger");
     }
+
 
     #[test]
     fn condition_matches_basic() {
@@ -765,21 +1117,26 @@ routing:
 
     #[test]
     fn qa_process_config_manual_vs_yaml_value() {
-        // 1) Manually construct exactly the same struct
+        // 1) Manually construct exactly the same config
         let cfg_manual = QAProcessConfig {
             welcome_template: "Welcome!".into(),
             questions: vec![
                 QuestionConfig {
                     id: "age".into(),
                     prompt: "👉 How old are you?".into(),
-                    answer_type: AnswerType::Number,
+                    answer_type: AnswerType::Number {max_words: None},
                     state_key: "user_age".into(),
-                    validate: Some(ValidationRule::Range {range: RangeParams{ min: 0.0, max: 120.0 }}),
+                    validate: Some(ValidationRule::Range {
+                        range: RangeParams { min: 0.0, max: 120.0 },
+                    }),
                 },
                 QuestionConfig {
                     id: "name".into(),
                     prompt: "👉 What is your name?".into(),
-                    answer_type: AnswerType::Text,
+                    answer_type: AnswerType::Text {
+                        max_words: None,
+                        regex: None,
+                    },
                     state_key: "user_name".into(),
                     validate: None,
                 },
@@ -800,30 +1157,31 @@ routing:
             ],
         };
 
-        // 2) Serialize your manual struct → YamlValue
-        let val_manual: YamlValue =
-            serde_yaml_bw::to_value(&cfg_manual).expect("to_value");
+        // 2) Serialize manual struct → YamlValue
+        let val_manual: YamlValue = serde_yaml_bw::to_value(&cfg_manual).expect("manual to_value failed");
 
-        // 3) Parse the literal YAML → YamlValue
-        let val_literal: YamlValue =
-            serde_yaml_bw::from_str(QA_YAML).expect("from_str");
+        // 3) Parse literal YAML → YamlValue
+        let val_literal: YamlValue = serde_yaml_bw::from_str(QA_YAML).expect("literal from_str failed");
 
-        // 4) Compare and, if they differ, print them out in full
+        // 4) Show full diff if mismatch
         if val_manual != val_literal {
-            eprintln!("--- MANUAL YamlValue:\n{:#?}", val_manual);
-            eprintln!("--- LITERAL YamlValue:\n{:#?}", val_literal);
+            eprintln!("❌ YAML values differ:");
+            eprintln!("--- Manual YamlValue:\n{:#?}", val_manual);
+            eprintln!("--- Literal YamlValue:\n{:#?}", val_literal);
         }
+
         assert_eq!(val_manual, val_literal);
     }
 
-#[derive(serde::Deserialize)]
-struct QaWrapper {
-    qa: QAProcessConfig,
-}
 
-    #[test]
+    #[derive(serde::Deserialize)]
+    struct QaWrapper {
+        qa: QAProcessConfig,
+    }
+
+   #[test]
     fn qa_process_config_manual_vs_yaml() {  
-        let yaml = r#"
+    let yaml = r#"
 qa:
   welcome_template: "Welcome!"
   questions:
@@ -850,64 +1208,68 @@ qa:
 
     - to: "adult_flow"
 "#;
-        // build the same config by hand
-       let manual = 
-        BuiltInProcess::Qa(
-            QAProcessNode {
-                config: QAProcessConfig {
-                    welcome_template: "Welcome!".into(),
-                    questions: vec![
-                        QuestionConfig {
-                            id: "age".into(),
-                            prompt: "👉 How old are you?".into(),
-                            answer_type: AnswerType::Number,
-                            state_key: "user_age".into(),
-                            validate: Some(ValidationRule::Range {
-                                range: RangeParams { min: 0.0, max: 120.0 },
-                            }),
-                        },
-                        QuestionConfig {
-                            id: "name".into(),
-                            prompt: "👉 What is your name?".into(),
-                            answer_type: AnswerType::Text,
-                            state_key: "user_name".into(),
-                            validate: None,
-                        },
-                    ],
-                    fallback_agent: None,
-                    routing: vec![
-                        RoutingRule {
-                            condition: Some(Condition::LessThan {
-                                question_id: "age".into(),
-                                threshold: 18.0,
-                            }),
-                            to: "minor_flow".into(),
-                        },
-                        RoutingRule {
-                            condition: None,
-                            to: "adult_flow".into(),
-                        },
-                    ],
-                },
-            }
-        );
 
-        // parse YAML
-        let w: QaWrapper =
-            serde_yaml_bw::from_str(yaml).expect("valid QA yaml");
-        let from_yaml = BuiltInProcess::Qa(QAProcessNode { config: w.qa });
+        let manual = BuiltInProcess::Qa(QAProcessNode {
+            config: QAProcessConfig {
+                welcome_template: "Welcome!".into(),
+                questions: vec![
+                    QuestionConfig {
+                        id: "age".into(),
+                        prompt: "👉 How old are you?".into(),
+                        answer_type: AnswerType::Number {max_words:None},
+                        state_key: "user_age".into(),
+                        validate: Some(ValidationRule::Range {
+                            range: RangeParams { min: 0.0, max: 120.0 },
+                        }),
+                    },
+                    QuestionConfig {
+                        id: "name".into(),
+                        prompt: "👉 What is your name?".into(),
+                        answer_type: AnswerType::Text {
+                            max_words: None,
+                            regex: None,
+                        },
+                        state_key: "user_name".into(),
+                        validate: None,
+                    },
+                ],
+                fallback_agent: None,
+                routing: vec![
+                    RoutingRule {
+                        condition: Some(Condition::LessThan {
+                            question_id: "age".into(),
+                            threshold: 18.0,
+                        }),
+                        to: "minor_flow".into(),
+                    },
+                    RoutingRule {
+                        condition: None,
+                        to: "adult_flow".into(),
+                    },
+                ],
+            },
+        });
+
+        // Deserialize YAML into QA config
+        let wrapper: QaWrapper = serde_yaml_bw::from_str(yaml).expect("invalid QA yaml");
+        let from_yaml = BuiltInProcess::Qa(QAProcessNode { config: wrapper.qa });
+
+        if manual != from_yaml {
+            eprintln!("❌ Mismatch between manual and parsed QA config");
+            eprintln!("--- Manual:\n{:#?}", manual);
+            eprintln!("--- Parsed:\n{:#?}", from_yaml);
+        }
 
         assert_eq!(manual, from_yaml);
     }
 
 
-    #[tokio::test]
+   #[tokio::test]
     async fn test_qa_via_mock_yaml() {
-
-        let yaml = r#"
-id: "test-qa-mock"
-title: "Test QA"
-description: "Test QA via Mock"
+    let yaml = r#"
+id: test-qa-mock
+title: Test QA
+description: Test QA via Mock
 channels:
   - mock_inout
 nodes:
@@ -947,10 +1309,11 @@ connections:
     - qa_ask
   qa_ask:
     - debug_node
-        "#;
+"#;
 
+       
 
-    let expected = Flow::new(
+        let expected = Flow::new(
             "test-qa-mock".to_string(),
             "Test QA".to_string(),
             "Test QA via Mock".to_string(),
@@ -987,14 +1350,14 @@ connections:
                                 QuestionConfig {
                                     id: "q_location".into(),
                                     prompt: "👉 What location would you like a forecast for?".into(),
-                                    answer_type: AnswerType::Text,
+                                    answer_type: AnswerType::Text { max_words: None, regex: None },
                                     state_key: "q".into(),
                                     validate: None,
                                 },
                                 QuestionConfig {
                                     id: "q_days".into(),
                                     prompt: "👉 Over how many days? (enter a number)".into(),
-                                    answer_type: AnswerType::Number,
+                                    answer_type: AnswerType::Number {max_words: None},
                                     state_key: "days".into(),
                                     validate: Some(ValidationRule::Range {
                                         range: RangeParams {
@@ -1004,8 +1367,9 @@ connections:
                                     }),
                                 },
                             ],
-                            fallback_agent: Some(BuiltInAgent::Ollama(
-                                OllamaAgent::new(None, "task".into(), None, None, None, None, None, None))),
+                            fallback_agent: Some(BuiltInAgent::Ollama(OllamaAgent::new(
+                                None, "task".into(), None, None, None, None, None, None,
+                            ))),
                             routing: vec![],
                         },
                     }),
@@ -1017,44 +1381,63 @@ connections:
             "debug_node".to_string(),
             NodeConfig::new(
                 "debug_node",
-                NodeKind::Process{
-                    process: BuiltInProcess::Debug(DebugProcessNode { print:true })
+                NodeKind::Process {
+                    process: BuiltInProcess::Debug(DebugProcessNode { print: true }),
                 },
                 None,
             ),
         )
-        .add_connection("mock_in".into(), vec!["qa_ask".into()])
-        .add_connection("qa_ask".into(), vec!["debug_node".into()])
+        .add_connection("mock_in".to_string(), vec!["qa_ask".to_string()])
+        .add_connection("qa_ask".to_string(), vec!["debug_node".to_string()])
         .build();
+        //println!("{}",serde_yaml_bw::to_string(&expected).expect("could not generate yaml"));
 
-        // 2. Parse the flow
-        let mut flow: Flow = serde_yaml_bw::from_str(&yaml).expect("invalid flow YAML");
-        flow = flow.build();
+        let parsed_flow: Flow = serde_yaml_bw::from_str(yaml).expect("invalid flow YAML");
+        let built_flow = parsed_flow.clone().build();
+        assert_eq!(built_flow, expected);
 
-        assert_eq!(flow, expected);
-
-        // 3. Set up runtime context
-        let store =InMemorySessionStore::new(10);
+        // Setup runtime context
+        let store = InMemorySessionStore::new(10);
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let secrets = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let executor = Executor::new(secrets.clone(), logger.clone());
         let state = InMemoryState::new();
-        let config = DashMap::<String,String>::new();
+        let config = DashMap::<String, String>::new();
         let config_manager = ConfigManager(MapConfigManager::new());
         let host_logger = HostLogger::new(LogLevel::Debug);
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
-        let channel_origin = ChannelOrigin::new("mock".to_string(), None, None, Participant::new("id".to_string(), None, None));
-        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), host_logger).await.expect("could not make channel manager");
-        let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf()).expect("could not load ./greentic/plugins/channels/stopped/libchannel_mock_send.dylib");
-        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin), store.clone()),None,None);
-        channel_manager.register_channel("mock_inout".to_string(), mock).await.expect("could not load mock channel");
-        let mut ctx = NodeContext::new("123".to_string(),state, config, executor, channel_manager, Arc::new(process_manager), secrets, Some(channel_origin));
+        let channel_origin = ChannelOrigin::new(
+            "mock".to_string(),
+            None,
+            None,
+            Participant::new("id".to_string(), None, None),
+        );
+        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), host_logger)
+            .await
+            .expect("could not make channel manager");
 
-        let payload = json!({"q": "London".to_string(), "days": 5});
+        let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf())
+            .expect("could not load plugin");
+        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin), store.clone()), None, None);
+        channel_manager
+            .register_channel("mock_inout".to_string(), mock)
+            .await
+            .expect("could not register channel");
+
+        let mut ctx = NodeContext::new(
+            "123".to_string(),
+            state,
+            config,
+            executor,
+            channel_manager,
+            Arc::new(process_manager),
+            secrets,
+            Some(channel_origin),
+        );
+
+        let payload = json!({"q": "London", "days": 5});
         let incoming = Message::new_uuid("test", payload);
-
-        // 5. Run the flow starting at telegram_in
-        let report = flow.run(incoming.clone(), "mock_in", &mut ctx).await;
+        let report = built_flow.run(incoming, "mock_in", &mut ctx).await;
 
         assert_eq!(report.records.len(), 2);
         assert_eq!(report.records[0].node_id, "mock_in");
@@ -1063,5 +1446,6 @@ connections:
         assert!(report.error.is_some());
         assert!(format!("{:?}", report.error).contains("channel `mock` not loaded"));
     }
+
 }
 
