@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(msg.to.len(), 1);
         let rcpt = &msg.to[0];
         assert_eq!(rcpt.id, "p1");
-        assert_eq!(msg.content.unwrap(), MessageContent::Text("fixed".into()));
+        assert_eq!(msg.content.unwrap(), vec![MessageContent::Text("fixed".into())]);
     }
 
 

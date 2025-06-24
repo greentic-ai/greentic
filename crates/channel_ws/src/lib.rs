@@ -10,7 +10,7 @@ use futures_util::{StreamExt, SinkExt};
 use channel_plugin::{
     export_plugin,
     message::{build_user_joined_event, build_user_left_event, get_user_joined_left_events, ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant, TextMessage},
-    plugin::{ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
+    plugin::{run_with_runtime, ChannelPlugin, ChannelState, DefaultRoutingSupport, LogLevel, PluginError, PluginLogger, RoutingSupport},
 };
 use uuid::Uuid;
 use chrono::Utc;
@@ -43,7 +43,6 @@ pub struct WsPlugin {
     addr:   String,
     shutdown_tx: Option<broadcast::Sender<()>>,
     manager_task: Option<JoinHandle<()>>,
-    ws_task: Option<JoinHandle<()>>,
 }
 
 impl Default for WsPlugin {
@@ -62,7 +61,6 @@ impl Default for WsPlugin {
             addr,
             shutdown_tx: None,
             manager_task: None,
-            ws_task: None,
         }
     }
 }
@@ -164,7 +162,7 @@ impl WsPlugin {
                                         session_id: Some(session_id.clone()),
                                         direction:MessageDirection::Incoming,
                                         from:Participant{id:peer.clone(),display_name:None,channel_specific_id:None},
-                                        content:Some(MessageContent::Text(txt.to_string())),
+                                        content:Some(vec![MessageContent::Text(txt.to_string())]),
                                         id:Uuid::new_v4().to_string(),
                                         timestamp:Utc::now(),
                                         to:Vec::new(),thread_id:None,reply_to_id:None,metadata:DashMap::new(),
@@ -253,7 +251,7 @@ impl ChannelPlugin for WsPlugin {
         println!("@@@ GOT HERE 4: {}",addr);
         self.state = ChannelState::Running;
         let name = self.name();
-        let task = tokio::spawn(async move {
+        run_with_runtime(async move {
             while let Ok((stream, peer)) = listener.accept().await {
                 println!("@@@ GOT HERE 5");
                 let conn_shutdown_rx = shutdown_tx.subscribe();
@@ -267,8 +265,7 @@ impl ChannelPlugin for WsPlugin {
                     conn_shutdown_rx,
                 );
             }
-        });
-        self.ws_task = Some(task);
+        }).await;
 
 
         Ok(())
@@ -276,7 +273,15 @@ impl ChannelPlugin for WsPlugin {
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(),PluginError> {
         println!("@@@ REMOVE: SEND MESSAGE {:?}",msg);
         self.info("ws: send message");
-        if let Some(txt) = msg.content.as_ref().and_then(|c| match c { MessageContent::Text(t) => Some(t.clone()), _=>None }) {
+        if let Some(txt) = msg.content.as_ref()
+            .and_then(|vec| vec.iter().find_map(|c| {
+                if let MessageContent::Text(t) = c {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            }))
+        {
             println!("@@@ REMOVE: SENDING {:?}",txt);
             let result = match serde_json::from_str::<TextMessage>(&txt) 
             {
@@ -317,9 +322,7 @@ impl ChannelPlugin for WsPlugin {
         if let Some(handle) = self.manager_task.take() {
             handle.abort(); // or optionally: `handle.await.ok();` to wait for graceful exit
         }
-        if let Some(handle) = self.ws_task.take() {
-            handle.abort(); // or optionally: `handle.await.ok();` to wait for graceful exit
-        }
+
         Ok(()) }
     fn state(&self)->ChannelState{self.state}
     fn set_secrets(&mut self,_s:DashMap<String,String>){ }
@@ -387,7 +390,7 @@ mod tests {
             session_id: Some("test-session".into()),
             direction:  MessageDirection::Incoming,
             from:       Participant { id: "user1".into(), display_name: None, channel_specific_id: None },
-            content:    Some(MessageContent::Text("hello".into())),
+            content:    Some(vec![MessageContent::Text("hello".into())]),
             id:         "msg1".into(),
             timestamp:  Utc::now(),
             to:         vec![],
@@ -463,7 +466,7 @@ mod tests {
         let cm = plugin.receive_message().await.expect("receive_message");
         assert_eq!(
             cm.content,
-            Some(MessageContent::Text("ping".into()))
+            Some(vec![MessageContent::Text("ping".into())])
         );
         // 7) Now send from plugin -> client
         plugin.send_message(cm.clone())

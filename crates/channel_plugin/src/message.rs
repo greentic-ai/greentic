@@ -39,7 +39,7 @@ pub struct ChannelMessage {
     pub from: Participant,               // Sender info
     pub to: Vec<Participant>,            // Recipient(s)
 
-    pub content: Option<MessageContent>, // Text or attachment
+    pub content: Option<Vec<MessageContent>>, // Text or attachment
     pub thread_id: Option<String>,       // For threading support
     pub reply_to_id: Option<String>,     // If replying to another message
     #[schemars(with = "HashMap<String, String>")]  // same for secrets
@@ -222,10 +222,10 @@ pub fn build_user_joined_event(channel: &str, user_id: &str, session_id: Option<
         to: vec![],
         thread_id: None,
         reply_to_id: None,
-        content: Some(MessageContent::Event(Event{
+        content: Some(vec![MessageContent::Event(Event{
             event_type: USER_JOINED.to_string(),
             event_payload: Some(json!({ "user_id": user_id })),
-        })),
+        })]),
         metadata: DashMap::new(),
     }
 }
@@ -247,10 +247,10 @@ pub fn build_user_left_event(channel: &str, user_id: &str, session_id: Option<St
         to: vec![],
         thread_id: None,
         reply_to_id: None,
-        content: Some(MessageContent::Event(Event{
+        content: Some(vec![MessageContent::Event(Event{
             event_type: USER_LEFT.to_string(),
             event_payload: Some(json!({ "user_id": user_id })),
-        })),
+        })]),
         metadata: DashMap::new(),
     }
 }

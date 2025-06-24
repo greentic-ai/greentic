@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt};
 
 use async_trait::async_trait;
-use channel_plugin::message::TextMessage;
+use channel_plugin::message::MessageContent;
 use chrono::{DateTime, Utc};
 use chrono_english::parse_date_string;
 use handlebars::Handlebars;
@@ -371,10 +371,20 @@ impl NodeType for QAProcessNode {
 
 
 fn extract_raw_text(value: &serde_json::Value) -> String {
-    // 1. Try to parse as TextMessage
-    if let Ok(text_msg) = serde_json::from_value::<TextMessage>(value.clone()) {
-        return text_msg.text;
+    // 1. Try to parse as one or more MessageContent
+    if let Ok(mc) = serde_json::from_value::<MessageContent>(value.clone()) {
+        if let MessageContent::Text(text) = mc {
+            return text;
+        }
     }
+    if let Ok(vec) = serde_json::from_value::<Vec<MessageContent>>(value.clone()) {
+        for mc in vec {
+            if let MessageContent::Text(text) = mc {
+                return text;
+            }
+        }
+    }
+
 
     // 2. Check value["text"]
     if let Some(text_val) = value.get("text").and_then(|v| v.as_str()) {

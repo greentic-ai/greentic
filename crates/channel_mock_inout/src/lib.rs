@@ -73,7 +73,7 @@ impl ChannelPlugin for MockPlugin {
         let mut msg = ChannelMessage::default();
         msg.channel = "mock_in".to_string();
         let content = MessageContent::Text("mock says hello".to_string());
-        msg.content = Some(content);
+        msg.content = Some(vec![content]);
         let participant = Participant{id:"mockingbird".to_string(), display_name: None, channel_specific_id: None };
         msg.from = participant;
 

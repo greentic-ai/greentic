@@ -185,13 +185,16 @@ where
     map.end()
 }
 
-pub fn json_to_message_content(v: Value) -> MessageContent {
-    // First try the “normal” enum‐deserialization:
-    match serde_json::from_value::<MessageContent>(v.clone()) {
-        Ok(mc) => mc,
-
-        // If that fails, fall back to Text(v.to_string()):
-        Err(_) => MessageContent::Text(v.to_string()),
+pub fn json_array_to_message_contents(v: Value) -> Vec<MessageContent> {
+    match v {
+        Value::Array(arr) => arr
+            .into_iter()
+            .map(|item| {
+                serde_json::from_value::<MessageContent>(item.clone())
+                    .unwrap_or_else(|_| MessageContent::Text(item.to_string()))
+            })
+            .collect(),
+        _ => vec![MessageContent::Text(v.to_string())],
     }
 }
 
@@ -773,9 +776,9 @@ impl ChannelNodeConfig {
 
         // 3) `content`: prefer config, else convert the raw payload:
         let content = if let Some(inner) = &self.content {
-            Some(inner.resolve(ctx)?)
+            Some(vec![inner.resolve(ctx)?])
         } else {
-            Some(json_to_message_content(payload))
+            Some(json_array_to_message_contents(payload))
         };
 
         // 4) `thread_id` and `reply_to_id` are both simple Option<…>:

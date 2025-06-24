@@ -275,7 +275,7 @@ impl TelegramPlugin {
                                     display_name:       msg.from.as_ref().map(|u| u.full_name()),
                                     channel_specific_id: msg.from.as_ref().and_then(|u| u.username.clone()),
                                 },
-                                content:    Some(content),
+                                content:    Some(vec![content]),
                                 id:         msg.id.clone().to_string(),
                                 timestamp:  Utc::now(),
                                 to:         Vec::new(),
@@ -544,81 +544,84 @@ impl ChannelPlugin for TelegramPlugin {
             let msg_clone = msg.clone();
             
             let result = match msg_clone.content {
-                Some(MessageContent::Text(text)) => {
-                    log.log(LogLevel::Debug, "telegram", "sending text…");
-                    let text = match serde_json::from_str::<TextMessage>(&text) 
-                    {
-                        Ok(text) => text.text,
-                        Err(_) =>  text,
-                    };
-                    bot.send_message(chat_id.clone(), text).send().await
-                        .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
-                }
+                Some(contents) => {
+                    let mut last_result = Ok(()); // track last success or error
+                    for content in contents {
+                        let res = match content {
+                            MessageContent::Text(text) => {
+                                log.log(LogLevel::Debug, "telegram", "sending text…");
+                                let text = match serde_json::from_str::<TextMessage>(&text) {
+                                    Ok(t) => t.text,
+                                    Err(_) => text,
+                                };
+                                bot.send_message(chat_id.clone(), text).send().await
+                                    .map(|_| ())
+                                    .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                            }
 
-                Some(MessageContent::File(fm)) => {
-                    log.log(LogLevel::Debug, "telegram", "sending document…");
-                    let url = Url::parse(&fm.url)
-                        .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
-                        .expect("url not correctly formatted");
-                    let input = InputFile::url(url).file_name(fm.file_name.clone());
-                    bot.send_document(chat_id.clone(), input).send().await
-                        .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
-                }
+                            MessageContent::File(fm) => {
+                                log.log(LogLevel::Debug, "telegram", "sending document…");
+                                let url = Url::parse(&fm.url)
+                                    .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e))).expect("url not correctly formatted");
+                                let input = InputFile::url(url).file_name(fm.file_name.clone());
+                                bot.send_document(chat_id.clone(), input).send().await
+                                    .map(|_| ())
+                                    .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                            }
 
-                Some(MessageContent::Media(mm)) => {
-                    match mm.kind {
-                        MediaType::Image => {
-                            log.log(LogLevel::Debug, "telegram", "sending photo…");
-                            let url = Url::parse(&mm.file.url)
-                                .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
-                                .expect("url not correctly formatted");
-                            let input = InputFile::url(url).file_name(mm.file.file_name.clone());
-                            bot.send_photo(chat_id.clone(), input).send().await
+                            MessageContent::Media(mm) => {
+                                let url = Url::parse(&mm.file.url)
+                                    .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e))).expect("file url not correctly formatted");
+                                let input = InputFile::url(url).file_name(mm.file.file_name.clone());
+                                match mm.kind {
+                                    MediaType::Image => {
+                                        log.log(LogLevel::Debug, "telegram", "sending photo…");
+                                        bot.send_photo(chat_id.clone(), input).send().await
+                                    }
+                                    MediaType::Video => {
+                                        log.log(LogLevel::Debug, "telegram", "sending video…");
+                                        bot.send_video(chat_id.clone(), input).send().await
+                                    }
+                                    MediaType::Audio | MediaType::Binary => {
+                                        log.log(LogLevel::Debug, "telegram", "sending audio…");
+                                        bot.send_audio(chat_id.clone(), input).send().await
+                                    }
+                                }
+                                .map(|_| ())
                                 .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
-                        }
-                        MediaType::Video => {
-                            log.log(LogLevel::Debug, "telegram", "sending video…");
-                            let url = Url::parse(&mm.file.url)
-                                .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
-                                .expect("url not correctly formatted");
-                            let input = InputFile::url(url).file_name(mm.file.file_name.clone());
-                            bot.send_video(chat_id.clone(), input).send().await
-                                .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
-                        }
-                        MediaType::Audio | MediaType::Binary => {
-                            log.log(LogLevel::Debug, "telegram", "sending audio…");
-                            // parse the String into a Url
-                            let url = Url::parse(&mm.file.url)
-                                .map_err(|e| PluginError::Other(format!("invalid file URL: {}", e)))
-                                .expect("url not correctly formatted");
-                            let input = InputFile::url(url).file_name(mm.file.file_name.clone());
-                            bot.send_audio(chat_id.clone(), input).send().await
-                                .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                            }
+
+                            MessageContent::Event(ev) => {
+                                log.log(LogLevel::Debug, "telegram", "sending event…");
+                                let body = serde_json::to_string_pretty(&ev)
+                                    .unwrap_or_else(|_| format!("Event: {}", ev.event_type));
+                                bot.send_message(chat_id.clone(), body).send().await
+                                    .map(|_| ())
+                                    .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+                            }
+                        };
+
+                        // Update the last_result with any error (non-fatal loop)
+                        if res.is_err() {
+                            last_result = res;
                         }
                     }
-                }
-                Some(MessageContent::Event(ev)) => {
-                    // You’ll need to decide how to represent your Event on Telegram;
-                    // here’s a simple JSON dump fallback:
-                    log.log(LogLevel::Debug, "telegram", "sending event…");
-                    let body = serde_json::to_string_pretty(&ev)
-                        .unwrap_or_else(|_| format!("Event: {}", ev.event_type));
-                    bot.send_message(chat_id.clone(), body).send().await
-                        .map_err(|e| PluginError::Other(format!("telegram send error: {}", e)))
+
+                    last_result // return the last result
                 }
 
-                None => 
-                    Err(PluginError::Other("No content to send".into())),
-    
+                None => Err(PluginError::Other("No content to send".into())),
             };
-            
+
             match result {
-                Ok(sent) => {log.log(LogLevel::Info, "telegram", &format!("text sent: id={}", sent.id));},
-                Err(e) => {log.log(LogLevel::Error, "telegram", &format!("text send error: {:?}", e));},
-            };
-    
-                                        
-        };
+                Ok(_) => {
+                    log.log(LogLevel::Info, "telegram", "all content sent successfully");
+                }
+                Err(e) => {
+                    log.log(LogLevel::Error, "telegram", &format!("error sending content: {:?}", e));
+                }
+            }
+         };
         
     }
 
@@ -794,7 +797,7 @@ mod tests {
             flow: Some("telegram_flow".into()),
             from: Participant { id:"chat42".into(), display_name:None, channel_specific_id:None },
             to: vec![],
-            content: Some(MessageContent::Text("hello".into())),
+            content: Some(vec![MessageContent::Text("hello".into())]),
             thread_id: None,
             reply_to_id: None,
             metadata: Default::default(),
@@ -806,7 +809,7 @@ mod tests {
         // receive it
         let got = p.receive_message().await.expect("receive");
         assert_eq!(got.id, "in1");
-        assert_eq!(got.content, Some(MessageContent::Text("hello".into())));
+        assert_eq!(got.content, Some(vec![MessageContent::Text("hello".into())]));
 
         // Test send_message paths (won't actually call Telegram)
         let outgoing = ChannelMessage {
@@ -819,7 +822,7 @@ mod tests {
             flow: Some("telegram_flow".into()),
             from: Participant { id:"bot".into(), display_name:None, channel_specific_id:None },
             to: vec![ Participant { id:"chat42".into(), display_name:None, channel_specific_id:None } ],
-            content: Some(MessageContent::Text("reply".into())),
+            content: Some(vec![MessageContent::Text("reply".into())]),
             thread_id: None,
             reply_to_id: None,
             metadata: Default::default(),

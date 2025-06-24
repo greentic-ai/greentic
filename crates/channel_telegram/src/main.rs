@@ -41,29 +41,34 @@ fn main() {
             let incoming: ChannelMessage = plugin.receive_message().await.map_err(|e| anyhow::anyhow!("Poll error: {:?}", e)).expect("could not receive message");
 
             // Only handle text messages
-            if let Some(MessageContent::Text(text)) = incoming.content.clone() {
-                println!("Received message: {}", text);
+            match incoming.content.clone() {
+                Some(contents) if contents.len() == 1 => {
+                    if let MessageContent::Text(text) = &contents[0] {
+                        println!("Received message: {}", text);
 
-                let chat_id = incoming.from.id;
+                        let chat_id = incoming.from.id;
 
-                // Build reply message
-                let reply_text = format!("Received: {}", text);
-                let reply = ChannelMessage {
-                    session_id: None,
-                    thread_id: Some(chat_id.clone()),
-                    direction: MessageDirection::Outgoing,
-                    timestamp: Utc::now(),
-                    channel: incoming.channel.clone(),
-                    content: Some(MessageContent::Text(reply_text)),
-                    from: Participant { id: "channel_telegram".to_string(), display_name: Some("channel_telegra".to_string()), channel_specific_id: None },
-                    to: vec![Participant { id: chat_id.clone(), display_name:  incoming.from.display_name, channel_specific_id: None }],
-                    reply_to_id: Some(incoming.id.clone()),
-                    metadata: Default::default(),
-                    ..Default::default()
-                };
+                        // Build reply message
+                        let reply_text = format!("Received: {}", text);
+                        let reply = ChannelMessage {
+                            session_id: None,
+                            thread_id: Some(chat_id.clone()),
+                            direction: MessageDirection::Outgoing,
+                            timestamp: Utc::now(),
+                            channel: incoming.channel.clone(),
+                            content: Some(vec![MessageContent::Text(reply_text)]),
+                            from: Participant { id: "channel_telegram".to_string(), display_name: Some("channel_telegra".to_string()), channel_specific_id: None },
+                            to: vec![Participant { id: chat_id.clone(), display_name:  incoming.from.display_name, channel_specific_id: None }],
+                            reply_to_id: Some(incoming.id.clone()),
+                            metadata: Default::default(),
+                            ..Default::default()
+                        };
 
-                // Send the reply
-                plugin.send_message(reply).await.map_err(|e| anyhow::anyhow!("Send error: {:?}", e)).expect("could not send message");
+                        // Send the reply
+                        plugin.send_message(reply).await.map_err(|e| anyhow::anyhow!("Send error: {:?}", e)).expect("could not send message");
+                    }
+                }
+                _ => {}
             }
         }
     });

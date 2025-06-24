@@ -269,7 +269,7 @@ impl NodeType for ChannelNode {
                 channel:   self.channel_name.clone(),
                 session_id: Some(input.session_id().clone()),
                 direction: MessageDirection::Outgoing,
-                content:   Some(MessageContent::Text(text)),
+                content:   Some(vec![MessageContent::Text(text)]),
                 ..Default::default()
             };
             plugin.send_message(cm).await

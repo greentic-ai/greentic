@@ -256,8 +256,10 @@ impl ChannelPlugin for TesterPlugin {
     }
 
     async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(), PluginError> {
-        if let Some(MessageContent::Text(t)) = msg.content {
-            let _ = self.reply_tx.send(t);
+        if let Some(vec) = &msg.content {
+            if let [MessageContent::Text(t)] = vec.as_slice() {
+                let _ = self.reply_tx.send(t.to_string());
+            }
         }
         Ok(())
     }
@@ -285,7 +287,7 @@ impl TesterPlugin {
             let session_id = format!("tester-session-{}", key);
             let cm = ChannelMessage {
                 channel: "tester".into(),
-                content: Some(MessageContent::Text(test.send.clone())),
+                content: Some(vec![MessageContent::Text(test.send.clone())]),
                 session_id: Some(session_id.clone()),
                 id: key.clone(),
                 timestamp: Utc::now(),

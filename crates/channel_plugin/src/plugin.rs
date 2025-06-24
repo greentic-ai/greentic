@@ -69,11 +69,15 @@ impl RoutingSupport for DefaultRoutingSupport {
     fn find_route(&self, msg: &ChannelMessage) -> Option<RouteBinding> {
         let matcher = RouteMatcher::Custom(
             msg.content
-                .as_ref()
-                .and_then(|c| match c {
-                    MessageContent::Text(t) => Some(t.clone()),
-                    _ => None,
-                })?
+            .as_ref()?
+            .iter()
+            .find_map(|c| {
+                if let MessageContent::Text(t) = c {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            })?
         );
         self.find_match(&matcher)
     }
