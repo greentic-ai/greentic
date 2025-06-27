@@ -146,9 +146,9 @@ impl ChannelManager {
     /// Returns a JoinHandle so you can abort on shutdown.
     pub async fn start_all(self: Arc<Self>, plugins_dir: PathBuf) -> Result<DirectoryWatcher, Error> {
         // 1) build the watcher
-        let watcher = Arc::new(crate::channel::plugin::PluginWatcher::new(plugins_dir.clone()));
+        let watcher = Arc::new(crate::channel::message::PluginWatcher::new(plugins_dir.clone()));
         // 2) subscribe us to get add/remove events
-        watcher.subscribe(self.clone() as Arc<dyn crate::channel::plugin::PluginEventHandler>, false).await;
+        watcher.subscribe(self.clone() as Arc<dyn crate::channel::message::PluginEventHandler>, false).await;
         // 3) spawn the fs watcher
         match watcher.watch().await{
             Ok(handle) => Ok(handle),
@@ -457,7 +457,7 @@ impl HostLogger {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{channel::plugin::PluginSessionCallbacks, config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
+    use crate::{channel::message::PluginSessionCallbacks, config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
 
     use super::*;
     use std::{ffi::CString, path::PathBuf, sync::Arc, time::SystemTime};

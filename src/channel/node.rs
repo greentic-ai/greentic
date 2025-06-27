@@ -298,7 +298,7 @@ mod tests {
     use crate::secret::SecretsManager;
     use crate::logger::Logger;
     use channel_plugin::message::{ChannelMessage, MessageDirection};
-    use channel_plugin::plugin::LogLevel;
+    use channel_plugin::message::LogLevel;
 
     #[tokio::test]
     async fn test_registry_dispatches_safely() {

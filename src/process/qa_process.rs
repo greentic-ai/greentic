@@ -784,7 +784,7 @@ mod tests {
     use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
 
     use super::*;
-    use channel_plugin::{message::Participant, plugin::LogLevel};
+    use channel_plugin::{message::Participant, message::LogLevel};
     use dashmap::DashMap;
     use serde_json::json;
     use chrono::Utc;

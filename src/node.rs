@@ -876,7 +876,7 @@ pub mod tests {
     use crate::message::Message;
     use crate::secret::{EmptySecretsManager, SecretsManager};
     use crate::flow::state::{InMemoryState, StateValue};
-    use channel_plugin::plugin::LogLevel;
+    use channel_plugin::message::LogLevel;
     use serde_json::json;
     use tempfile::TempDir;
 

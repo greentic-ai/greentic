@@ -1,4 +1,4 @@
-use channel_plugin::plugin::LogLevel;
+use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
     apps::{cmd_init, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}

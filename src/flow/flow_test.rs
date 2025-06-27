@@ -16,7 +16,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler, ManagedChannel};
     use crate::channel::node::ChannelsRegistry;
-    use crate::channel::plugin::{Plugin, PluginSessionCallbacks};
+    use crate::channel::message::{Plugin, PluginSessionCallbacks};
     use crate::channel::wrapper::tests::make_wrapper;
     use crate::channel::PluginWrapper;
     use crate::config::{ConfigManager, MapConfigManager};

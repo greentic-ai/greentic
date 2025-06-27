@@ -3,7 +3,7 @@
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::Error;
-use channel_plugin::plugin::LogLevel;
+use channel_plugin::message::LogLevel;
 use schemars::schema_for;
 use serde_json::{json, Value};
 

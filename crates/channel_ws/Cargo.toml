@@ -8,8 +8,6 @@ edition = "2024"
 name = "channel_ws"
 path = "src/main.rs"
 
-[lib]
-crate-type = ["rlib","cdylib"]
 
 [dependencies]
 channel_plugin = { version = "0.1.2", path = "../channel_plugin" }

@@ -2,7 +2,7 @@
 use std::{fs, io::Write, path::PathBuf, sync::Arc};
 use anyhow::{Context, Error};
 
-use channel_plugin::plugin::LogLevel;
+use channel_plugin::message::LogLevel;
 use tokio::task::JoinHandle;
 use tracing::error;
 

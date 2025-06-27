@@ -279,7 +279,7 @@ impl PluginWatcher {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let p = entry.unwrap().path();
             if let Some(ext) = p.extension().and_then(OsStr::to_str) {
-                if ["so","dylib","dll"].contains(&ext) {
+                if ["exe",""].contains(&ext) {
                     if let Ok(plugin) = Plugin::load(p.clone()) {
                         let name = get_name(&plugin);
                         map.insert(name, Arc::new(plugin));
@@ -302,7 +302,7 @@ impl PluginWatcher {
         // We know `PluginWatcher` already implements `WatchedType`
         let dir = self.dir.clone();
         let watcher: Arc<dyn WatchedType> = self.clone();
-        DirectoryWatcher::new(dir, watcher, &["so", "dll", "dylib"], true).await
+        DirectoryWatcher::new(dir, watcher, &["exe", "",], true).await
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<Plugin>> {
@@ -394,7 +394,7 @@ impl crate::watcher::WatchedType for PluginWatcher {
     fn is_relevant(&self, path: &Path) -> bool {
         path.parent().map(|d| d == self.dir).unwrap_or(false)
             && path.extension().and_then(OsStr::to_str).map_or(false, |e| {
-                ["so","dylib","dll"].contains(&e)
+                ["","exe",].contains(&e)
             })
     }
 

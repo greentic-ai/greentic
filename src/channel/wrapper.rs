@@ -1,12 +1,12 @@
 use std::{ffi::{c_char, CStr, CString}, sync::Arc};
 use dashmap::DashMap;
-use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
+use channel_plugin::{message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}, plugin_actor::ActorHandle, plugin_manager::ActorManager};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{schema::{Metadata}, schema_for};
 use serde_json::json;
  use async_trait::async_trait;
 use tracing::info;
-use crate::{channel::plugin::{plugin_get_or_create_session, plugin_get_session, plugin_invalidate_session, RegisterSessionFns}, flow::session::SessionStore};
+use crate::{channel::message::{plugin_get_or_create_session, plugin_get_session, plugin_invalidate_session, RegisterSessionFns}, flow::session::SessionStore};
 
 use super::plugin::Plugin;
 use async_ffi::FfiFuture;          // for the FFI‐safe future
@@ -14,19 +14,19 @@ use async_ffi::FfiFuture;          // for the FFI‐safe future
 
 #[derive(Clone,Debug)]
 pub struct PluginWrapper {
-    inner: Arc<Plugin>,
+    mgr: ActorManager,
+    inner: ActorHandle,
     state:   Arc<AtomicCell<ChannelState>>,
-    logger: Option<PluginLogger>,
     log_level: Option<LogLevel>,
     session_store: SessionStore,
 }
 
 impl PluginWrapper {
-    pub fn new(inner: Arc<Plugin>, session_store: SessionStore) -> Self {
+    pub fn new(mgr: ActorManager, inner: ActorHandle, session_store: SessionStore) -> Self {
         Self {
+            mgr,
             inner,
             state:   Arc::new(AtomicCell::new(ChannelState::Running)),
-            logger: None,
             log_level: None,
             session_store,
         }
@@ -111,21 +111,7 @@ impl PluginWrapper {
 #[async_trait]
 impl ChannelPlugin for PluginWrapper {
     fn name(&self) -> String {
-        // 1) call the FFI, get a *mut c_char
-        let ptr = unsafe { (self.inner.name)(self.inner.handle) };
-        if ptr.is_null() {
-            return String::new();
-        }
-
-        // 2) read it into a Rust String
-        let name = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
-
-        // 3) free the C buffer
-        unsafe { (self.inner.free_string)(ptr) };
-
-        name
+        self.inner.id().to_string()
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
@@ -289,7 +275,7 @@ impl ChannelPlugin for PluginWrapper {
         }
     }
     
-    fn set_logger(&mut self, logger: channel_plugin::plugin::PluginLogger, log_level: channel_plugin::plugin::LogLevel) {
+    fn set_logger(&mut self, logger: channel_plugin::plugin::PluginLogger, log_level: channel_plugin::message::LogLevel) {
             // call into the plugin’s FFI entry‐point:
             unsafe {
                 (self.inner.set_logger)(self.inner.handle, logger, log_level);
@@ -302,7 +288,7 @@ impl ChannelPlugin for PluginWrapper {
         self.logger
     }
 
-    fn get_log_level(&self) -> Option<channel_plugin::plugin::LogLevel> {
+    fn get_log_level(&self) -> Option<channel_plugin::message::LogLevel> {
         self.log_level
     }
     
@@ -351,7 +337,7 @@ impl ChannelPlugin for PluginWrapper {
 #[cfg(test)]
 pub mod tests {
 
-    use crate::channel::plugin::{PluginSessionCallbacks, SESSION_STORE};
+    use crate::channel::message::{PluginSessionCallbacks, SESSION_STORE};
     use crate::flow::session::InMemorySessionStore;
 
     use super::*;
@@ -695,9 +681,9 @@ pub mod tests {
         // Manually invoke the session callback FFI registration (bypassing lib.get)
         if let Some(set_fns) = wrapper.inner.set_session_callbacks {
             unsafe { set_fns(wrapper.inner.handle, PluginSessionCallbacks {
-                get_session: crate::channel::plugin::plugin_get_session,
-                get_or_create_session: crate::channel::plugin::plugin_get_or_create_session,
-                invalidate_session: crate::channel::plugin::plugin_invalidate_session,
+                get_session: crate::channel::message::plugin_get_session,
+                get_or_create_session: crate::channel::message::plugin_get_or_create_session,
+                invalidate_session: crate::channel::message::plugin_invalidate_session,
             }) };
         }
 
