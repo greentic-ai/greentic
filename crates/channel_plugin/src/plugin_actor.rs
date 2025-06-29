@@ -170,6 +170,31 @@ impl PluginHandle {
             .await?;
         Ok(())
     }
+
+
+    pub async fn from_executable<P: AsRef<Path>>(
+        exe_path: P,
+    ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<PluginEvent>)> {
+        // 1. We create a fresh channel for the plugin-initiated *events*
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<PluginEvent>();
+
+        // 2. Re-use your existing helper that already knows how to
+        //    spawn the child-process and wire stdin/stdout.
+        let handle = spawn_plugin(exe_path, event_tx).await?;
+
+        // 3. Return both pieces to the caller.
+        Ok((handle, event_rx))
+    }
+
+    /// Convenience variant if you do **not** care about the event stream.
+    ///
+    /// Equivalent to `from_executable(...).await.map(|(h, _)| h)`
+    pub async fn from_executable_no_events<P: AsRef<Path>>(
+        exe_path: P,
+    ) -> anyhow::Result<Self> {
+        let (handle, _event_rx) = Self::from_executable(exe_path).await?;
+        Ok(handle)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -376,6 +401,7 @@ pub async fn spawn_plugin<P: AsRef<Path>>(
     }
 
     Ok( PluginHandle { tx, plugin_id } )
+
 }
 // -----------------------------------------------------------------------------
 // Request handler

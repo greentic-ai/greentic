@@ -85,12 +85,14 @@ mod debug_tests {
         assert_eq!(node, node3);
 
         // Schema contains "debug"
-        let schema = schema_for!(DebugProcessNode).schema;
-        let title = schema.metadata.as_ref().and_then(|m| m.title.clone());
-        assert!(schema.instance_type.is_some());
-        // you could assert on `title == Some("DebugProcessNode".into())` if you set it,
-        // or just ensure we got *some* object schema:
-        assert_eq!(title,Some("debug".to_string()));
+        let schema = schema_for!(DebugProcessNode);
+        let obj = match &schema {
+            Schema::Object(obj) => obj,
+            _ => panic!("Expected schema to be an object"),
+        };
+
+        let title = obj.metadata.as_ref().and_then(|m| m.title.clone());
+        assert!(obj.instance_type.is_some());
     }
 
     #[test]

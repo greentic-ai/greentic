@@ -1428,7 +1428,7 @@ connections:
 
         let plugin = PluginHandle::spawn_plugin(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf())
             .expect("could not load plugin");
-        let log_config = LogConfig::new(LogLevel::Info, Some("./greentic/logs"), None);
+        let log_config = LogConfig::new(LogLevel::Info, Some("./greentic/logs".to_string()), None);
         let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin), store.clone(), log_config), None, None);
         channel_manager
             .register_channel("mock_inout".to_string(), mock)
