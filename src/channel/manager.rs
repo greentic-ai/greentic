@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use channel_plugin::{message::{ChannelMessage, ChannelState}, plugin_actor::PluginHandle, plugin_helpers::PluginError};
 
 use crate::{
-    channel::{plugin::{PluginEventHandler}, wrapper::PluginWrapper}, config::ConfigManager, flow::session::SessionStore, logger::LogConfig, secret::SecretsManager, watcher::DirectoryWatcher
+    channel::{plugin::{PluginEventHandler, PluginWatcher}, wrapper::PluginWrapper}, config::ConfigManager, flow::session::SessionStore, logger::LogConfig, secret::SecretsManager, watcher::DirectoryWatcher
 };
 
 

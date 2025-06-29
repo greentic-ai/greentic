@@ -9,14 +9,12 @@ mod tests {
     use async_ffi::{BorrowingFfiFuture, FfiFuture};
     use async_trait::async_trait;
     use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
-    use channel_plugin::plugin::{ChannelState, LogLevel, PluginLogger};
-    use channel_plugin::PluginHandle;
+    use channel_plugin::plugin_actor::PluginHandle;
     use dashmap::DashMap;
-    use schemars::schema::RootSchema;
     use serde::{Deserialize, Serialize};
-    use crate::channel::manager::{ChannelManager, HostLogger, IncomingHandler, ManagedChannel};
+    use crate::channel::manager::{ChannelManager, IncomingHandler, ManagedChannel};
     use crate::channel::node::ChannelsRegistry;
-    use crate::channel::message::{Plugin, PluginSessionCallbacks};
+    use crate::channel::plugin::tests::MockChannel;
     use crate::channel::wrapper::tests::make_wrapper;
     use crate::channel::PluginWrapper;
     use crate::config::{ConfigManager, MapConfigManager};
@@ -32,7 +30,7 @@ mod tests {
 
     use crate::executor::Executor;
     use crate::flow::manager::{ChannelNodeConfig, ExecutionReport, Flow, FlowManager, NodeConfig, NodeKind, ResolveError, TemplateContext, ToolNodeConfig, ValueOrTemplate};
-    use crate::logger::{Logger, OpenTelemetryLogger};
+    use crate::logger::{LogConfig, Logger, OpenTelemetryLogger};
     use crate::message::Message;
     use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing};
     use crate::secret::{EmptySecretsManager, SecretsManager};
@@ -86,88 +84,6 @@ mod tests {
         Executor::new(secrets, logger)
     }
 
-    /// A dummy Plugin whose FFI pointers do nothing.
-    pub fn make_noop_plugin() -> Arc<Plugin> {
-        // All the extern-C functions:
-        unsafe extern "C" fn create() -> PluginHandle { std::ptr::null_mut() }
-        unsafe extern "C" fn destroy(_: PluginHandle) {}
-        unsafe extern "C" fn set_logger(_: PluginHandle, _logger_ptr: PluginLogger, _log_level_ptr: LogLevel) {}
-        unsafe extern "C" fn name(_: PluginHandle) -> *mut i8 { std::ptr::null_mut() }
-        unsafe extern "C" fn start(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
-        unsafe extern "C" fn drain(_: PluginHandle) -> bool { true }
-        unsafe extern "C" fn stop(_: PluginHandle) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true}); }
-        unsafe extern "C" fn wait_until_drained(_: PluginHandle, _: u64) -> FfiFuture<bool> { return BorrowingFfiFuture::<bool>::new(async move {true});  }
-        unsafe extern "C" fn caps(_: PluginHandle, out: *mut ChannelCapabilities) -> bool {
-            if !out.is_null() {
-                unsafe { std::ptr::write(out, ChannelCapabilities::default()) };
-                true
-            } else {
-                false
-            }
-        }
-
-         unsafe extern "C" fn send_message(
-            _handle: PluginHandle,
-            _msg: *const ChannelMessage,
-        ) -> FfiFuture<bool> {
-            BorrowingFfiFuture::<bool>::new(async move {true})
-        }
-
-        // 2) Async‐style receive → FfiFuture<ChannelMessage>
-        unsafe extern "C" fn receive_message(
-            _handle: PluginHandle,
-        ) -> FfiFuture<*mut c_char> {
-                BorrowingFfiFuture::<*mut c_char>::new(async move {
-                    // imagine you have a real msg here
-                    let msg = ChannelMessage::default();
-                    let json = serde_json::to_string(&msg).unwrap_or_else(|_| "{}".into());
-                    CString::new(json).unwrap().into_raw()
-                })
-            
-        }
-
-        unsafe extern "C" fn set_session_callbacks(
-            _handle: PluginHandle,
-            _callbacks: PluginSessionCallbacks,
-        ) {
-            // Store or mock for verification in tests
-            println!("✅ FakePlugin received set_session_callbacks_fn");
-        }
-
-        unsafe extern "C" fn state(_: PluginHandle) -> ChannelState {
-            ChannelState::Stopped
-        }
-        unsafe extern "C" fn set_config(_: PluginHandle, _: *const i8) {}
-        unsafe extern "C" fn set_secrets(_: PluginHandle, _: *const i8) {}
-        unsafe extern "C" fn list_config(_: PluginHandle) -> *mut i8 { std::ptr::null_mut() }
-        unsafe extern "C" fn list_secrets(_: PluginHandle) -> *mut i8 { std::ptr::null_mut() }
-        unsafe extern "C" fn free_string(_: *mut i8) {}
-
-        Arc::new(Plugin {
-            lib: None,
-            handle: unsafe { create() },
-            destroy,
-            set_logger,
-            name,
-            start,
-            drain,
-            stop,
-            wait_until_drained,
-            caps,
-            state,
-            set_config,
-            set_secrets,
-            list_config,
-            list_secrets,
-            free_string,
-            send_message,
-            receive_message,
-            set_session_callbacks: Some(set_session_callbacks),
-            last_modified: SystemTime::now(),
-            path: PathBuf::new(),
-        })
-    }
-
 
     /// A dummy context that simply returns the template string unchanged,
     /// so JSON values must be provided verbatim.
@@ -205,7 +121,7 @@ mod tests {
     #[typetag::serde]
     impl NodeType for FailableNode {
         fn type_name(&self) -> String { "failable".into() }
-        fn schema(&self) -> RootSchema { schema_for!(FailableNode) }
+        fn schema(&self) -> Schema { schema_for!(FailableNode) }
 
         async fn process(&self, msg: Message, _ctx: &mut NodeContext)
             -> Result<NodeOut, crate::node::NodeErr>
@@ -677,9 +593,8 @@ mod tests {
         let executor = make_executor();
         let secrets = SecretsManager(EmptySecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new(LogLevel::Debug);
         let store =InMemorySessionStore::new(10);
-        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, host_logger)
+        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, LogConfig::default())
             .await
             .expect("channel manager");
         let state = InMemoryState::new();
@@ -706,7 +621,7 @@ mod tests {
             channel_out: true,
             from: None,
             to: Some(vec![ValueOrTemplate::Template("{{recipient.id}}".into())]),
-            content: Some(ValueOrTemplate::Value(MessageContent::Text("fixed".into()))),
+            content: Some(ValueOrTemplate::Value(MessageContent::Text{text:"fixed".into()})),
             thread_id: None,
             reply_to_id: None,
         };
@@ -723,7 +638,7 @@ mod tests {
         assert_eq!(msg.to.len(), 1);
         let rcpt = &msg.to[0];
         assert_eq!(rcpt.id, "p1");
-        assert_eq!(msg.content.unwrap(), vec![MessageContent::Text("fixed".into())]);
+        assert_eq!(msg.content, vec![MessageContent::Text{text:"fixed".into()}]);
     }
 
 

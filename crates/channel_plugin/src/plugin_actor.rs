@@ -42,6 +42,9 @@ pub struct PluginHandle {
 }
 
 impl PluginHandle {
+    pub fn new(tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>,plugin_id: String,) -> Self {
+        Self{tx,plugin_id}
+    }
     pub async fn call(&self, req: Request) -> Result<Response> {
         let (tx_resp, rx_resp) = oneshot::channel();
         self.tx.send((req, tx_resp)).await

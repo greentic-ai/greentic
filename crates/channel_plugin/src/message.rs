@@ -28,7 +28,7 @@ pub struct TraceInfo {
 // Participants & File / Media metadata
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema,)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema,PartialEq)]
 pub struct Participant {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]

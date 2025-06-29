@@ -21,6 +21,7 @@ use tokio::{sync::Mutex,time::sleep};
 use tracing::{error, info};
 use crate::node::ToolNode;
 use tracing::{warn,trace};
+use channel_plugin::message::MessageContent::Text;
 
 /// One record per-node, successful or error
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -200,10 +201,10 @@ pub fn json_array_to_message_contents(v: Value) -> Vec<MessageContent> {
             .into_iter()
             .map(|item| {
                 serde_json::from_value::<MessageContent>(item.clone())
-                    .unwrap_or_else(|_| MessageContent::Text(item.to_string()))
+                    .unwrap_or_else(|_| MessageContent::Text{text:item.to_string()})
             })
             .collect(),
-        _ => vec![MessageContent::Text(v.to_string())],
+        _ => vec![MessageContent::Text{text:v.to_string()}],
     }
 }
 
@@ -785,9 +786,9 @@ impl ChannelNodeConfig {
 
         // 3) `content`: prefer config, else convert the raw payload:
         let content = if let Some(inner) = &self.content {
-            Some(vec![inner.resolve(ctx)?])
+            vec![inner.resolve(ctx)?]
         } else {
-            Some(json_array_to_message_contents(payload))
+            json_array_to_message_contents(payload)
         };
 
         // 4) `thread_id` and `reply_to_id` are both simple Option<…>:

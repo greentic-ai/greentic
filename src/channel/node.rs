@@ -268,7 +268,7 @@ impl NodeType for ChannelNode {
                 channel:   self.channel_name.clone(),
                 session_id: Some(input.session_id().clone()),
                 direction: MessageDirection::Outgoing,
-                content:   Some(vec![MessageContent::Text(text)]),
+                content:   Some(vec![MessageContent::Text{text:text}]),
                 ..Default::default()
             };
             plugin.send_message(cm).await
@@ -288,16 +288,15 @@ impl NodeType for ChannelNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::manager::{ChannelManager, HostLogger};
+    use crate::channel::manager::ChannelManager;
     use crate::config::{ConfigManager, MapConfigManager};
     use crate::flow::session::InMemorySessionStore;
     use crate::process::manager::ProcessManager;
     use crate::{executor::Executor, flow::manager::FlowManager, logger::OpenTelemetryLogger,
                 secret::EmptySecretsManager,};
     use crate::secret::SecretsManager;
-    use crate::logger::Logger;
+    use crate::logger::{LogConfig, Logger};
     use channel_plugin::message::{ChannelMessage, MessageDirection};
-    use channel_plugin::message::LogLevel;
 
     #[tokio::test]
     async fn test_registry_dispatches_safely() {
@@ -306,8 +305,7 @@ mod tests {
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let exec = Executor::new(secrets.clone(), logger);
         let config = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new(LogLevel::Debug);
-        let cm = ChannelManager::new(config, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
+        let cm = ChannelManager::new(config, secrets.clone(), store.clone(), LogConfig::default()).await.expect("could not create channel manager");
         let pm = ProcessManager::dummy();
         let fm = FlowManager::new(store.clone(), exec, cm.clone(), pm.clone(), secrets);
         let reg = ChannelsRegistry::new(fm,cm).await;

@@ -392,9 +392,20 @@ mod ollama_agent_tests {
 
         // schema
         let schema = schema_for!(OllamaAgent);
-        let obj = schema.object.as_ref().unwrap();
-        for key in &["mode","task","model","ollama_host","ollama_port","tool_names"] {
-            assert!(obj.properties.contains_key(*key), "missing `{}` in schema", key);
+        let schema_json: JsonValue = serde_json::to_value(&schema).unwrap();
+
+        // Navigate to the properties map
+        let props = schema_json
+            .get("schema")
+            .and_then(|s| s.get("properties"))
+            .expect("no properties in schema");
+
+        for key in &["mode", "task", "model", "ollama_host", "ollama_port", "tool_names"] {
+            assert!(
+                props.get(*key).is_some(),
+                "missing `{}` in schema",
+                key
+            );
         }
     }
 
