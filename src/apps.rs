@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry, plugin::SESSION_STORE}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::Logger, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
+    channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
 };
 
 pub struct App
@@ -43,14 +43,16 @@ impl App {
     pub async fn bootstrap(
         &mut self,
         session_timeout: u64,
-        flows_dir:    PathBuf,
-        channels_dir: PathBuf,
-        tools_dir:    PathBuf,
+        flows_dir:     PathBuf,
+        channels_dir:  PathBuf,
+        tools_dir:     PathBuf,
         processes_dir: PathBuf,
-        config:       ConfigManager,
-        logger:       Logger,
-        log_level:    LogLevel,
-        secrets:      SecretsManager,
+        config:        ConfigManager,
+        logger:        Logger,
+        log_level:     LogLevel,
+        log_dir:       Option<String>,
+        otel_endpoint: Option<String>,
+        secrets:       SecretsManager,
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
         let store = InMemorySessionStore::new(session_timeout);
@@ -96,8 +98,8 @@ impl App {
         });
 
         // Channel manager (internally starts its own PluginWatcher over channels_dir)
-        let host_logger = HostLogger::new(log_level);
-        let channel_manager = ChannelManager::new(config, secrets.clone(),store.clone(),host_logger).await?;
+        let log_config = LogConfig::new(log_level, log_dir, otel_endpoint);
+        let channel_manager = ChannelManager::new(config, secrets.clone(),store.clone(),log_config).await?;
         self.channel_manager = Some(channel_manager.clone());
 
 

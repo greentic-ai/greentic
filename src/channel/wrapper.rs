@@ -134,29 +134,26 @@ impl PluginWrapper {
 #[cfg(test)]
 pub mod tests {
 
-    use crate::channel::plugin::tests::MockChannel;
     use crate::flow::session::InMemorySessionStore;
 
     use super::*;
     use channel_plugin::message::ChannelMessage;
+    use channel_plugin::plugin_actor::tests::make_mock_handle;
     use dashmap::{DashMap};
     use std::ffi::c_void;
     use std::os::raw::c_char;
     use std::sync::{Arc, Mutex};
 
 
+    pub async fn make_wrapper() -> PluginWrapper {
+        let plugin =make_mock_handle().await;   //   👈 real PluginHandle!
 
-
-    pub fn make_wrapper() -> PluginWrapper {
-        let fake = MockChannel::new();
-        let p = PluginHandle {
-        
-        };
         let store = InMemorySessionStore::new(60);
-        PluginWrapper::new(Arc::new(p), store)
+        PluginWrapper::new(plugin, store, LogConfig::default())
     }
 
-        /// A tiny in‐process logger we can inspect.
+
+    /// A tiny in‐process logger we can inspect.
     struct TestLogger {
         calls: Arc<Mutex<Vec<(LogLevel, String, String)>>>,
     }

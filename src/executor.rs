@@ -13,7 +13,7 @@ use exports::wasix::mcp::router::{CallToolResult, Tool, ToolError, Value as McpV
 use exports::wasix::mcp::secrets_list::SecretsDescription;
 use serde_json::{json, Value};
 use wasi::logging::logging;
-use wasix::mcp::secrets_store::{Host, HostSecret, Secret, SecretValue, SecretsError, add_to_linker};
+use wasix::mcp::secrets_store::{Host, HostSecret, Secret, SecretValue, SecretsError, add_to_linker as secrets_linker};
 use wasmtime::{Engine, Store};
 use wasmtime::component::{Component, Linker, Resource};
 use wasmtime_wasi::{ResourceTable};
@@ -322,7 +322,11 @@ impl ToolExecutorTrait for ToolExecutor {
                         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
                             .context("Failed to add WASI to linker").unwrap();
                         wasmtime_wasi_http::add_only_http_to_linker_sync(&mut linker).expect("Could not add http to linker");
-                        add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
+                        secrets_linker(
+                            &mut linker,
+                            |state: &mut MyState| state,
+                        ).expect("Could not link secrets store");
+                        //add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
                         logging::add_to_linker(&mut linker, |state: &mut MyState| state).expect("Could not link logging");
                         // Instantiate the MCP component.
                         let router = McpSecrets::instantiate(&mut store, &component, &linker)

@@ -3,12 +3,11 @@
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::Error;
-use channel_plugin::message::LogLevel;
 use schemars::schema_for;
 use serde_json::{json, Value};
 
 use crate::{
-    channel::manager::{ChannelManager, HostLogger}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
+    channel::manager::ChannelManager, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
 };
 
 /// The entry point invoked by `main.rs` for `Commands::Schema`.
@@ -46,14 +45,13 @@ pub async fn write_schema(
     // 4) channel schemas
     let config = ConfigManager(MapConfigManager::new());
     
-    let host_logger = HostLogger::new(LogLevel::Warn);
     let store =InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new( config, secrets, store.clone(), host_logger)
+    let channel_mgr = ChannelManager::new( config, secrets, store.clone(), LogConfig::default())
         .await
         .expect("Could not start channels");
     
     for wrapper in channel_mgr.channels().iter() {
-        let (name, schema) = wrapper.wrapper().schema_json()?;
+        let (name, schema) = wrapper.wrapper().schema_json().await.expect("Could not get schema_json from wrapper");
         let filename = format!("channel-{}.schema.json", name.to_lowercase());
         fs::write(out_dir.join(filename), schema)?;
     }

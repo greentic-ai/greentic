@@ -178,6 +178,7 @@ async fn run(root: PathBuf,
     let config_dir   = root.join("config");
     let secrets_dir  = root.join("secrets");
     let log_file      = "logs/greentic_logs.log".to_string();
+    let log_dir      = root.join("logs");
     let event_file    = "logs/greentic_events.log".to_string();
     let tools_dir    = root.join("plugins").join("tools");
     let processes_dir= root.join("plugins").join("processes");
@@ -222,6 +223,8 @@ async fn run(root: PathBuf,
         config_mgr,
         logger,
         convert_level(log_level),
+        log_dir,
+        otel_endpoint,
         secrets_mgr,
     )
     .await;

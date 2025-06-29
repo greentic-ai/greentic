@@ -373,13 +373,13 @@ impl NodeType for QAProcessNode {
 fn extract_raw_text(value: &serde_json::Value) -> String {
     // 1. Try to parse as one or more MessageContent
     if let Ok(mc) = serde_json::from_value::<MessageContent>(value.clone()) {
-        if let MessageContent::Text(text) = mc {
+        if let MessageContent::Text{text} = mc {
             return text;
         }
     }
     if let Ok(vec) = serde_json::from_value::<Vec<MessageContent>>(value.clone()) {
         for mc in vec {
-            if let MessageContent::Text(text) = mc {
+            if let MessageContent::Text{text} = mc {
                 return text;
             }
         }
@@ -781,7 +781,7 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{LogConfig, Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
+    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, ManagedChannel}, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{LogConfig, Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
 
     use super::*;
     use channel_plugin::{message::{LogLevel, Participant}, plugin_actor::PluginHandle};
@@ -843,10 +843,9 @@ mod tests {
         let executor = Executor::new(secrets.clone(), logger.clone());
         let config_manager = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
-        let host_logger = HostLogger::new(LogLevel::Debug);
         let channel_origin = ChannelOrigin::new("test_channel".into(), None, None, Participant::new("user".into(), None, None));
         let process_manager = ProcessManager::new(Path::new("./plugins/processes")).unwrap();
-        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), host_logger).await.unwrap();
+        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), LogConfig::default()).await.unwrap();
 
         let mut ctx = NodeContext::new(
             "sess1".into(),
@@ -1414,7 +1413,6 @@ connections:
         let state = InMemoryState::new();
         let config = DashMap::<String, String>::new();
         let config_manager = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new(LogLevel::Debug);
         let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
         let channel_origin = ChannelOrigin::new(
             "mock".to_string(),
@@ -1422,14 +1420,18 @@ connections:
             None,
             Participant::new("id".to_string(), None, None),
         );
-        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), host_logger)
+        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), LogConfig::default())
             .await
             .expect("could not make channel manager");
 
-        let plugin = PluginHandle::spawn_plugin(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf())
-            .expect("could not load plugin");
+        let path = Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib");
+
+        let (plugin, _events) = PluginHandle::from_exe_with_events(path.to_path_buf())
+            .await
+            .expect("Could not load plugin");
+
         let log_config = LogConfig::new(LogLevel::Info, Some("./greentic/logs".to_string()), None);
-        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin), store.clone(), log_config), None, None);
+        let mock = ManagedChannel::new(PluginWrapper::new(plugin, store.clone(), log_config), None, None);
         channel_manager
             .register_channel("mock_inout".to_string(), mock)
             .await

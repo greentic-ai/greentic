@@ -86,13 +86,13 @@ mod debug_tests {
 
         // Schema contains "debug"
         let schema = schema_for!(DebugProcessNode);
-        let obj = match &schema {
-            Schema::Object(obj) => obj,
-            _ => panic!("Expected schema to be an object"),
-        };
+        let obj = schema.as_object().expect("Expected schema to be an object");
+                
+        let props = obj
+                .properties
+                .clone();
 
-        let title = obj.metadata.as_ref().and_then(|m| m.title.clone());
-        assert!(obj.instance_type.is_some());
+            assert!(props.contains_key("debug"), "Expected 'debug' field in schema");
     }
 
     #[test]
