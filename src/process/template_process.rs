@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use schemars::{schema::RootSchema, schema_for, JsonSchema};
+use schemars::{Schema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
 use handlebars::{Handlebars, JsonValue};
 use serde_json::json;
@@ -90,7 +90,7 @@ impl NodeType for TemplateProcessNode {
         "template".to_string()
     }
 
-    fn schema(&self) -> RootSchema {
+    fn schema(&self) -> Schema {
         schema_for!(TemplateProcessNode)
     }
 

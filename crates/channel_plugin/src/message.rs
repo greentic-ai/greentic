@@ -117,7 +117,7 @@ pub struct EventType {
     pub payload_schema: Option<Value>,  // the json schema for the event_payload  
 }
 #[derive(Debug, Clone, Serialize, Deserialize,  Default, JsonSchema,)]
-pub struct Capabilities {
+pub struct ChannelCapabilities {
     pub name: String,                         // e.g. "Slack", "Email", "SMS"
     pub supports_sending: bool,
     pub supports_receiving: bool,
@@ -187,7 +187,7 @@ pub enum ChannelState {
 }
 
 /// Syslog-style log levels in ascending order of severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema,)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
@@ -227,12 +227,18 @@ pub struct InitParams {
     pub otel_endpoint: Option<String>,
 }
 
-    /// Result in an error when a init fails, e.g. logging, config, secrets
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
-    pub struct InitResult {
-        pub success: bool,
-        pub error: Option<String>,
-    }
+/// Result in an error when a init fails, e.g. logging, config, secrets
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
+pub struct InitResult {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Result for `version` (Plugin → Manager)
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct VersionResult {
+    pub version: String,
+}
 
 
 /// Result for `status` (Plugin → Manager)
@@ -247,6 +253,24 @@ pub struct HealthResult {
     pub healthy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+// -----------------------------------------------------------------------------
+// JSON‑RPC method payloads – Drain
+// -----------------------------------------------------------------------------
+
+/// Params for `waitUntilDrained`
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
+pub struct WaitUntilDrainedParams {
+    /// milliseconds to wait until drained
+    pub timeout_ms: u64,
+}
+
+/// Result is stopped true and error false if stopped correctly and stopped false and error true if timeout
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
+pub struct WaitUntilDrainedResult {
+    pub stopped: bool,
+    pub error: bool,
 }
 
 // -----------------------------------------------------------------------------
@@ -304,7 +328,7 @@ pub struct NameResult {
 /// Result the capabilities
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
 pub struct CapabilitiesResult {
-    pub capabilities: Capabilities,
+    pub capabilities: ChannelCapabilities,
 }
 
 /// Allows for explicit invalidation of a greentic session

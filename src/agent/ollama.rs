@@ -70,7 +70,7 @@ impl NodeType for OllamaAgent {
         "ollama".to_string()
     }
 
-    fn schema(&self) -> schemars::schema::RootSchema {
+    fn schema(&self) -> schemars::Schema {
         schemars::schema_for!(OllamaAgent)
     }
 
@@ -352,7 +352,7 @@ impl Default for OllamaMode {
 #[cfg(test)]
 mod ollama_agent_tests {
     use super::*;
-    use schemars::{schema_for, schema::RootSchema};
+    use schemars::schema_for;
     use serde_json::json;
     use tokio;
     use url::Url;
@@ -391,7 +391,7 @@ mod ollama_agent_tests {
         assert_eq!(de.ollama_port, Some(1234));
 
         // schema
-        let RootSchema { schema, .. }: RootSchema = schema_for!(OllamaAgent);
+        let schema = schema_for!(OllamaAgent);
         let obj = schema.object.as_ref().unwrap();
         for key in &["mode","task","model","ollama_host","ollama_port","tool_names"] {
             assert!(obj.properties.contains_key(*key), "missing `{}` in schema", key);

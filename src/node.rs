@@ -1,8 +1,8 @@
-use std::{fmt, sync::Arc};
+use std::{borrow::Cow, fmt, sync::Arc};
 use async_trait::async_trait;
 use channel_plugin::message::{MessageDirection, Participant};
 use dashmap::{DashMap};
-use crate::flow::state::{SessionState, StateValue};
+use crate::{channel::node::ChannelNode, flow::state::{SessionState, StateValue}};
 use handlebars::{Handlebars,JsonValue};
 use serde::{Deserialize,  Serialize};
 use tempfile::TempDir;
@@ -10,8 +10,8 @@ use std::fs;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager, node::ChannelNode,}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::{manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate},}, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, util::extension_from_mime};
-use schemars::{schema::{RootSchema, Schema}, schema_for, JsonSchema, SchemaGenerator};
+use crate::{channel::{manager::ChannelManager}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::{manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate},}, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, util::extension_from_mime};
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -191,7 +191,7 @@ pub trait NodeType: Send + Sync + Debug {
     async fn process(&self, msg: Message, ctx: &mut NodeContext) -> Result<NodeOut, NodeErr>;
     fn clone_box(&self) -> Box<dyn NodeType>;
     /// Return this concrete type’s schema.
-    fn schema(&self) -> schemars::schema::RootSchema;
+    fn schema(&self) -> schemars::Schema;
 }
 
 #[derive( Serialize, Deserialize )]
@@ -226,50 +226,39 @@ impl fmt::Debug for Node {
 }
 
 /// now give it a JsonSchema impl
+
 impl JsonSchema for Node {
-    fn schema_name() -> String {
-        // Optional: a catch‐all name.
-        "node".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("node")
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        // helpful if another crate also has a `Node`
+        Cow::Owned(format!("{}::node", module_path!()))
     }
 
     fn json_schema(generate: &mut SchemaGenerator) -> Schema {
-        use schemars::schema::{Schema, SchemaObject, SubschemaValidation};
-        use std::default::Default;
+       //---------------------------------------------------------------
+        // 1) Register *all concrete variants* so they end up in
+        //    the generator’s definitions map.
+        //---------------------------------------------------------------
+        generate.subschema_for::<ToolNode>();
+        generate.subschema_for::<ChannelNode>();
+        // Add more variants here with `gen.subschema_for::<T>();`
 
-        // 1) enumerate every concrete implementor here
-        let concrete: &[RootSchema] = &[
-            schema_for!(ToolNode),
-            schema_for!(ChannelNode),
-            // …add others…
-        ];
-
-        // 2) merge their definitions into the global generator
-        for rs in concrete {
-            for (def_name, def_schema) in &rs.definitions {
-                generate.definitions_mut().insert(def_name.clone(), def_schema.clone());
-            }
-        }
-
-        // 3) collect references to each of those definitions
-        let any_of = concrete.iter()
-            .flat_map(|rs| rs.definitions.keys())
-            .map(|def_name| {
-                Schema::Object(SchemaObject {
-                    reference: Some(format!("#/definitions/{}", def_name).into()),
-                    ..Default::default()
-                })
-            })
-            .collect();
-
-        // 4) build a loose `anyOf` schema that references them
-        Schema::Object(SchemaObject {
-            subschemas: Some(Box::new(SubschemaValidation {
-                any_of: Some(any_of),
-                ..Default::default()
-            })),
-            ..Default::default()
+        //---------------------------------------------------------------
+        // 2) Build the wrapper schema.  Because the definitions have
+        //    already been registered, we can just reference them.
+        //---------------------------------------------------------------
+        json_schema!({
+            "anyOf": [
+                { "$ref": "#/definitions/ToolNode" },
+                { "$ref": "#/definitions/ChannelNode" }
+                // { "$ref": "#/definitions/MyOtherNode" }
+            ]
         })
     }
+    
 }
 
 #[derive(Clone,Debug)]

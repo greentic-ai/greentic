@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use chrono_english::parse_date_string;
 use handlebars::Handlebars;
 use regex::Regex;
-use schemars::{schema::RootSchema, schema_for, JsonSchema};
+use schemars::{Schema, schema_for, JsonSchema};
 use serde_json::{json,  Value as JsonValue};
 use serde::{
     de::{self, MapAccess, Visitor},
@@ -221,7 +221,7 @@ pub struct QAProcessNode {
 #[typetag::serde]
 impl NodeType for QAProcessNode {
     fn type_name(&self) -> String { "qa".into() }
-    fn schema(&self) -> RootSchema { schema_for!(QAProcessConfig) }
+    fn schema(&self) -> Schema { schema_for!(QAProcessConfig) }
 
     async fn process(&self, msg: Message, ctx: &mut NodeContext)
       -> Result<NodeOut, NodeErr>
@@ -781,10 +781,10 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, plugin::Plugin, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
+    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, HostLogger, ManagedChannel}, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{LogConfig, Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
 
     use super::*;
-    use channel_plugin::{message::Participant, message::LogLevel};
+    use channel_plugin::{message::{LogLevel, Participant}, plugin_actor::PluginHandle};
     use dashmap::DashMap;
     use serde_json::json;
     use chrono::Utc;
@@ -1426,9 +1426,10 @@ connections:
             .await
             .expect("could not make channel manager");
 
-        let plugin = Plugin::load(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf())
+        let plugin = PluginHandle::spawn_plugin(Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib").to_path_buf())
             .expect("could not load plugin");
-        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin), store.clone()), None, None);
+        let log_config = LogConfig::new(LogLevel::Info, Some("./greentic/logs"), None);
+        let mock = ManagedChannel::new(PluginWrapper::new(Arc::new(plugin), store.clone(), log_config), None, None);
         channel_manager
             .register_channel("mock_inout".to_string(), mock)
             .await

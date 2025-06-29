@@ -11,7 +11,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 
 use channel_plugin::{
     message::{
-        make_session_key, Capabilities, CapabilitiesResult, HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, ChannelMessage, ChannelState, StateResult 
+        make_session_key, ChannelCapabilities, CapabilitiesResult, HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, ChannelMessage, ChannelState, StateResult 
     }, plugin_helpers::{ build_text_message, build_user_joined_event, build_user_left_event, get_user_joined_left_events}, plugin_runtime::{run, HasStore, PluginHandler}
 };
 use tracing::{debug, error, info};
@@ -301,7 +301,7 @@ impl PluginHandler for WsPlugin {
     }
     /// Declares plugin capabilities (sending, receiving, text, etc.)
     fn capabilities(&self) -> CapabilitiesResult{
-        CapabilitiesResult { capabilities: Capabilities {
+        CapabilitiesResult { capabilities: ChannelCapabilities {
             name: "ws".into(),
             supports_sending: true,
             supports_receiving: true,

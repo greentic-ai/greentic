@@ -1,10 +1,10 @@
-use schemars::schema::{
-    ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
+//! src/ollama_schema.rs
+use schemars::{
+
+    JsonSchema, SchemaGenerator,
 };
-use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::json;
-use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use super::ollama::{OllamaAgent, OllamaMode};
 
@@ -14,7 +14,7 @@ impl JsonSchema for OllamaAgent {
     }
 
     fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        // helper: string|null
+        // helper: string | null
         let string_or_null = SchemaObject {
             instance_type: Some(SingleOrVec::Vec(vec![
                 InstanceType::String,
@@ -23,7 +23,7 @@ impl JsonSchema for OllamaAgent {
             ..Default::default()
         };
 
-        // helper: object|null
+        // helper: object | null  (open-ended additionalProperties=true)
         let object_or_null = SchemaObject {
             instance_type: Some(SingleOrVec::Vec(vec![
                 InstanceType::Object,
@@ -36,9 +36,9 @@ impl JsonSchema for OllamaAgent {
             ..Default::default()
         };
 
-        let mut props = schemars::Map::new();
+        let mut props: Map<String, Schema> = Map::new();
 
-        // task: required string
+        // ── task (required string) ────────────────────────────────────────
         props.insert(
             "task".into(),
             Schema::Object(SchemaObject {
@@ -47,10 +47,10 @@ impl JsonSchema for OllamaAgent {
             }),
         );
 
-        // model: string|null
+        // model (string|null) ---------------------------------------------
         props.insert("model".into(), Schema::Object(string_or_null.clone()));
 
-        // mode: OllamaMode enum, default to "chat"; allow null
+        // mode (enum|string|null) -----------------------------------------
         props.insert(
             "mode".into(),
             Schema::Object(SchemaObject {
@@ -67,10 +67,10 @@ impl JsonSchema for OllamaAgent {
             }),
         );
 
-        // ollama_host: string|null
+        // ollama_host (string|null) ---------------------------------------
         props.insert("ollama_host".into(), Schema::Object(string_or_null.clone()));
 
-        // ollama_port: integer|null
+        // ollama_port (integer|null) --------------------------------------
         props.insert(
             "ollama_port".into(),
             Schema::Object(SchemaObject {
@@ -82,18 +82,16 @@ impl JsonSchema for OllamaAgent {
             }),
         );
 
-        // model_options: object|null
+        // model_options (object|null) -------------------------------------
         props.insert("model_options".into(), Schema::Object(object_or_null.clone()));
 
-        // tool_names: array<string>|null
+        // tool_names (array<string>|null) ---------------------------------
         let array_of_str = SchemaObject {
             instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Array))),
             array: Some(Box::new(ArrayValidation {
                 items: Some(SingleOrVec::Single(Box::new(Schema::Object(
                     SchemaObject {
-                        instance_type: Some(SingleOrVec::Single(Box::new(
-                            InstanceType::String,
-                        ))),
+                        instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
                         ..Default::default()
                     },
                 )))),
@@ -101,7 +99,6 @@ impl JsonSchema for OllamaAgent {
             })),
             ..Default::default()
         };
-        // allow null as well
         let array_or_null = SchemaObject {
             instance_type: Some(SingleOrVec::Vec(vec![
                 InstanceType::Array,
@@ -112,7 +109,7 @@ impl JsonSchema for OllamaAgent {
         };
         props.insert("tool_names".into(), Schema::Object(array_or_null));
 
-        // assemble object validation
+        // ── wrap everything into an object schema ─────────────────────────
         let mut validation = ObjectValidation::default();
         validation.properties = props;
         validation.required = {
@@ -121,19 +118,19 @@ impl JsonSchema for OllamaAgent {
             s
         };
 
-        let root = SchemaObject {
+        Schema::Object(SchemaObject {
             instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Object))),
             object: Some(Box::new(validation)),
             ..Default::default()
-        };
-        Schema::Object(root)
+        })
     }
 
-    fn is_referenceable() -> bool {
-        true
-    }
     fn schema_id() -> Cow<'static, str> {
         Cow::Owned(Self::schema_name())
+    }
+    
+    fn inline_schema() -> bool {
+        false
     }
 }
 
@@ -143,7 +140,7 @@ impl JsonSchema for OllamaMode {
     }
 
     fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        let obj = SchemaObject {
+        Schema::Object(SchemaObject {
             enum_values: Some(vec![
                 json!("embed"),
                 json!("chat"),
@@ -151,7 +148,30 @@ impl JsonSchema for OllamaMode {
             ]),
             instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
             ..Default::default()
-        };
-        Schema::Object(obj)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schemars::{Schema};
+    use serde_json::Value;
+
+    #[test]
+    fn generates_expected_schema() {
+        // Generate in-memory schema
+        let mut generate = SchemaGenerator::default();
+        let schema: Schema = <OllamaAgent>::json_schema(&mut generate);
+
+        // Smoke-check: the root must be an object with a "task" property
+        let as_json: Value = serde_json::to_value(&schema).unwrap();
+        let task_type = &as_json
+            .get("properties")
+            .and_then(|p| p.get("task"))
+            .and_then(|t| t.get("type"))
+            .unwrap();
+
+        assert_eq!(task_type, "string");
     }
 }

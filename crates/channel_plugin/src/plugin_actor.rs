@@ -36,12 +36,12 @@ pub type PluginEvent = (String, Request);
 /// Returned when you spawn a plugin in-process.
 /// Use it to send JSON-RPC requests to the plugin.
 #[derive(Clone, Debug)]
-pub struct ActorHandle {
+pub struct PluginHandle {
     tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>,
     plugin_id: String,
 }
 
-impl ActorHandle {
+impl PluginHandle {
     pub async fn call(&self, req: Request) -> Result<Response> {
         let (tx_resp, rx_resp) = oneshot::channel();
         self.tx.send((req, tx_resp)).await
@@ -75,29 +75,85 @@ impl ActorHandle {
         Ok(serde_json::from_value(v)?)
     }
 
+    pub async fn rpc_notify<P: serde::Serialize>(
+        &self,
+        method: &str,
+        params: Option<P>,
+    ) -> anyhow::Result<()> {
+        let req = Request {
+            jsonrpc: "2.0".to_string(),
+            id: None, // <-- no response expected
+            method: method.to_string(),
+            params: params.map(|p| serde_json::to_value(p)).transpose()?,
+        };
+
+        // Just fire and forget — use a dummy oneshot::Sender
+        let (_tx, _rx) = tokio::sync::oneshot::channel();
+        self.tx.send((req, _tx)).await
+            .map_err(|_| anyhow::anyhow!("ActorHandle '{}' is dead", self.plugin_id))?;
+
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------
     // Convenience wrappers
     // ---------------------------------------------------------------------
 
     /// `capabilities` → `CapabilitiesResult`
-    pub async fn capabilities(&self) -> anyhow::Result<Capabilities> {
-        match self.rpc_call<CapabilitiesResult>("capabilities", None).await {
+    pub async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities> {
+        match self.rpc_call::<CapabilitiesResult>("capabilities", None).await {
             Ok(cap) => Ok(cap.capabilities),
             Err(err) => Err(err),
         }
     }
 
+    /// `listConfigKeys` → Vec<String>
+    pub async fn list_config_keys(&self) -> anyhow::Result<ListKeysResult> {
+        self.rpc_call::<ListKeysResult>("listConfigKeys", None).await
+    }
+
+    /// `listSecretKeys` → Vec<String>
+    pub async fn list_secret_keys(&self) -> anyhow::Result<ListKeysResult> {
+       self.rpc_call::<ListKeysResult>("listSecretKeys", None).await
+    }
+
+    pub async fn start(&mut self, params: InitParams) ->  anyhow::Result<InitResult>{
+        let msg = serde_json::to_value(params)
+        .map_err(|err| anyhow!("Failed to serialize InitParams: {}", err))?;
+        self.rpc_call::<InitResult>("start", Some(msg)).await
+
+    }
+
+    pub async fn send_message(&mut self, params: MessageOutParams) ->  anyhow::Result<MessageOutResult>{
+        let msg = serde_json::to_value(params)
+        .map_err(|err| anyhow!("Failed to serialize MessageOutParams: {}", err))?;
+        self.rpc_call::<MessageOutResult>("sendMessage", Some(msg)).await
+
+    }
+    /// When a message comes in
+    pub async fn receive_message(&mut self) ->  anyhow::Result<MessageInResult>{
+       self.rpc_call::<MessageInResult>("receiveMessage", None).await
+    }
+
     /// `state` → `StateResult`
     pub async fn state(&self) -> anyhow::Result<ChannelState> {
-        match self.rpc_call<StateResult>("state", None).await{
+        match self.rpc_call::<StateResult>("state", None).await{
             Ok(state) => Ok(state.state),
             Err(err) => Err(err),
         }
     }
 
+    pub async fn drain(&self)  -> anyhow::Result<()> {
+       self.rpc_notify::<()>("drain", None).await
+    }
+
+    pub async fn stop(&self)  -> anyhow::Result<()> {
+       self.rpc_notify::<()>("drain", None).await
+    }
+
     /// `health` → `HealthResult`
     pub async fn health(&self) -> anyhow::Result<HealthResult> {
-        self.rpc_call("health", None).await
+        self.rpc_call::<HealthResult>("health", None).await
     }
 
     /// Example with params: `waitUntilDrained`
@@ -171,7 +227,7 @@ pub async fn spawn_plugin_actor<P: PluginHandler>(mut plugin: P)
 // Runtime main loop
 // -----------------------------------------------------------------------------
 
-pub async fn run<P: PluginHandler>(plugin: P) -> ActorHandle {
+pub async fn run<P: PluginHandler>(plugin: P) -> PluginHandle {
     // ── a) start the plugin as an actor  ────────────────────────────────
     //
     //     spawn_plugin_actor returns:
@@ -243,7 +299,7 @@ pub async fn run<P: PluginHandler>(plugin: P) -> ActorHandle {
     });
 
     // ── e) return handle ────────────────────────────────────────────────
-    ActorHandle { tx, plugin_id }
+    PluginHandle { tx, plugin_id }
 }
 
 
@@ -252,10 +308,10 @@ pub async fn run<P: PluginHandler>(plugin: P) -> ActorHandle {
 ///
 /// `event_tx` is forwarded every time the plugin sends a *request*
 /// (e.g. `messageIn`).  
-pub async fn spawn_process_actor<P: AsRef<Path>>(
+pub async fn spawn_plugin<P: AsRef<Path>>(
     exe_path: P,
     event_tx: mpsc::UnboundedSender<PluginEvent>,
-) -> anyhow::Result<ActorHandle> {
+) -> anyhow::Result<PluginHandle> {
     // ── launch ───────────────────────────────────────────────────────
     let mut child = TokioCommand::new(exe_path.as_ref())
         .stdin(Stdio::piped())
@@ -316,7 +372,7 @@ pub async fn spawn_process_actor<P: AsRef<Path>>(
         });
     }
 
-    Ok( ActorHandle { tx, plugin_id } )
+    Ok( PluginHandle { tx, plugin_id } )
 }
 // -----------------------------------------------------------------------------
 // Request handler
@@ -411,72 +467,3 @@ async fn handle_internal_request<P: PluginHandler>(
         }
     }
 }
-/* 
-async fn handle_request(
-    req: Request,
-    cmd_tx: &mpsc::Sender<Command>,
-    tx: &mpsc::UnboundedSender<String>,
-) {
-    fn respond(tx: &mpsc::UnboundedSender<String>, resp: Response) {
-        let _ = tx.send(format!("{}\n", serde_json::to_string(&resp).unwrap()));
-    }
-    macro_rules! ok_null {
-        ($id:expr) => { respond(tx, Response::success($id, json!(null))) }
-    }
-
-    match req.method.as_str() {
-        "init" => {
-            if let Some(p) = req.params.and_then(|v| serde_json::from_value(v).ok()) {
-                let (tx1, rx1) = oneshot::channel();
-                let _ = cmd_tx.send(Command::Init(p, tx1)).await;
-                let _ = rx1.await;
-            }
-            if let Some(id) = req.id { ok_null!(id); }
-        }
-        "drain" => {
-            let _ = cmd_tx.send(Command::Drain).await;
-            if let Some(id) = req.id { ok_null!(id); }
-        }
-        "state" => {
-            let (tx1, rx1) = oneshot::channel();
-            let _ = cmd_tx.send(Command::State(tx1)).await;
-            if let (Some(id), Ok(val)) = (req.id, rx1.await) {
-                respond(tx, Response::success(id, json!(val)))
-            }
-        }
-        "health" => {
-            let (tx1, rx1) = oneshot::channel();
-            let _ = cmd_tx.send(Command::Health(tx1)).await;
-            if let (Some(id), Ok(val)) = (req.id, rx1.await) {
-                respond(tx, Response::success(id, json!(val)))
-            }
-        }
-        "messageOut" => {
-            if let Some(p) = req.params.and_then(|v| serde_json::from_value(v).ok()) {
-                let (tx1, rx1) = oneshot::channel();
-                let _ = cmd_tx.send(Command::SendMessage(p, tx1)).await;
-                if let (Some(id), Ok(val)) = (req.id, rx1.await) {
-                    respond(tx, Response::success(id, json!(val)))
-                }
-            }
-        }
-        "setConfig" => {
-            if let Some(p) = req.params.and_then(|v| serde_json::from_value(v).ok()) {
-                let _ = cmd_tx.send(Command::SetConfig(p)).await;
-            }
-            if let Some(id) = req.id { ok_null!(id); }
-        }
-        "setSecrets" => {
-            if let Some(p) = req.params.and_then(|v| serde_json::from_value(v).ok()) {
-                let _ = cmd_tx.send(Command::SetSecrets(p)).await;
-            }
-            if let Some(id) = req.id { ok_null!(id); }
-        }
-        _ => {
-            if let Some(id) = req.id {
-                respond(tx, Response::fail(id, -32601, "Method not found", None))
-            }
-        }
-    }
-}
-*/

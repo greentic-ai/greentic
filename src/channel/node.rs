@@ -6,10 +6,9 @@ use crate::message::Message;
 use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing};
 use async_trait::async_trait;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection};
-use channel_plugin::plugin::ChannelPlugin;
 use dashmap::DashMap;
 use schemars::{schema_for, JsonSchema};
-use schemars::schema::RootSchema;
+use schemars::Schema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -221,7 +220,7 @@ impl NodeType for ChannelNode {
         self.channel_name.clone()
     }
 
-    fn schema(&self) -> RootSchema {
+    fn schema(&self) -> Schema {
         schema_for!(ChannelNode)
     }
 

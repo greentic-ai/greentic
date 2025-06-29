@@ -14,6 +14,17 @@ use crate::watcher::{DirectoryWatcher, WatchedType};
 
 #[async_trait::async_trait]
 pub trait SecretsManagerType: Send + Sync {
+    async fn as_vec(&self) -> Vec<(String, String)> {
+        let mut secrets = vec![];
+        for key in self.keys().await {
+            if let Some(handle) = self.get(&key) {
+                if let Some(secret) = self.reveal(handle).await {
+                    secrets.push((key, secret));
+                }
+            }
+        }
+        secrets
+    }
     fn get(&self, key: &str) -> Option<u32>;
     fn keys(&self) -> Vec<String>;
     async fn add_secret(&mut self, key: &str, secret: &str) -> Result<(),SecretsError>;

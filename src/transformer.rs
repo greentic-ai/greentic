@@ -1,12 +1,12 @@
-use std::{collections::HashMap, fmt};
-use schemars::{schema::{Schema, SchemaObject}, JsonSchema, SchemaGenerator};
+use std::{borrow::Cow, collections::HashMap, fmt};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use crate::{message::Message, node::NodeError};
 #[typetag::serde] 
 pub trait TransformerType: Send + Sync {
     fn transform(&self, input: &Message, context: &TransformContext) -> Result<Message, NodeError>;
     fn clone_box(&self) -> Box<dyn TransformerType>;
-    fn get_schema(&self) -> schemars::schema::RootSchema;
+    fn get_schema(&self) -> schemars::Schema;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -43,24 +43,25 @@ impl std::ops::DerefMut for Transformer {
 
 /// now give it a JsonSchema impl
 impl JsonSchema for Transformer {
-    fn schema_name() -> String {
-        // Optional: a catch‐all name.
-        "transformer".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("transformer")
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        Cow::Owned(format!("{}::transformer", module_path!()))
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        // we cannot inspect the *value* here – but we can use the *type*’s get_schema.
-        // since this is a dynamic object, we’ll just produce an *open* schema,
-        // or you could merge in all known definitions.
-        let root = generator.root_schema_for::<serde_json::Value>();
-        Schema::Object(SchemaObject {
-            // a loose `anyOf` over all the concrete variants’ schemas:
-            subschemas: Some(Box::new(schemars::schema::SubschemaValidation {
-                any_of: Some(root.definitions.values().cloned().collect()),
-                .. Default::default()
-            })),
-            .. Default::default()
-        })
+        // Here we say a Transformer is just any JSON object (serde_json::Value) for now.
+        let value_schema = generator.subschema_for::<serde_json::Value>();
+
+        // If you eventually enumerate known transformers, you could list them like:
+        // let a = generator.subschema_for::<KnownTransformerA>();
+        // let b = generator.subschema_for::<KnownTransformerB>();
+        // and return: json_schema!({ "anyOf": [a, b] })
+
+        // But this version just passes through the full open schema:
+        value_schema
     }
 }
 
@@ -97,7 +98,7 @@ mod tests {
     use super::*;
     use crate::message::Message;
     use crate::node::NodeError;
-    use schemars::schema::RootSchema;
+    use schemars::Schema;
     use schemars::{schema_for, JsonSchema};
     use serde_json::json;
 
@@ -115,7 +116,7 @@ mod tests {
         fn clone_box(&self) -> Box<dyn TransformerType> {
             Box::new(self.clone())
         }
-        fn get_schema(&self) -> RootSchema {
+        fn get_schema(&self) -> Schema {
             // this is object-safe because it doesn't mention `Self: Sized`
             schema_for!(UppercaseTransformer)
         }

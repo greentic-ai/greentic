@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use schemars::{schema::RootSchema, schema_for, JsonSchema};
+use schemars::{schema_for, JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 use crate::{
     message::Message,
@@ -42,7 +42,7 @@ impl NodeType for BuiltInAgent {
         self.agent_name().to_string()
     }
 
-    fn schema(&self) -> RootSchema {
+    fn schema(&self) -> Schema {
         schema_for!(BuiltInAgent)
     }
 

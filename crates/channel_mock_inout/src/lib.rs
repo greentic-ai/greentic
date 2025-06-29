@@ -1,7 +1,7 @@
 use std::{thread, time::Duration};
 use async_trait::async_trait;
 // my_plugin/src/lib.rs
-use channel_plugin::{export_plugin, message::{ChannelCapabilities, ChannelMessage, MessageContent, Participant}, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
+use channel_plugin::message::{ChannelCapabilities, ChannelMessage, ChannelState, MessageContent, Participant};
 use dashmap::DashMap;
 
 // Your real plugin type:
@@ -10,8 +10,6 @@ pub struct MockPlugin {
     state: ChannelState,
     config: DashMap<String,String>,
     secrets: DashMap<String,String>,
-    logger: Option<PluginLogger>,
-    log_level: Option<LogLevel>,
 }
 #[async_trait]
 impl ChannelPlugin for MockPlugin {
@@ -19,18 +17,7 @@ impl ChannelPlugin for MockPlugin {
         "mock_inout".to_string()
     }
 
-    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
-        self.logger = Some(logger);
-        self.log_level = Some(log_level);
-    }
-
-    fn get_logger(&self) -> Option<PluginLogger> {
-        self.logger
-    }
-
-    fn get_log_level(&self) -> Option<LogLevel>{
-        self.log_level
-    }
+    
 
     fn capabilities(&self) -> ChannelCapabilities {
         ChannelCapabilities {

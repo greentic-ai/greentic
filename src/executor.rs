@@ -2,6 +2,7 @@ use std::fs;
 use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use async_trait::async_trait;
+use channel_plugin::message::LogLevel;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView,};
@@ -22,7 +23,7 @@ use crate::executor::exports::wasix::mcp::router::{Annotations, Content, Resourc
 use crate::secret::{EmptySecretsManager, SecretsManager};
 use crate::watcher::{DirectoryWatcher, WatchedType};
 use std::fmt::Debug;
-use crate::logger::{LogLevel, Logger};
+use crate::logger::Logger;
 
 // Import the configuration type from your config module.
 

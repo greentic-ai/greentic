@@ -23,7 +23,7 @@
 use std::{panic, time::Instant};
 
 use async_trait::async_trait;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use dashmap::DashMap;
 use tracing::{dispatcher, level_filters::LevelFilter, Dispatch};
 use tracing_appender::rolling::daily;
@@ -49,6 +49,8 @@ pub trait HasStore {
     fn secret_store(&self) -> &DashMap<String, String>;
 }
 
+pub const VERSION: &str = "0.1.0";
+
 #[async_trait]
 pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
     /// Initialise the plugin and start any underlying services
@@ -62,18 +64,18 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
     }
     /// Drain the plugin
     async fn drain(&mut self);
-    async fn wait_until_drained(&self, timeout_ms: u64) -> Result<()> {
-        let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    async fn wait_until_drained(&self, params: WaitUntilDrainedParams) -> WaitUntilDrainedResult {
+        let deadline = Instant::now() + std::time::Duration::from_millis(params.timeout_ms);
 
         loop {
             let state = self.state().await.state;
 
             if state == ChannelState::STOPPED {
-                return Ok(());
+                return WaitUntilDrainedResult{stopped: true, error: false};
             }
 
             if Instant::now() >= deadline {
-                return Err(anyhow!("Timeout exceeded: plugin not stopped after {}ms", timeout_ms));
+                return WaitUntilDrainedResult{stopped: false, error: true};
             }
 
             sleep(std::time::Duration::from_millis(100)).await;
@@ -88,6 +90,9 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
     /// Check the health of the plugin
     async fn health(&self) -> HealthResult {
         HealthResult { healthy: true, reason: None }
+    }
+    async fn version(&self) -> VersionResult{
+        VersionResult{version: VERSION.to_string()}
     }
     /// Request the current status
     async fn state(&self) -> StateResult;

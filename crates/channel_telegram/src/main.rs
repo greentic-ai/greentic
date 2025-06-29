@@ -1,7 +1,7 @@
 // channel_telegram/src/lib.rs
 use anyhow::anyhow;
 use crossbeam::channel::{unbounded, Receiver, Sender};
-use channel_plugin::{message::{make_session_key, Capabilities, CapabilitiesResult, ChannelMessage, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, ChannelState, StateResult, TextMessage}, plugin_helpers::{build_user_joined_event, get_user_joined_left_events,}, plugin_runtime::{run, HasStore, PluginHandler}};
+use channel_plugin::{message::{make_session_key, ChannelCapabilities, CapabilitiesResult, ChannelMessage, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, ChannelState, StateResult, TextMessage}, plugin_helpers::{build_user_joined_event, get_user_joined_left_events,}, plugin_runtime::{run, HasStore, PluginHandler}};
 use tokio::runtime::{Builder};
 use tracing::{error, info};
 use std::{convert::Infallible, thread};
@@ -343,7 +343,7 @@ impl PluginHandler for TelegramPlugin {
                     "required": ["title", "address", "location"]
                 })),
             });
-        CapabilitiesResult { capabilities: Capabilities {
+        CapabilitiesResult { capabilities: ChannelCapabilities {
             name:                    "telegram".into(),
             supports_sending:        true,
             supports_receiving:      true,
@@ -592,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use channel_plugin::{message::{ChannelMessage, InitParams, LogLevel, MessageContent, MessageDirection, Participant}, plugin_helpers::load_env_as_vecs};
+    use channel_plugin::{message::{ChannelMessage, InitParams, LogLevel, MessageContent, MessageDirection, Participant, WaitUntilDrainedParams}, plugin_helpers::load_env_as_vecs};
     use chrono::Utc;
 
     #[tokio::test]
@@ -730,7 +730,7 @@ mod tests {
         p.drain().await;
 
         // Since we have no backlog, this should return immediately
-        p.wait_until_drained(10).await.expect("drained without backlog");
+        assert!(p.wait_until_drained(WaitUntilDrainedParams { timeout_ms: 10 }).await.stopped);
     }
 
     #[tokio::test]

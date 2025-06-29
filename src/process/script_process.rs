@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use schemars::{schema::RootSchema, schema_for, JsonSchema};
+use schemars::{Schema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
 use rhai::{serde::to_dynamic, Engine, Scope};
 use serde_json::{json, Value};
@@ -190,7 +190,7 @@ impl NodeType for ScriptProcessNode {
         "script".to_string()
     }
 
-    fn schema(&self) -> RootSchema {
+    fn schema(&self) -> Schema {
         schema_for!(ScriptProcessNode)
     }
 

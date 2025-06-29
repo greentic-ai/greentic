@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use async_trait::async_trait;
+use channel_plugin::message::LogLevel;
 use opentelemetry::{Context, trace::FutureExt};
 use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Histogram;
@@ -29,14 +30,22 @@ use opentelemetry_sdk::{
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-    Critical,
+pub struct LogConfig{
+    pub(crate) log_level: LogLevel,
+    pub(crate) log_dir: Option<String>,
+    pub(crate) otel_endpoint: Option<String>,
+}
+
+impl LogConfig{
+    pub fn new(log_level: LogLevel, log_dir: Option<String>, otel_endpoint: Option<String>) -> Self {
+        Self{log_level,log_dir,otel_endpoint}
+    }
+    pub fn default() -> Self {
+        Self{log_level:LogLevel::Info,log_dir:None,otel_endpoint:None}
+    }
 }
 
 #[async_trait]

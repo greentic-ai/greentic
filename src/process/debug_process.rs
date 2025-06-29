@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use schemars::{schema::RootSchema, schema_for, JsonSchema};
+use schemars::{Schema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -31,7 +31,7 @@ impl NodeType for DebugProcessNode {
         "debug".to_string()
     }
 
-    fn schema(&self) -> RootSchema {
+    fn schema(&self) -> Schema {
         schema_for!(DebugProcessNode)
     }
 

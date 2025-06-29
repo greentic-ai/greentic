@@ -7,6 +7,15 @@ use std::{collections::HashMap, env, path::PathBuf};
 #[async_trait::async_trait]
 #[typetag::serde] 
 pub trait ConfigManagerType: Send + Sync  {
+    async fn as_vec(&self) -> Vec<(String, String)> {
+        let mut config = vec![];
+        for key in self.keys().await {
+            if let Some(value) = self.get(&key).await {
+                config.push((key, value));
+            }
+        }
+        config
+    }
     async fn keys(&self) -> Vec<String>;
     async fn get(&self, key: &str) -> Option<String>;
     async fn set(&mut self, key: &str, value: &str) -> Result<(), String>;

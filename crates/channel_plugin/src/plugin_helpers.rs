@@ -1,11 +1,13 @@
 //! Helper functions to construct `ChannelMessage`s, `Event`s and Protobuf-compatible JSON
 
 use dotenvy::{dotenv_iter, from_path_iter};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value as to_json, Value};
 use chrono::Utc;
 //use serde_json::{json, Value};
 use uuid::Uuid;
-
+use thiserror::Error;
 use crate::jsonrpc::{Id, Request};
 use crate::message::*;
 
@@ -229,4 +231,37 @@ pub fn load_env_as_vecs(path: Option<&str>)
         }
     }
     Ok((config, secrets))
+}
+
+/// Errors that a ChannelPlugin implementation can return.
+#[derive(Error, Debug, Serialize, Deserialize, JsonSchema)]
+#[repr(C)]
+pub enum PluginError {
+    /// Something went wrong sending or receiving JSON.
+    #[error("JSON error: {0}")]
+    Json(String),
+
+    /// The plugin is not in a state where this operation is valid.
+    #[error("invalid state for this operation")]
+    InvalidState,
+
+    /// A timeout occurred.
+    #[error("operation timed out after {0} ms")]
+    Timeout(u64),
+
+    /// The plugin returned an unspecified failure.
+    #[error("plugin error: {0}")]
+    Other(String),
+}
+
+impl From<serde_json::Error> for PluginError {
+    fn from(err: serde_json::Error) -> PluginError {
+        PluginError::Json(err.to_string())
+    }
+}
+
+impl From<anyhow::Error> for PluginError {
+    fn from(err: anyhow::Error) -> PluginError {
+        PluginError::Other(err.to_string())
+    }
 }

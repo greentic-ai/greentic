@@ -1,20 +1,20 @@
 // src/flow.rs
 
 use std::{
-    collections::{HashMap, HashSet},fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
+    borrow::Cow, collections::{HashMap, HashSet}, fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
 };
 use crate::{
     agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, flow::session::SessionStore, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, watcher::{DirectoryWatcher, WatchedType}
 };
 use anyhow::{Error};
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use thiserror::Error;
 use std::fmt::Debug;
 use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
 use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{Topo, Walker}, Directed};
-use schemars::{schema::{InstanceType, Metadata, Schema, SchemaObject}, JsonSchema, SchemaGenerator};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 use tokio::{sync::Mutex,time::sleep};
@@ -67,30 +67,39 @@ impl ExecutionReport {
 }
 
 impl JsonSchema for ExecutionReport {
-    fn schema_name() -> String {
-        "ExecutionReport".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("ExecutionReport")
+    }
+    fn schema_id() -> Cow<'static, str> {
+        Cow::Owned(format!("{}::ExecutionReport", module_path!()))
     }
 
-    fn json_schema(gene: &mut SchemaGenerator) -> Schema {
-        // Get subschemas for the obvious fields:
-        let mut object = gene.subschema_for::<Vec<NodeRecord>>().into_object();
-        let error_schema = gene.subschema_for::<Option<(String, NodeError)>>();
+  fn json_schema(generate: &mut SchemaGenerator) -> Schema {
+        // ------------------------------------------------------------------
+        // Grab re-usable sub-schemas from the generator
+        // ------------------------------------------------------------------
+        let records_schema = generate.subschema_for::<Vec<NodeRecord>>();
+        let error_schema   = generate.subschema_for::<Option<(String, NodeError)>>();
 
-        // Now manually build a property schema for `total` as a number:
-        let mut total_meta = Metadata::default();
-        total_meta.description = Some("Total elapsed time in seconds".to_string());
-        let total_schema = Schema::Object(SchemaObject {
-            metadata: Some(Box::new(total_meta)),
-            instance_type: Some(InstanceType::Number.into()),
-            ..Default::default()
+        // The `total` field is just a number with a short description
+        let total_schema = json_schema!({
+            "type":        "number",
+            "description": "Total elapsed time in seconds"
         });
 
-        // Inject the `error` and `total` props:
-        object.object().properties.insert("error".to_string(), error_schema);
-        object.object().properties.insert("total".to_string(), total_schema);
-
-        // And make sure `records` was already there under its property name:
-        Schema::Object(object)
+        // ------------------------------------------------------------------
+        // Assemble the final object schema (all declarative!)
+        // ------------------------------------------------------------------
+        json_schema!({
+            "type":       "object",
+            "properties": {
+                "records":  records_schema,
+                "error":    error_schema,
+                "total":    total_schema
+            },
+            // Only `records` is mandatory
+            "required": ["records"]
+        })
     }
 }
 

@@ -1,8 +1,9 @@
 use std::{collections::VecDeque, sync::{Arc, Condvar, Mutex}};
 
 use async_trait::async_trait;
+use channel_plugin::message::{ChannelMessage, ChannelState, LogLevel};
 // my_plugin/src/lib.rs
-use channel_plugin::{export_plugin, message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
+//use channel_plugin::{export_plugin, message::{ChannelCapabilities, ChannelMessage}, plugin::{ChannelPlugin, ChannelState, LogLevel, PluginError, PluginLogger}};
 use dashmap::DashMap;
 
 // Your real plugin type:
@@ -11,8 +12,6 @@ pub struct MockPlugin {
     state: ChannelState,
     config: DashMap<String,String>,
     secrets: DashMap<String,String>,
-    logger: Option<PluginLogger>,
-    log_level: Option<LogLevel>,
     queue: Arc<(Mutex<VecDeque<ChannelMessage>>, Condvar)>,
 }
 #[async_trait]
@@ -21,14 +20,6 @@ impl ChannelPlugin for MockPlugin {
         "mock_middle".to_string()
     }
 
-    fn set_logger(&mut self, logger: PluginLogger, log_level: LogLevel) {
-        self.logger = Some(logger);
-        self.log_level = Some(log_level);
-    }
-
-    fn get_logger(&self) -> Option<PluginLogger> {
-        self.logger
-    }
 
     fn get_log_level(&self) -> Option<LogLevel>{
         self.log_level
