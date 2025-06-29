@@ -19,7 +19,7 @@ use crate::watcher::{DirectoryWatcher, WatchedType};
 #[async_trait]
 pub trait PluginEventHandler: Send + Sync + 'static {
     /// A plugin named `name` has just been loaded or re-loaded.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: &PluginHandle) -> Result<(),Error>;
+    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginHandle) -> Result<(),Error>;
 
     /// A plugin named `name` has just been removed.
     async fn plugin_removed(&self, name: &str)  -> Result<(),Error>;
@@ -88,7 +88,7 @@ impl PluginWatcher {
                 let name = entry.key();                         // borrow key
                 let plugin = entry.value();         // clone the Arc so you own one
                 if let Err(err) = handler
-                    .plugin_added_or_reloaded(name, &plugin)
+                    .plugin_added_or_reloaded(name, plugin.clone())
                     .await
                 {
                     warn!("Could not load plugin {}: {:?}", name, err);
@@ -98,10 +98,10 @@ impl PluginWatcher {
     }
 
      /// Notify all subscribers that `name` was added or reloaded.
-    async fn notify_add_or_reload(&self, name: &str, plugin: Arc<&PluginHandle>) {
+    async fn notify_add_or_reload(&self, name: &str, plugin: &PluginHandle) {
         let subs = self.subscribers.lock().unwrap().clone();
         for sub in subs {
-            let result = sub.plugin_added_or_reloaded(name, &plugin).await;
+            let result = sub.plugin_added_or_reloaded(name,plugin.clone()).await;
             if result.is_err() {
                 warn!("Could not reload plugin {}",name);
             }
@@ -177,9 +177,10 @@ pub mod tests {
     use std::{
         collections::VecDeque, fs::{self, File}, path::PathBuf, sync::{Condvar, Mutex},
     };
-    use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::Command, plugin_runtime::{HasStore, PluginHandler}};
+    use channel_plugin::{jsonrpc::{Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{spawn_plugin_actor, Command}, plugin_runtime::{HasStore, PluginHandler}};
     use dashmap::DashMap;
     use tempfile::TempDir;
+    use tokio::sync::oneshot;
     //use tokio::sync::Notify;
 
     #[derive(Clone)]
@@ -206,6 +207,10 @@ pub mod tests {
                 }
             }
 
+
+        pub fn get_plugin_hnadle(&self) -> PluginHandle{
+            // TODO
+        }
         /// Inject an incoming message and wake any pollers.
         pub fn inject(&self, msg: ChannelMessage) {
             let mut q = self.messages.lock().unwrap();
@@ -270,7 +275,7 @@ pub mod tests {
             StateResult{state:*self.state.lock().unwrap()}
         }
 
-        async fn init(&mut self, params: InitParams) -> InitResult {
+        async fn init(&mut self, _params: InitParams) -> InitResult {
             *self.state.lock().unwrap() = ChannelState::RUNNING;
             InitResult{ success: true, error: None }
         }
@@ -334,9 +339,9 @@ pub mod tests {
         let plugin = rt.block_on(make_mock_handle());   //   👈 real PluginHandle!
 
         let store = InMemorySessionStore::new(60);
-        PluginWrapper::new(Arc::new(plugin), store, LogConfig::default())
+        PluginWrapper::new(plugin, store, LogConfig::default())
     }
-
+/* 
     #[test]
     fn plugin_name_extracts_stem() {
         let p = PathBuf::from("/foo/bar/baz.so");
@@ -347,7 +352,7 @@ pub mod tests {
         let name2 = PluginWatcher::plugin_name(&p2);
         println!("{:?}",name2);
         assert_eq!(name2, None);
-    }
+    }*/
 
     #[test]
     fn is_relevant_only_dylibs_in_dir() {

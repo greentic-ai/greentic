@@ -37,6 +37,12 @@ pub struct Participant {
     pub channel_specific_id: Option<String>,
 }
 
+impl Participant {
+    pub fn new(id: String, display_name: Option<String>, channel_specific_id: Option<String>) -> Self {
+        Self{id, display_name,channel_specific_id}
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema,)]
 pub struct FileMetadata {
     pub file_name: String,

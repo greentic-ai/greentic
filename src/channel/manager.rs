@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use futures::stream::{self, StreamExt};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 use tokio_util::sync::CancellationToken;
@@ -58,11 +59,20 @@ impl ChannelManager {
     }
 
     /// Simple diagnostics: channel name → state
-    pub fn diagnostics(&self) -> DashMap<String, ChannelState> {
-        self.channels
-            .iter()
-            .map(|kv| (kv.key().clone(), kv.value().wrapper.state()))
-            .collect()
+    pub async fn diagnostics(&self) -> DashMap<String, ChannelState> {
+        let results = stream::iter(self.channels.iter())
+            .then(|kv| {
+                let key = kv.key().clone();
+                let wrapper = kv.value().wrapper.clone();
+                async move {
+                    let state = wrapper.state().await;
+                    (key, state)
+                }
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        results.into_iter().collect()
     }
 
     pub fn session_store(&self) -> SessionStore {
@@ -186,7 +196,7 @@ impl ChannelManager {
 #[async_trait]
 impl PluginEventHandler for ChannelManager {
     /// Called when a `.so`/`.dll` is added or changed.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: Arc<&PluginHandle>) -> Result<(), Error> {
+    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginHandle) -> Result<(), Error> {
         info!("Channel plugin added/reloaded: {}", name);
         // If already present, tear down the old one:
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
@@ -211,7 +221,7 @@ impl PluginEventHandler for ChannelManager {
         }
 
         // Wrap + configure:
-        let mut wrapper = PluginWrapper::new(plugin, self.store.clone(), self.log_config.clone());
+        let wrapper = PluginWrapper::new(plugin, self.store.clone(), self.log_config.clone());
            
         // 3) Start it **on its own thread** with its own runtime
         let mut wrapper_cloned = wrapper.clone();
@@ -221,8 +231,8 @@ impl PluginEventHandler for ChannelManager {
         //wrapper.set_session_callbacks();
 
         // run start() under that runtime
-        let config = self.config.0.as_vec();
-        let secrets = self.secrets.0.as_vec();
+        let config = self.config.0.as_vec().await;
+        let secrets = self.secrets.0.as_vec().await;
         match wrapper_cloned.start(config, secrets).await {
             Ok(()) => tracing::info!("Plugin `{}` started", plugin_name),
             Err(e) => tracing::error!("Failed to start `{}`: {:?}", plugin_name, e),
@@ -230,7 +240,7 @@ impl PluginEventHandler for ChannelManager {
 
         
         // 5) Spawn its polling loop
-        let caps = wrapper.capabilities();
+        let caps = wrapper.capabilities().await;
         if caps.supports_receiving {
             let channel_name = name.to_string();
             let subs = self.incoming_subscribers.clone();
@@ -416,7 +426,7 @@ pub mod tests {
             .unwrap();
 
         let plugin = MockChannel::new();
-        let mut wrapper = PluginWrapper::new(plugin.clone(), store, LogConfig::default());
+        let wrapper = PluginWrapper::new(plugin.get_plugin_hnadle(), store, LogConfig::default());
         mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);
         mgr.unload_channel("foo").await.unwrap();

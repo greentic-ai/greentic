@@ -1,21 +1,21 @@
 use std::sync::Arc;
 use channel_plugin::{message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult, LogLevel, MessageOutParams}, plugin_actor::PluginHandle, plugin_helpers::PluginError, plugin_manager::PluginManager, plugin_runtime::{PluginHandler, VERSION}};
 use crossbeam_utils::atomic::AtomicCell;
-use schemars::{schema_for};
+use schemars::{schema_for, JsonSchema, Schema, SchemaGenerator};
 use serde_json::json;
 use crate::{flow::session::SessionStore, logger::LogConfig}; 
 
 
 #[derive(Clone,Debug)]
 pub struct PluginWrapper {
-    inner: Arc<PluginHandle>,
+    inner: PluginHandle,
     state:   Arc<AtomicCell<ChannelState>>,
     log_config: LogConfig,
     session_store: SessionStore,
 }
 
 impl PluginWrapper {
-    pub fn new(inner: Arc<PluginHandle>, session_store: SessionStore, log_config: LogConfig) -> Self {
+    pub fn new(inner: PluginHandle, session_store: SessionStore, log_config: LogConfig) -> Self {
         Self {
             inner,
             state:   Arc::new(AtomicCell::new(ChannelState::RUNNING)),
@@ -29,45 +29,44 @@ impl PluginWrapper {
     }
   
 
-    /// Return a JSON‐Schema for `ChannelCapabilities`, with
-    /// the plugin’s real capabilities baked in as the schema’s `default`.
-    pub fn schema_json(&self) -> anyhow::Result<(String,String)> {
-        // 1) Generate the stock JSON‐Schema for the type.
-        let mut root_schema = schema_for!(ChannelCapabilities);
+    pub async fn schema_json(&self) -> anyhow::Result<(String, String)> {
+        // 1) Manually generate the schema
+        let mut generate = SchemaGenerator::default();
+        let schema: Schema = <ChannelCapabilities>::json_schema(&mut generate);
 
-        // 2) Fetch the real capabilities from the plugin
-        let caps = self.channel_capabilities();
+        // 2) Fetch the real capabilities
+        let name = self.inner.id().to_string();
+        let default_value = json!(self.capabilities().await);
 
-        // 3) Stuff them into the schema's metadata.default field
-        let meta = root_schema
-            .schema
-            .metadata
-            .get_or_insert_with(Default::default);
-        meta.default = Some(json!(caps));
+        // 3) Inject the default into the metadata
+        let mut schema_value = serde_json::to_value(&schema)?;
+        if let Some(obj) = schema_value.as_object_mut() {
+            obj.entry("default").or_insert(default_value);
+        }
 
-        // 4) And now pretty‐print that enriched schema
-        let text = serde_json::to_string_pretty(&root_schema)?;
-        Ok((caps.name,text))
+        // 4) Pretty print
+        let text = serde_json::to_string_pretty(&schema_value)?;
+        Ok((name, text))
     }
 
     pub fn name(&self) -> String {
         self.inner.id().to_string()
     }
 
-    pub fn capabilities(&self) -> ChannelCapabilities {
-        self.channel_capabilities()
+    pub async fn capabilities(&self) -> ChannelCapabilities {
+        self.inner.capabilities().await.expect("Could not get capabilities")
     }
 
-    pub fn list_config_keys(&self) -> ListKeysResult {
-        self.list_config_keys()
+    pub async fn list_config_keys(&self) -> ListKeysResult {
+        self.inner.list_config_keys().await.expect("Could not get config keys")
     }
 
-    pub fn list_secret_keys(&self) -> ListKeysResult {
-        self.list_secret_keys()
+    pub async  fn list_secret_keys(&self) -> ListKeysResult {
+        self.inner.list_secret_keys().await.expect("Could not get config keys")
     }
 
-    pub fn state(&self) -> ChannelState {
-        self.state()
+    pub async fn state(&self) -> ChannelState {
+        self.inner.state().await.expect("Could not get state")
     }
 
     pub async fn start(&mut self, config: Vec<(String,String)>, secrets: Vec<(String,String)>) -> Result<(),PluginError> {

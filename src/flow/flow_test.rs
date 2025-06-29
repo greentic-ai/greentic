@@ -1,15 +1,10 @@
 #[cfg(test)]
 mod tests {
     // src/flow_test.rs
-    use std::ffi::{c_char, CString};
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::SystemTime;
-    use async_ffi::{BorrowingFfiFuture, FfiFuture};
     use async_trait::async_trait;
-    use channel_plugin::message::{ChannelCapabilities, ChannelMessage, MessageContent, MessageDirection, Participant};
-    use channel_plugin::plugin_actor::PluginHandle;
+    use channel_plugin::message::{MessageContent, MessageDirection, Participant};
     use dashmap::DashMap;
     use serde::{Deserialize, Serialize};
     use crate::channel::manager::{ChannelManager, IncomingHandler, ManagedChannel};
@@ -25,7 +20,7 @@ mod tests {
     use crate::process::script_process::ScriptProcessNode;
     use crate::flow::state::{InMemoryState, SessionStateType, StateValue};
     use petgraph::visit::Topo;
-    use schemars::{schema_for, JsonSchema};
+    use schemars::{schema_for, JsonSchema, Schema};
     use serde_json::json;
 
     use crate::executor::Executor;
@@ -547,9 +542,8 @@ mod tests {
         let executor = make_executor();
         let secrets = SecretsManager(EmptySecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new(LogLevel::Debug);
         let store =InMemorySessionStore::new(10);
-        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, host_logger)
+        let channel_mgr = ChannelManager::new(cfg_mgr, secrets.clone(), store, LogConfig::default())
             .await
             .expect("channel manager");
         let tempdir = TempDir::new().unwrap();
@@ -1006,8 +1000,7 @@ mod tests {
         let executor = make_executor();
         let secrets = SecretsManager(EmptySecretsManager::new());
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let host_logger = HostLogger::new(LogLevel::Debug);
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(), host_logger).await.expect("could not create channel manager");
+        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(), LogConfig::default()).await.expect("could not create channel manager");
         let tempdir = TempDir::new().unwrap();
         let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
 
@@ -1015,8 +1008,8 @@ mod tests {
         let fm = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), Arc::new(process_mgr.clone()), secrets.clone());
         let registry = ChannelsRegistry::new(fm.clone(),channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
-        let noop = make_noop_plugin();              // Arc<Plugin>
-        let wrapper = PluginWrapper::new(noop.clone(), store.clone());
+        let noop = MockChannel::new();              // Arc<Plugin>
+        let wrapper = PluginWrapper::new(noop.get_plugin_handle(), store.clone());
         channel_manager.register_channel("mock".into(), ManagedChannel::new(wrapper,None,None)).await.expect("failed to register noop channel");
         // **4.** *tell* the FlowManager about your new flow so that it fires
         //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.
