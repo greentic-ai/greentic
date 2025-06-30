@@ -87,12 +87,7 @@ mod debug_tests {
         // Schema contains "debug"
         let schema = schema_for!(DebugProcessNode);
         let obj = schema.as_object().expect("Expected schema to be an object");
-                
-        let props = obj
-                .properties
-                .clone();
-
-            assert!(props.contains_key("debug"), "Expected 'debug' field in schema");
+        assert!(obj.contains_key("debug"), "Expected 'debug' field in schema");
     }
 
     #[test]

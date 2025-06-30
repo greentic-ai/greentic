@@ -22,7 +22,7 @@ members = [
 [dependencies]
 channel_plugin = { version="0.1.2", path = "crates/channel_plugin"}
 async-trait = "0.1.88"
-schemars = { version = "1.0.3" }
+schemars = { version = "1.0.3", features = ["chrono04"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tokio = { version = "1.45.1", features = ["macros", "rt", "sync", "time", "signal"] }
@@ -38,9 +38,9 @@ wasm-bindgen = "0.2.100" # For WASM compatibility
 dotenvy = "0.15.7"
 anyhow = "1.0.98"
 rand = "0.9.1"
-wasmtime = "34.0.1"
-wasmtime-wasi = "34.0.1"
-wasmtime-wasi-http = "34.0.1"
+wasmtime = "33.0.1"
+wasmtime-wasi = "33.0.1"
+wasmtime-wasi-http = "33.0.1"
 notify = "8.0.0"
 futures-util = "0.3.31"
 jsonschema = "0.30.0"

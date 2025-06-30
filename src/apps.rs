@@ -56,7 +56,6 @@ impl App {
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
         let store = InMemorySessionStore::new(session_timeout);
-        SESSION_STORE.set(store.clone()).expect("Could not set SESSION_STORE");
         // Process Manager
         match ProcessManager::new(processes_dir)
         {

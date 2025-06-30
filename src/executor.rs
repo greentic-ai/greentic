@@ -20,6 +20,7 @@ use wasmtime_wasi::{ResourceTable};
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 use futures_util::FutureExt;
 use crate::executor::exports::wasix::mcp::router::{Annotations, Content, ResourceContents, Role};
+use crate::executor::wasix::mcp::secrets_store;
 use crate::secret::{EmptySecretsManager, SecretsManager};
 use crate::watcher::{DirectoryWatcher, WatchedType};
 use std::fmt::Debug;
@@ -493,7 +494,7 @@ fn instantiate_tool(secrets_manager: SecretsManager, logging: Logger, wasm_file:
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
         .context("Failed to add WASI to linker")?;
     wasmtime_wasi_http::add_only_http_to_linker_sync(&mut linker).expect("Could not add http to linker");
-    add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
+    secrets_store::add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
     logging::add_to_linker(&mut linker, |state: &mut MyState| state).expect("Could not link logging");
 
     // Instantiate the MCP component.

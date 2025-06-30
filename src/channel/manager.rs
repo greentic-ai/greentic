@@ -158,7 +158,7 @@ impl ChannelManager {
     /// Returns a JoinHandle so you can abort on shutdown.
     pub async fn start_all(self: Arc<Self>, plugins_dir: PathBuf) -> Result<DirectoryWatcher, Error> {
         // 1) build the watcher
-        let watcher = Arc::new(PluginWatcher::new(plugins_dir.clone()));
+        let watcher = Arc::new(PluginWatcher::new(plugins_dir.clone()).await);
         // 2) subscribe us to get add/remove events
         watcher.subscribe(self.clone() as Arc<dyn PluginEventHandler>, false).await;
         // 3) spawn the fs watcher
@@ -398,7 +398,9 @@ impl fmt::Debug for ChannelManager {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{channel::plugin::tests::MockChannel, config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
+    use channel_plugin::plugin_test_util::MockChannel;
+
+    use crate::{config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
 
     use super::*;
 
@@ -425,8 +427,8 @@ pub mod tests {
             .await
             .unwrap();
 
-        let plugin = MockChannel::new();
-        let wrapper = PluginWrapper::new(plugin.get_plugin_hnadle(), store, LogConfig::default());
+        let plugin_handle = Arc::new(MockChannel::new()).get_plugin_handle().await;
+        let wrapper = PluginWrapper::new(plugin_handle, store, LogConfig::default());
         mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);
         mgr.unload_channel("foo").await.unwrap();

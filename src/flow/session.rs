@@ -17,10 +17,10 @@ pub trait SessionStoreType: Send + Sync + Debug {
     async fn get_or_create(&self, session_id: &str) ->  SessionState;
 
     /// Try to get session by unique plugin identifier and and run route matching if no session is available
-    async fn get_channel(&self, plugin_name: &str, key: &str) -> Option<Arc<String>>;
+    async fn get_channel(&self, channel_key: &str) -> Option<String>;
 
     /// Try to get or create session by plugin name + key and rely on session routing
-    async fn get_or_create_channel(&self, plugin_name: &str, key: &str) -> Arc<String>;
+    async fn get_or_create_channel(&self, channel_key: &str) -> String;
 
     /// Explicitly removes a session from the store.
     async fn remove(&self, session_id: &str);
@@ -32,8 +32,8 @@ pub trait SessionStoreType: Send + Sync + Debug {
 #[derive(Clone, Debug)]
 pub struct InMemorySessionStore {
     cache: Cache<String, Arc<InMemoryState>>, // session_id → session state
-    by_channel: Cache<(String,String), Arc<String>>, // (plugin_name, key) → session_id
-    reverse_map: Cache<String, Arc<(String, String)>>,  // session_id → (plugin_name, key)
+    by_channel: Cache<String, String>, // (plugin_name|key) = channel_key → session_id
+    reverse_map: Cache<String, String>,  // session_id → (plugin_name | key) = channel_key
 }
 
 impl InMemorySessionStore {
@@ -67,9 +67,8 @@ impl SessionStoreType for InMemorySessionStore {
     async fn remove(&self, session_id: &str) {
         self.cache.invalidate(session_id).await;
 
-        if let Some(arc_pair) = self.reverse_map.get(session_id).await {
-            let (plugin_name, key) = &*arc_pair;
-            self.by_channel.invalidate(&(plugin_name.clone(), key.clone())).await;
+        if let Some(channle_pair) = self.reverse_map.get(session_id).await {
+            self.by_channel.invalidate(&channle_pair).await;
             self.reverse_map.invalidate(session_id).await;
         }
     }
@@ -81,21 +80,20 @@ impl SessionStoreType for InMemorySessionStore {
     }
 
     /// Translates a channel plugin and unique key per channel into a session
-    async fn get_channel(&self, plugin_name: &str, key: &str) -> Option<Arc<String>> {
-        self.by_channel.get(&(plugin_name.to_string(), key.to_string())).await
+    async fn get_channel(&self, channel_key: &str) -> Option<String> {
+        self.by_channel.get(channel_key).await
     }
 
     /// Same as get_channel but if a session does not exist, it gets created.
-    async fn get_or_create_channel(&self, plugin_name: &str, key: &str) -> Arc<String> {
+    async fn get_or_create_channel(&self, channel_key: &str) -> String {
         // 1. Try from cache
-        if let Some(entry) = self.get_channel(plugin_name, key).await {
+        if let Some(entry) = self.get_channel(channel_key).await {
             return entry;
         } else {
             let session_id = uuid::Uuid::new_v4().to_string();
-            let key_tuple = (plugin_name.to_string(), key.to_string());
-            self.by_channel.insert(key_tuple.clone(), Arc::new(session_id.clone())).await;
-            self.reverse_map.insert(session_id.clone(), Arc::new(key_tuple)).await;
-            Arc::new(session_id)
+            self.by_channel.insert(channel_key.to_string(), session_id.clone()).await;
+            self.reverse_map.insert(session_id.clone(), channel_key.to_string()).await;
+            session_id
         }
     }
 
@@ -165,21 +163,21 @@ mod tests {
      #[tokio::test]
     async fn test_get_channel_none() {
         let store = InMemorySessionStore::new(60);
-        let result = store.get_channel("telegram", "chat_123").await;
+        let result = store.get_channel("telegram|chat_123").await;
         assert!(result.is_none(), "No session should exist yet");
     }
 
     #[tokio::test]
     async fn test_get_or_create_channel_creates() {
         let store = InMemorySessionStore::new(60);
-        let sid1 = store.get_or_create_channel("telegram", "chat_123").await;
-        let sid2 = store.get_channel("telegram", "chat_123").await;
+        let sid1 = store.get_or_create_channel("telegram|chat_123").await;
+        let sid2 = store.get_channel("telegram|chat_123").await;
 
         assert_eq!(Some(sid1.clone()), sid2);
 
         store.remove(&sid1).await;
 
-        assert!(store.get_channel("telegram", "chat_123").await.is_none());
+        assert!(store.get_channel("telegram|chat_123").await.is_none());
 
     }
 
@@ -198,14 +196,14 @@ mod tests {
     #[tokio::test]
     async fn test_reverse_index_cleanup() {
         let store = InMemorySessionStore::new(60);
-        let sid:Arc<String> = store.get_or_create_channel("telegram", "chat_999").await;
+        let sid = store.get_or_create_channel("telegram|chat_999").await;
 
         // Remove via session_id
         store.remove(&sid).await;
 
         // Ensure cleanup
-        assert!(store.get_channel("telegram", "chat_999").await.is_none());
-        let expected_none = store.reverse_map.get(sid.as_ref()).await;
+        assert!(store.get_channel("telegram|chat_999").await.is_none());
+        let expected_none = store.reverse_map.get::<str>(sid.as_ref()).await;
         assert!(expected_none.is_none());
     }
 

@@ -21,7 +21,6 @@ use tokio::{sync::Mutex,time::sleep};
 use tracing::{error, info};
 use crate::node::ToolNode;
 use tracing::{warn,trace};
-use channel_plugin::message::MessageContent::Text;
 
 /// One record per-node, successful or error
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -2,7 +2,7 @@ use std::{ffi::OsStr, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 
 use anyhow::Error;
 use async_trait::async_trait;
-use channel_plugin::plugin_actor::{spawn_plugin, PluginHandle};
+use channel_plugin::plugin_actor::PluginHandle;
 use dashmap::DashMap;
 use tracing::{error, info, warn};
 
@@ -133,10 +133,10 @@ impl crate::watcher::WatchedType for PluginWatcher {
     }
 
     async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
-        match PluginHandle::from_exe_with_events(path.clone()).await {
+        match PluginHandle::from_exe_with_events(path).await {
             Ok((plugin, _events)) => {
                 let name = plugin.id();
-                self.plugins.insert(name.to_string(), plugin);
+                self.plugins.insert(name.to_string(), plugin.clone());
                 let path_str = path.to_string_lossy().to_string();
                 self.path_to_name.insert(path_str,name.to_string());
                 self.notify_add_or_reload(&name, &plugin).await;
@@ -170,7 +170,7 @@ pub mod tests {
     use std::{
         fs::{self, File}, path::PathBuf,
     };
-    use channel_plugin::plugin_actor::tests::{make_mock_handle, MockChannel};
+    use channel_plugin::plugin_test_util::{make_mock_handle, MockChannel};
     use tempfile::TempDir;
 
 
@@ -243,8 +243,8 @@ pub mod tests {
         // Simulate a plugin in the map
         {
             // create a dummy Plugin with a real file path
-            let fake = MockChannel::new();
-            watcher.plugins.insert("dummy".into(), fake);
+            let plugin_handle = Arc::new(MockChannel::new()).get_plugin_handle().await;
+            watcher.plugins.insert("dummy".into(), plugin_handle);
             watcher.path_to_name.insert(so.to_string_lossy().into_owned(), "dummy".to_string());
         }
 

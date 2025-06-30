@@ -9,9 +9,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use crate::channel::manager::{ChannelManager, IncomingHandler, ManagedChannel};
     use crate::channel::node::ChannelsRegistry;
-    use crate::channel::plugin::tests::MockChannel;
     use crate::channel::wrapper::tests::make_wrapper;
-    use crate::channel::PluginWrapper;
     use crate::config::{ConfigManager, MapConfigManager};
     use crate::flow::session::{InMemorySessionStore, SessionStoreType};
     use crate::mapper::{CopyKey, CopyMapper, Mapper};
@@ -22,7 +20,6 @@ mod tests {
     use petgraph::visit::Topo;
     use schemars::{schema_for, JsonSchema, Schema};
     use serde_json::json;
-
     use crate::executor::Executor;
     use crate::flow::manager::{ChannelNodeConfig, ExecutionReport, Flow, FlowManager, NodeConfig, NodeKind, ResolveError, TemplateContext, ToolNodeConfig, ValueOrTemplate};
     use crate::logger::{LogConfig, Logger, OpenTelemetryLogger};
@@ -496,7 +493,7 @@ mod tests {
         // seed a raw Message into "chan"
         let mut ctx = make_ctx();
         let cm = ctx.channel_manager();
-        let wrapper = make_wrapper();
+        let wrapper = make_wrapper().await;
         let mock = ManagedChannel::new(wrapper, None, None);
         assert!(cm.register_channel("mock".to_string(), mock).await.is_ok());
         let m = Message::new("m-c", json!({"foo":"bar"}), "123".to_string());
@@ -1008,8 +1005,7 @@ mod tests {
         let fm = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), Arc::new(process_mgr.clone()), secrets.clone());
         let registry = ChannelsRegistry::new(fm.clone(),channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
-        let noop = MockChannel::new();              // Arc<Plugin>
-        let wrapper = PluginWrapper::new(noop.get_plugin_handle(), store.clone());
+        let wrapper = make_wrapper().await;
         channel_manager.register_channel("mock".into(), ManagedChannel::new(wrapper,None,None)).await.expect("failed to register noop channel");
         // **4.** *tell* the FlowManager about your new flow so that it fires
         //     the "flow_added" callback and your registry sees & registers the two ChannelNodes.
