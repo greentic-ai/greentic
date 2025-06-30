@@ -91,7 +91,7 @@ pub struct Event {
 // ChannelMessage – the core envelope exchanged with external channels
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema,)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema,PartialEq)]
 pub struct ChannelMessage {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +152,7 @@ pub struct ChannelCapabilities {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
 pub struct MessageInResult {
     pub message: ChannelMessage,
+    pub error: bool,
 }
 
 /// Params for `messageOut` (Manager → Plugin)
@@ -194,11 +195,12 @@ pub enum ChannelState {
 }
 
 /// Syslog-style log levels in ascending order of severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Hash, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
     Debug,
+    #[default]
     Info,
     Warn,
     Error,
@@ -214,7 +216,7 @@ pub enum MessageDirection {
 }
 
 /// Params for `init` (Manager → Plugin)
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct InitParams {
     /// Plugin version string (semver).
     pub version: String,

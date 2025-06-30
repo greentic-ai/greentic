@@ -161,7 +161,7 @@ pub mod tests {
         w.start(config,secrets).await.expect("could not start");
         let msg = ChannelMessage { id: "1".into(), ..Default::default() };
         assert!(w.send_message(msg.clone()).await.is_ok());
-        mock.inject(msg.clone());
+        mock.inject(msg.clone()).await;
         let got = w.receive_message().await.unwrap();
         assert_eq!(got.id, "1");
     }
@@ -175,7 +175,7 @@ pub mod tests {
         w.start(config, secrets).await.expect("could not start");
         assert_eq!(w.state().await, ChannelState::RUNNING);
         let caps = w.capabilities().await;
-        assert_eq!(caps.name, "Fake");
+        assert_eq!(caps.name, "mock");
     }
 
     #[tokio::test]

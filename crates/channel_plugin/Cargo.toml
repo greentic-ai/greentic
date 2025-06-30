@@ -18,9 +18,14 @@ tracing-subscriber ={ version = "0.3.19", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.3"
 dotenvy = "0.15.7"
 thiserror = "2.0.12"
+strum = "0.27.1"
+strum_macros = "0.27.1"
 
 [lib]
 crate-type = ["rlib"]
+
+[dev-dependencies]
+channel_plugin = { path = ".", features = ["test-utils"] }
 
 [features]
 default = []

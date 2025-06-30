@@ -227,6 +227,7 @@ impl PluginHandler for WsPlugin {
                 info!("[ws] message_in {} for session {:?}", msg.id, msg.session_id);
                 MessageInResult {
                     message: msg,
+                    error: false,
                 }
             }
             None => {
@@ -236,6 +237,7 @@ impl PluginHandler for WsPlugin {
                 // down here.)
                 MessageInResult {
                     message: ChannelMessage::default(), // tiny helper shown earlier
+                    error: true,
                 }
             }
         }

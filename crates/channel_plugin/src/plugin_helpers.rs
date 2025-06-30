@@ -187,6 +187,7 @@ pub fn build_receive_text_msg(
 ) -> MessageInResult {
     MessageInResult {
         message: build_text_message(from, session_id, channel, text),
+        error: false,
     }
 }
 /// Produce a ready-to-print JSON-RPC `messageIn` request.

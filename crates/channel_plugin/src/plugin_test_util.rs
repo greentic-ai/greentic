@@ -1,35 +1,49 @@
 
 
 
-use std::{collections::VecDeque, sync::{Arc, Condvar, Mutex}};
-
+use std::{sync::Arc};
+use tokio::sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use tokio::sync::oneshot;
+use tracing::info;
 
 use crate::{jsonrpc::{Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{spawn_plugin_actor, Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
 
 
 
-#[derive(Clone)]
 pub struct MockChannel {
     // queue for incoming
-    messages: Arc<Mutex<VecDeque<ChannelMessage>>>,
-    // condvar to wake up pollers
-    cvar: Arc<Condvar>,
+    in_rx: Arc<Mutex<Option<UnboundedReceiver<ChannelMessage>>>>,
+    in_tx: UnboundedSender<ChannelMessage>,
     outgoing: Arc<Mutex<Vec<ChannelMessage>>>,
     state: Arc<Mutex<ChannelState>>,
     config: DashMap<String, String>,
     secrets: DashMap<String, String>,
 }
 
+
+impl Clone for MockChannel {
+    fn clone(&self) -> Self {
+        Self {
+            in_tx: self.in_tx.clone(),
+            in_rx: Arc::clone(&self.in_rx),
+            outgoing: Arc::clone(&self.outgoing),
+            state: self.state.clone(),
+            config: self.config.clone(),
+            secrets: self.secrets.clone(),
+        }
+    }
+}
+
 impl MockChannel {
     pub fn new() -> Self {
+        let (in_tx, in_rx) = unbounded_channel();
             Self {
-                messages: Arc::new(Mutex::new(VecDeque::new())),
-                cvar: Arc::new(Condvar::new()),
+                in_tx,
+                in_rx: Arc::new(Mutex::new(Some(in_rx))),
                 outgoing: Arc::new(Mutex::new(vec![])),
-                state: Arc::new(Mutex::new(ChannelState::STARTING)),
+                state: Arc::new(Mutex::new(ChannelState::STOPPED)),
                 config: DashMap::new(),
                 secrets: DashMap::new(),
             }
@@ -53,20 +67,13 @@ impl MockChannel {
         handle
     }
     /// Inject an incoming message and wake any pollers.
-    pub fn inject(&self, msg: ChannelMessage) {
-        let mut q = self.messages.lock().unwrap();
-        q.push_back(msg);
-        // notify anyone blocked in `poll()`
-        self.cvar.notify_one();
+    pub async fn inject(&self, msg: ChannelMessage) {
+        println!("@@@ REMOVE: inject {:?}",msg);
+        let _ = self.in_tx.send(msg);
     }
 
-    pub fn drain(&self) -> Vec<ChannelMessage> {
-        let mut q = self.messages.lock().unwrap();
-        q.drain(..).collect()
-    }
-
-    pub fn sent_messages(&self) -> Vec<ChannelMessage> {
-        self.messages.lock().unwrap().iter().cloned().collect()
+    pub async fn sent_messages(&self) -> Vec<ChannelMessage> {
+        self.outgoing.lock().await.iter().cloned().collect()
     }
 
 }
@@ -113,16 +120,16 @@ impl PluginHandler for Arc<MockChannel> {
     }
 
     async fn state(&self) -> StateResult {
-        StateResult{state:*self.state.lock().unwrap()}
+        StateResult{state:*self.state.lock().await}
     }
 
     async fn init(&mut self, _params: InitParams) -> InitResult {
-        *self.state.lock().unwrap() = ChannelState::RUNNING;
+        *self.state.lock().await = ChannelState::RUNNING;
         InitResult{ success: true, error: None }
     }
 
     async fn drain(&mut self) {
-        *self.state.lock().unwrap() = ChannelState::DRAINING;
+        *self.state.lock().await = ChannelState::DRAINING;
     }
 
     async fn wait_until_drained(&self, _params: WaitUntilDrainedParams) -> WaitUntilDrainedResult {
@@ -130,24 +137,24 @@ impl PluginHandler for Arc<MockChannel> {
     }
 
     async fn stop(&mut self) {
-        *self.state.lock().unwrap() = ChannelState::STOPPED;
+        *self.state.lock().await = ChannelState::STOPPED;
     }
     
     async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult{
 
-        self.outgoing.lock().unwrap().push(params.message);
+        self.outgoing.lock().await.push(params.message);
         MessageOutResult{ success: true, error: None }
     }
     
     async fn receive_message(&mut self) -> MessageInResult{
-        // grab the lock
-        let mut guard = self.messages.lock().unwrap();
-        // wait while empty
-        while guard.is_empty() {
-            guard = self.cvar.wait(guard).unwrap();
+        let mut guard = self.in_rx.lock().await;
+        let rx = guard
+            .as_mut()
+            .expect("receive_message already taken by another instance");
+        match rx.recv().await {
+            Some(msg) => MessageInResult { message: msg, error: false },
+            None => MessageInResult { message: Default::default(), error: true },
         }
-        // at least one message—pop & return
-        MessageInResult{message:guard.pop_front().unwrap()}
     }
 
 }
@@ -156,7 +163,7 @@ impl PluginHandler for Arc<MockChannel> {
 /// 2. Helper that turns *any* `PluginHandler` into a ready-to-use `PluginHandle`
 pub async fn in_process_handle<P: PluginHandler>(plugin: P) -> PluginHandle {
     // identical to your `run()` but without stdin/stdout plumbing
-    let (cmd_tx, _event_rx) = spawn_plugin_actor(plugin).await;
+    let (cmd_tx, msg_rx) = spawn_plugin_actor(plugin).await;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<(Request, oneshot::Sender<Response>)>(8);
 
     // forwarder task
@@ -175,4 +182,120 @@ pub async fn make_mock_handle() -> PluginHandle {
     in_process_handle(mock).await 
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+#[warn(dead_code)]
+mod tests {
+    use chrono::Utc;
 
+    use crate::message::{MessageContent, Participant};
+
+    use super::*;
+
+    /// Convenience helper: fresh `MockChannel` **and** its `PluginHandle`.
+    async fn fresh_mock() -> (Arc<MockChannel>, PluginHandle) {
+        let mock = Arc::new(MockChannel::new());
+        let handle = mock.clone().get_plugin_handle().await;
+        (mock, handle)
+    }
+
+    #[tokio::test]
+    async fn capabilities_and_metadata() {
+        let (_mock, handle) = fresh_mock().await;
+
+        // capabilities ----------------------------------------------------------
+        let caps = handle.capabilities().await.expect("cap call failed");
+        assert_eq!(caps.name, "mock");
+        assert!(caps.supports_sending && caps.supports_receiving);
+
+        // listConfigKeys / listSecretKeys ---------------------------------------
+        let cfg  = handle.list_config_keys().await.expect("cfg keys");
+        let secr = handle.list_secret_keys().await.expect("sec keys");
+        assert!(cfg.required_keys.is_empty() && cfg.optional_keys.is_empty());
+        assert!(secr.required_keys.is_empty() && secr.optional_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn state_lifecycle_and_health() {
+        let (_mock, mut handle) = fresh_mock().await;
+
+        // initial state is STARTING ---------------------------------------------
+        let mut state = handle.state().await.expect("state call");
+        assert_eq!(state, ChannelState::STOPPED);
+
+        // start → RUNNING --------------------------------------------------------
+        let res = handle.start(InitParams::default()).await.expect("start");
+        assert!(res.success);
+        state = handle.state().await.expect("state call");
+        assert_eq!(state, ChannelState::RUNNING);
+
+        // drain + waitUntilDrained ----------------------------------------------
+        handle.drain().await.expect("drain");
+        handle
+            .wait_until_drained(250)
+            .await
+            .expect("waitUntilDrained");
+
+        // stop → STOPPED ---------------------------------------------------------
+        handle.stop().await.expect("stop");
+        state = handle.state().await.expect("state call");
+        assert_eq!(state, ChannelState::STOPPED);
+
+        // health should always be healthy in mock -------------------------------
+        let health = handle.health().await.expect("health");
+        assert!(health.healthy);
+    }
+
+    #[tokio::test]
+    async fn send_and_receive_roundtrip() {
+        // keep a reference to the mock so we can inject
+        let (mock, mut handle) = fresh_mock().await;
+
+        // 1. sendMessage ---------------------------------------------------------
+        let out_msg = ChannelMessage {
+            from: Participant::new("alice".to_string(), None, None),
+            to: vec![Participant::new("bob".to_string(), None, None)],
+            content: vec![MessageContent::Text {
+                text: "ping".into(),
+            }],
+            timestamp: Utc::now().to_rfc3339(),
+            ..Default::default()
+        };
+        let ok = handle
+            .send_message(MessageOutParams {
+                message: out_msg.clone(),
+            })
+            .await
+            .expect("sendMessage");
+        assert!(ok.success);
+
+        // the underlying mock should have recorded it
+        assert_eq!(mock.sent_messages().await, vec![out_msg]);
+
+        // 2. receiveMessage (via RPC) -------------------------------------------
+        let in_msg = ChannelMessage {
+            from: Participant::new("bob".to_string(), None, None),
+            to: vec![Participant::new("alice".to_string(), None, None)],
+            content: vec![MessageContent::Text {
+                text: "pong".into(),
+            }],
+            timestamp: Utc::now().to_rfc3339(),
+            ..Default::default()
+        };
+        mock.inject(in_msg.clone()).await;
+
+        let got = handle
+            .receive_message()
+            .await
+            .expect("receiveMessage")
+            .message;
+        assert_eq!(got, in_msg);
+    }
+
+    #[tokio::test]
+    async fn internal_wait_until_drained_path() {
+        // Uses PluginHandler API directly through RPC
+        let (_mock, handle) = fresh_mock().await;
+        // No messages → should immediately succeed
+        handle.wait_until_drained(100).await.expect("drained");
+    }
+}

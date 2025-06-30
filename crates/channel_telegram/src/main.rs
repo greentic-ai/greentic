@@ -442,6 +442,7 @@ impl PluginHandler for TelegramPlugin {
                 info!("[telegram] message_in {}", msg.id);
                 MessageInResult {
                     message: msg,
+                    error: true,
                 }
             }
             Err(err) => {
@@ -451,6 +452,7 @@ impl PluginHandler for TelegramPlugin {
                 // down here.)
                 MessageInResult {
                     message: ChannelMessage::default(), // tiny helper shown earlier
+                    error: true,
                 }
             }
         }

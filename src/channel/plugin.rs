@@ -39,13 +39,17 @@ impl PluginWatcher {
         let plugins: DashMap<String,PluginHandle> = DashMap::new();
         for entry in std::fs::read_dir(&dir).unwrap() {
             let p = entry.unwrap().path();
-            if let Some(ext) = p.extension().and_then(OsStr::to_str) {
-                if ["exe","sh",""].contains(&ext) {
-                    if let Ok((plugin, _events)) = PluginHandle::from_exe_with_events(p.clone()).await {
-                        let name = plugin.id();
-                        plugins.insert(name.to_string(), plugin);
-                    }
+            if p.extension()
+                .and_then(OsStr::to_str)
+                .map(|ext| ["exe", "sh", ""].contains(&ext))
+                .unwrap_or(true) // Accept files with no extension
+            {
+                if let Ok((plugin, _events)) = PluginHandle::from_exe_with_events(p.clone()).await {
+                    let name = plugin.id();
+                    plugins.insert(name.to_string(), plugin.clone());
+                    info!("Loaded plugin: {}",name.to_string());
                 }
+            
             }
         }
 
@@ -104,6 +108,8 @@ impl PluginWatcher {
             let result = sub.plugin_added_or_reloaded(name,plugin.clone()).await;
             if result.is_err() {
                 warn!("Could not reload plugin {}",name);
+            } else {
+                info!("Loaded plugin: {}",name.to_string());
             }
         }
     }
@@ -115,6 +121,8 @@ impl PluginWatcher {
             let result = sub.plugin_removed(name).await;
             if result.is_err() {
                 warn!("Could not remove plugin {}",name);
+            }else {
+                info!("Removed plugin: {}",name.to_string());
             }
         }
     }
@@ -127,9 +135,10 @@ impl PluginWatcher {
 impl crate::watcher::WatchedType for PluginWatcher {
     fn is_relevant(&self, path: &Path) -> bool {
         path.parent().map(|d| d == self.dir).unwrap_or(false)
-            && path.extension().and_then(OsStr::to_str).map_or(false, |e| {
-                ["","exe","sh"].contains(&e)
-            })
+            && match path.extension().and_then(OsStr::to_str) {
+                Some(ext) => ["exe", "sh"].contains(&ext),
+                None => true, // Accept files with no extension
+            }
     }
 
     async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
@@ -189,9 +198,9 @@ pub mod tests {
         let dir = tmp.path().to_path_buf();
         let watcher = PluginWatcher::new(dir.clone()).await;
 
-        let good = dir.join("plugin1.so");
+        let good = dir.join("plugin1");
         let bad_ext = dir.join("not_a_plugin.txt");
-        let outside = PathBuf::from("/other/plugin2.so");
+        let outside = PathBuf::from("/other/plugin2.dll");
 
         assert!(watcher.is_relevant(&good));
         assert!(!watcher.is_relevant(&bad_ext));
@@ -204,7 +213,7 @@ pub mod tests {
         let dir = tmp.path().to_path_buf();
 
         // create one valid‐looking file and one bogus
-        let so = dir.join("a.so");
+        let so = dir.join("a.dll");
         File::create(&so).unwrap();
         let txt = dir.join("b.txt");
         File::create(&txt).unwrap();
@@ -222,11 +231,11 @@ pub mod tests {
         let watcher = PluginWatcher::new(dir.clone()).await;
 
         // write an actual .so file path (still invalid but plugin_load errors are caught)
-        let so = dir.join("new.so");
-        File::create(&so).unwrap();
+        let exe = dir.join("new.exe");
+        File::create(&exe).unwrap();
 
         // this should not panic
-        watcher.on_create_or_modify(&so).await.unwrap();
+        watcher.on_create_or_modify(&exe).await.unwrap();
 
         // since load failed, the map remains empty
         assert!(watcher.plugins.is_empty());
@@ -238,7 +247,7 @@ pub mod tests {
         let dir = tmp.path().to_path_buf();
         let watcher = PluginWatcher::new(dir.clone()).await;
         // Create the PathBuf we'll use for our dummy plugin:
-        let so = dir.join("dummy.so");
+        let so = dir.join("dummy.exe");
         File::create(&so).unwrap();
         // Simulate a plugin in the map
         {
@@ -249,11 +258,11 @@ pub mod tests {
         }
 
         // remove a non-existent file – must not panic
-        let bogus = dir.join("unknown.so");
+        let bogus = dir.join("unknown.exe");
         watcher.on_remove(&bogus).await.unwrap();
 
         // remove our dummy by path
-        let p = dir.join("dummy.so");
+        let p = dir.join("dummy.exe");
         // trick plugin_name to extract "dummy"
         let _ = fs::File::create(&p); 
         watcher.on_remove(&p).await.unwrap();

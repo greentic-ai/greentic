@@ -72,7 +72,7 @@ impl PluginHandler for MockPlugin {
             q = cvar.wait(q).unwrap();
         }
         // we know it’s non-empty now
-        MessageInResult{message:q.pop_front().unwrap()}
+        MessageInResult{message:q.pop_front().unwrap(), error:false}
     }
 }
 

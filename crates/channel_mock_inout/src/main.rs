@@ -72,7 +72,7 @@ impl PluginHandler for MockPlugin {
         let participant = Participant{id:"mockingbird".to_string(), display_name: None, channel_specific_id: None };
         msg.from = participant;
 
-        MessageInResult{message:msg}
+        MessageInResult{message:msg, error:false}
     }
 }
 

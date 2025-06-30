@@ -4,29 +4,56 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use strum_macros::{AsRefStr, Display, EnumString};
 use tokio::sync::mpsc::{channel, unbounded_channel};
 use tokio::sync::{mpsc, oneshot};
 use anyhow::{Result, anyhow};
 use serde_json::{json, Value};
+use tracing::error;
 use crate::jsonrpc::{Id, Message, Request, Response};
 use crate::message::*;
 use crate::plugin_runtime::PluginHandler;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use uuid::Uuid;
+
 // -----------------------------------------------------------------------------
 // Define Commands for actor
 // -----------------------------------------------------------------------------
-
+#[derive(Debug, Clone, PartialEq, Eq, EnumString, AsRefStr, Display, Serialize, Deserialize)]
+#[strum(serialize_all = "camelCase")]
+pub enum Method {
+    Init,
+    Start,
+    Drain,
+    Stop,
+    State,
+    Health,
+    MessageIn,
+    MessageOut,
+    SetConfig,
+    SetSecrets,
+    Capabilities,
+    ListConfigKeys,
+    ListSecretKeys,
+    WaitUntilDrained,
+    // Add more as needed
+}
+#[derive(Debug)]
 pub enum Command {
     Init(InitParams, oneshot::Sender<InitResult>),
+    Start(InitParams, oneshot::Sender<InitResult>),
     Drain,
     Stop,
     State(oneshot::Sender<StateResult>),
     Health(oneshot::Sender<HealthResult>),
     SendMessage(MessageOutParams, oneshot::Sender<MessageOutResult>),
+    ReceiveMessage(oneshot::Sender<MessageInResult>),
     SetConfig(SetConfigParams),
     SetSecrets(SetSecretsParams),
+    Capabilities(oneshot::Sender<CapabilitiesResult>),
+    WaitUntilDrained(WaitUntilDrainedParams, oneshot::Sender<WaitUntilDrainedResult>),
     Call(Request, oneshot::Sender<Response>),
 }
 
@@ -61,13 +88,13 @@ impl PluginHandle {
     /// `.result` into the requested type.
     async fn rpc_call<T: DeserializeOwned>(
         &self,
-        method: &str,
+        method: Method,
         params: Option<Value>,
     ) -> anyhow::Result<T> {
         // 1. build request
         let req = Request::call(
             Id::String(Uuid::new_v4().to_string()),
-            method,
+            method.to_string(),
             params,
         );
 
@@ -81,7 +108,7 @@ impl PluginHandle {
 
     pub async fn rpc_notify<P: serde::Serialize>(
         &self,
-        method: &str,
+        method: Method,
         params: Option<P>,
     ) -> anyhow::Result<()> {
         let req = Request {
@@ -105,7 +132,7 @@ impl PluginHandle {
 
     /// `capabilities` → `CapabilitiesResult`
     pub async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities> {
-        match self.rpc_call::<CapabilitiesResult>("capabilities", None).await {
+        match self.rpc_call::<CapabilitiesResult>(Method::Capabilities, None).await {
             Ok(cap) => Ok(cap.capabilities),
             Err(err) => Err(err),
         }
@@ -113,51 +140,51 @@ impl PluginHandle {
 
     /// `listConfigKeys` → Vec<String>
     pub async fn list_config_keys(&self) -> anyhow::Result<ListKeysResult> {
-        self.rpc_call::<ListKeysResult>("listConfigKeys", None).await
+        self.rpc_call::<ListKeysResult>(Method::ListConfigKeys, None).await
     }
 
     /// `listSecretKeys` → Vec<String>
     pub async fn list_secret_keys(&self) -> anyhow::Result<ListKeysResult> {
-       self.rpc_call::<ListKeysResult>("listSecretKeys", None).await
+       self.rpc_call::<ListKeysResult>(Method::ListSecretKeys, None).await
     }
 
     pub async fn start(&mut self, params: InitParams) ->  anyhow::Result<InitResult>{
         let msg = serde_json::to_value(params)
         .map_err(|err| anyhow!("Failed to serialize InitParams: {}", err))?;
-        self.rpc_call::<InitResult>("start", Some(msg)).await
+        self.rpc_call::<InitResult>(Method::Start, Some(msg)).await
 
     }
 
     pub async fn send_message(&mut self, params: MessageOutParams) ->  anyhow::Result<MessageOutResult>{
         let msg = serde_json::to_value(params)
         .map_err(|err| anyhow!("Failed to serialize MessageOutParams: {}", err))?;
-        self.rpc_call::<MessageOutResult>("sendMessage", Some(msg)).await
+        self.rpc_call::<MessageOutResult>(Method::MessageOut, Some(msg)).await
 
     }
     /// When a message comes in
     pub async fn receive_message(&mut self) ->  anyhow::Result<MessageInResult>{
-       self.rpc_call::<MessageInResult>("receiveMessage", None).await
+       self.rpc_call::<MessageInResult>(Method::MessageIn, None).await
     }
 
     /// `state` → `StateResult`
     pub async fn state(&self) -> anyhow::Result<ChannelState> {
-        match self.rpc_call::<StateResult>("state", None).await{
+        match self.rpc_call::<StateResult>(Method::State, None).await{
             Ok(state) => Ok(state.state),
             Err(err) => Err(err),
         }
     }
 
     pub async fn drain(&self)  -> anyhow::Result<()> {
-       self.rpc_notify::<()>("drain", None).await
+       self.rpc_notify::<()>(Method::Drain, None).await
     }
 
     pub async fn stop(&self)  -> anyhow::Result<()> {
-       self.rpc_notify::<()>("drain", None).await
+       self.rpc_notify::<()>(Method::Stop, None).await
     }
 
     /// `health` → `HealthResult`
     pub async fn health(&self) -> anyhow::Result<HealthResult> {
-        self.rpc_call::<HealthResult>("health", None).await
+        self.rpc_call::<HealthResult>(Method::Health, None).await
     }
 
     /// Example with params: `waitUntilDrained`
@@ -167,7 +194,7 @@ impl PluginHandle {
 
         // If the method returns just `null`, ask for `Value`
         let _: Value = self
-            .rpc_call("waitUntilDrained", Some(serde_json::to_value(DrainParams { timeout_ms })?))
+            .rpc_call(Method::WaitUntilDrained, Some(serde_json::to_value(DrainParams { timeout_ms })?))
             .await?;
         Ok(())
     }
@@ -237,47 +264,76 @@ pub async fn spawn_plugin_actor<P: PluginHandler>(mut plugin: P)
     let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
     let (event_tx, event_rx) = mpsc::channel(16);
 
+    let event_tx_clone = event_tx.clone();
+    let mut plugin_receive = plugin.clone();
     tokio::spawn(async move {
         loop {
-            tokio::select! {
-                Some(cmd) = cmd_rx.recv() => match cmd {
-                    Command::Init(p, tx) => {
-                        let _ = tx.send(plugin.start(p).await);
-                    }
-                    Command::Drain => {
-                        plugin.drain().await;
-                    }
-                    Command::Stop => {
-                        plugin.stop().await;
-                    }
-                    Command::State(tx) => {
-                        let _ = tx.send(plugin.state().await);
-                    }
-                    Command::Health(tx) => {
-                        let _ = tx.send(plugin.health().await);
-                    }
-                    Command::SendMessage(p, tx) => {
-                        let _ = tx.send(plugin.send_message(p).await);
-                    }
-                    Command::SetConfig(p) => {
-                        let _ = plugin.set_config(p).await;
-                    }
-                    Command::SetSecrets(p) => {
-                        let _ = plugin.set_secrets(p).await;
-                    },
-                    Command::Call(req, tx) => {
-                        let response = handle_internal_request(&mut plugin, req).await;
-                        let _ = tx.send(response);
-                    }
-                },
-
-                result = plugin.receive_message() => {
-                    let _ = event_tx.send(result).await;
-                }
-            }
+            let res = plugin_receive.receive_message().await;
+            // ignore send errors – receiver might be gone in tests
+            let _ = event_tx_clone.send(res).await;
+            println!("@@@ REMOVE send");
         }
     });
 
+    tokio::spawn(async move {
+        while let Some(cmd) = cmd_rx.recv().await {
+             match cmd {
+                    Command::Init(p, tx) => {
+                        println!("@@@ REMOVE init: {:?}",p);
+                        let _ = tx.send(plugin.start(p).await);
+                    }
+                    Command::Start(p, tx) => {
+                        println!("@@@ REMOVE Start: {:?}",p);
+                        let _ = tx.send(plugin.start(p).await);
+                    }
+                    Command::Drain => {
+                        println!("@@@ REMOVE drain: ");
+                        plugin.drain().await;
+                    }
+                    Command::Stop => {
+                        println!("@@@ REMOVE drain: ");
+                        plugin.stop().await;
+                    }
+                    Command::State(tx) => {
+                        println!("@@@ REMOVE drain: ");
+                        let _ = tx.send(plugin.state().await);
+                    }
+                    Command::Health(tx) => {
+                        println!("@@@ REMOVE health: ");
+                        let _ = tx.send(plugin.health().await);
+                    }
+                    Command::SendMessage(p, tx) => {
+                        println!("@@@ REMOVE send: {:?} ",p);
+                        let _ = tx.send(plugin.send_message(p).await);
+                    }
+                    Command::ReceiveMessage(tx) => {
+                        println!("@@@ REMOVE receive");
+                        let _ = tx.send(plugin.receive_message().await);
+                    }
+                    Command::Capabilities(tx) => {
+                        println!("@@@ REMOVE capabilities: ");
+                        let _ = tx.send(plugin.capabilities());
+                    }
+                    Command::SetConfig(p) => {
+                        println!("@@@ REMOVE config: {:?}",p);
+                        let _ = plugin.set_config(p).await;
+                    }
+                    Command::SetSecrets(p) => {
+                        println!("@@@ REMOVE secret: {:?}",p);
+                        let _ = plugin.set_secrets(p).await;
+                    }
+                    Command::WaitUntilDrained(p, tx) => {
+                        let _ = tx.send(plugin.wait_until_drained(p).await);
+                    }
+                    Command::Call(req, tx) => {
+                        println!("@@@ REMOVE call: {:?}",req);
+                        let response = handle_internal_request(&mut plugin, req).await;
+                        let _ = tx.send(response);
+                    }
+                }
+            }
+        }
+    );
     (cmd_tx, event_rx)
 }
 
@@ -377,9 +433,9 @@ async fn handle_internal_request<P: PluginHandler>(
     }
 
     // ------------------------------------------------------------------------
-    match req.method.as_str() {
+    match req.method.parse::<Method>() {
         // ─────────────── notifications / calls the runner understands ───────
-        "init" => {
+        Ok(Method::Init) => {
             let id = req.id.unwrap_or(Id::Null);
             match req.params
                     .and_then(|v| serde_json::from_value::<InitParams>(v).ok())
@@ -396,13 +452,48 @@ async fn handle_internal_request<P: PluginHandler>(
             }
         }
 
-        "drain" => {
+         Ok(Method::Start) => {
+            let id = req.id.unwrap_or(Id::Null);
+            match req.params
+                    .and_then(|v| serde_json::from_value::<InitParams>(v).ok()) {
+                Some(p) => Response::success(id, json!(plugin.start(p).await)),
+                None    => err(id, -32602, "Invalid params", None),
+            }
+        }
+
+        Ok(Method::WaitUntilDrained) => {
+            let id = req.id.unwrap_or(Id::Null);
+            match req.params
+                    .and_then(|v| serde_json::from_value::<WaitUntilDrainedParams>(v).ok()) {
+                Some(p) => Response::success(id, json!(plugin.wait_until_drained(p).await)),
+                None    => err(id, -32602, "Invalid params", None),
+            }
+        }
+
+        Ok(Method::Stop) => {
+            let id = req.id.unwrap_or(Id::Null);
+            plugin.stop().await;
+            ok_null(id)
+        }
+
+
+        Ok(Method::Drain) => {
             let id = req.id.unwrap_or(Id::Null);
             plugin.drain().await;
             ok_null(id)
         }
 
-        "messageOut" => {
+        Ok(Method::Capabilities) => {
+            let id = req.id.unwrap_or(Id::Null);
+            Response::success(id, json!(plugin.capabilities()))
+        }
+
+        Ok(Method::MessageIn) => {
+            let id = req.id.unwrap_or(Id::Null);
+            Response::success(id, json!(plugin.receive_message().await))
+        }
+
+        Ok(Method::MessageOut) => {
             let id = req.id.unwrap_or(Id::Null);
             match req.params
                     .and_then(|v| serde_json::from_value::<MessageOutParams>(v).ok())
@@ -412,17 +503,27 @@ async fn handle_internal_request<P: PluginHandler>(
             }
         }
 
-        "health" => {
+        Ok(Method::Health) => {
             let id = req.id.unwrap_or(Id::Null);
             Response::success(id, json!(plugin.health().await))
         }
 
-        "state" => {
+        Ok(Method::State) => {
             let id = req.id.unwrap_or(Id::Null);
             Response::success(id, json!(plugin.state().await))
         }
 
-        "setConfig" => {
+        Ok(Method::ListConfigKeys) => {
+            let id = req.id.unwrap_or(Id::Null);
+            Response::success(id, json!(plugin.list_config_keys()))
+        }
+
+        Ok(Method::ListSecretKeys) => {
+            let id = req.id.unwrap_or(Id::Null);
+            Response::success(id, json!(plugin.list_secret_keys()))
+        }
+
+        Ok(Method::SetConfig) => {
             let id = req.id.unwrap_or(Id::Null);
             match req.params
                     .and_then(|v| serde_json::from_value::<SetConfigParams>(v).ok())
@@ -432,7 +533,7 @@ async fn handle_internal_request<P: PluginHandler>(
             }
         }
 
-        "setSecrets" => {
+        Ok(Method::SetSecrets) => {
             let id = req.id.unwrap_or(Id::Null);
             match req.params
                     .and_then(|v| serde_json::from_value::<SetSecretsParams>(v).ok())
@@ -443,8 +544,9 @@ async fn handle_internal_request<P: PluginHandler>(
         }
 
         // ─────────────── unknown / unsupported method ───────────────────────
-        _ => {
+        method => {
             let id = req.id.unwrap_or(Id::Null);
+            error!("Plugin is asking for methods which do not exist: {:?}",method);
             err(id, -32601, "Method not found", None)
         }
     }
@@ -497,7 +599,8 @@ mod tests {
                     to: vec![Participant::new("bot".into(), None, None)],
                     content: vec![MessageContent::Text{text:"hello".into()}],
                     ..Default::default()
-                }
+                },
+                error: false,
             }
         }
     }
@@ -555,5 +658,48 @@ mod tests {
 
         let result = plugin.start(params).await.unwrap();
         assert!(result.success);
+    }
+
+
+    #[tokio::test]
+    async fn test_plugin_handle_receive_message_rpc() {
+        // fresh mock
+        let (mut plugin, _ev_rx) =
+            PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+
+        // ActorMockPlugin::receive_message always returns the static "hello"
+        let msg_in = plugin.receive_message().await.expect("RPC failed").message;
+
+        assert_eq!(
+            msg_in.content[..],
+            [MessageContent::Text { text: "hello".into() }],
+            "expected the hard-coded text returned by the mock"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_plugin_wait_until_drained() {
+        let (plugin, _ev_rx) =
+            PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+
+        // fire-and-forget drain
+        plugin.drain().await.unwrap();
+
+        // should complete without timing out
+        plugin.wait_until_drained(250).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_plugin_list_config_keys_and_secrets() {
+        let (plugin, _ev_rx) =
+            PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+
+        let cfg = plugin.list_config_keys().await.unwrap();
+        let sec = plugin.list_secret_keys().await.unwrap();
+
+        assert!(cfg.required_keys.is_empty());
+        assert!(cfg.optional_keys.is_empty());
+        assert!(sec.required_keys.is_empty());
+        assert!(sec.optional_keys.is_empty());
     }
 }
