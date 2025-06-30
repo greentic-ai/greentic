@@ -87,7 +87,11 @@ mod debug_tests {
         // Schema contains "debug"
         let schema = schema_for!(DebugProcessNode);
         let obj = schema.as_object().expect("Expected schema to be an object");
-        assert!(obj.contains_key("debug"), "Expected 'debug' field in schema");
+        let title = obj.get("title")
+            .and_then(|v| v.as_str())
+            .expect("Expected 'title' to be a string");
+
+        assert_eq!(title,"debug");
     }
 
     #[test]
