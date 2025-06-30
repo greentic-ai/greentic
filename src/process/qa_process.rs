@@ -226,7 +226,6 @@ impl NodeType for QAProcessNode {
     async fn process(&self, msg: Message, ctx: &mut NodeContext)
       -> Result<NodeOut, NodeErr>
     {
-        println!("@@@ REMOVE msg: {:?}",msg);
         let session = msg.session_id();
 
          // read (or default) our little counter
@@ -250,7 +249,6 @@ impl NodeType for QAProcessNode {
         if !first_time && idx > 0 && idx <= self.config.questions.len() {
             let last_q = &self.config.questions[idx - 1];
             let payload_val = msg.payload();
-            println!("@@@ REMOVE paylod: {:?}",payload_val);
             let text = extract_raw_text(&payload_val);
             match parse_and_validate(&text, &last_q.answer_type, last_q.validate.clone()) {
                 Ok(parsed_json) => {
@@ -398,7 +396,12 @@ fn extract_raw_text(value: &serde_json::Value) -> String {
         return text_val.to_string();
     }
 
-    // 4. Fallback: stringify the full value
+    // 4. Fallback: if it's a JSON string, extract it
+    if let Some(s) = value.as_str() {
+        return s.to_string();  // <- clean "Alice"
+    }
+
+    // 5. Fallback: stringify the full JSON
     value.to_string()
 }
 
@@ -871,7 +874,7 @@ mod tests {
         assert!(msg2.payload()["text"].as_str().unwrap().contains("How old are you?"));
 
         // Answer to q2
-        let incoming3 = Message::new_uuid("test", json!("25"));
+        let incoming3 = Message::new_uuid("test", json!(25));
         let result3 = qa_node.process(incoming3.clone(), &mut ctx).await.unwrap();
         let route3 = result3.routing();
         assert_eq!(route3.to_node().unwrap(), "default_node");
@@ -880,7 +883,8 @@ mod tests {
         let all_vec = ctx.get_all_state();
         let all: HashMap<_, _> = all_vec.into_iter().collect();
 
-        assert_eq!(all.get("name").and_then(|v| v.as_str()), Some("Alice"));
+        let name = all.get("name").expect("expected name").as_string();
+        assert_eq!(name, Some("Alice".to_string()));
         assert_eq!(all.get("age").and_then(|v| v.as_number()), Some(25.0));
     }
 
@@ -1424,7 +1428,7 @@ connections:
             .await
             .expect("could not make channel manager");
 
-        let path = Path::new("./greentic/plugins/channels/stopped/libchannel_mock_inout.dylib");
+        let path = Path::new("./greentic/plugins/channels/stopped/channel_mock_inout");
 
         let (plugin, _events) = PluginHandle::from_exe_with_events(path.to_path_buf())
             .await

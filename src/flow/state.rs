@@ -79,9 +79,9 @@ impl PartialEq for StateValue {
 }
 
 impl StateValue {
-    pub fn as_str(&self) -> Option<&str> {
+    pub fn as_string(&self) -> Option<String> {
         if let StateValue::String(s) = self {
-            Some(s)
+            Some(s.clone())
         } else {
             None
         }
@@ -295,12 +295,12 @@ mod tests {
     #[test]
     fn test_state_value_accessors() {
         let string = StateValue::String("hello".into());
-        assert_eq!(string.as_str(), Some("hello"));
+        assert_eq!(string.as_string(), Some("hello".to_string()));
         assert_eq!(string.as_number(), None);
 
         let number = StateValue::Number(42.0);
         assert_eq!(number.as_number(), Some(42.0));
-        assert_eq!(number.as_str(), None);
+        assert_eq!(number.as_string(), None);
 
         let boolean = StateValue::Boolean(true);
         assert_eq!(boolean.as_bool(), Some(true));
@@ -320,7 +320,7 @@ mod tests {
         let map: HashMap<_, _> = map_data.iter().map(|r| (r.key().clone(), r.value().clone())).collect();
         assert_eq!(map, expected);
 
-        assert_eq!(StateValue::Null.as_str(), None);
+        assert_eq!(StateValue::Null.as_string(), None);
     }
 
     #[tokio::test]

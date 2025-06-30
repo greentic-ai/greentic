@@ -1,0 +1,12 @@
+2025-06-30T06:05:45.901373Z  WARN ‼️  A tracing layer is writing to STDOUT – this WILL break the JSON-RPC protocol.
+2025-06-30T06:05:45.902368Z  INFO [ws] listening on 127.0.0.1:52620
+2025-06-30T06:05:45.902374Z  INFO [ws] listening on 127.0.0.1:52622
+2025-06-30T06:05:45.902382Z  INFO [ws] listening on 127.0.0.1:52621
+2025-06-30T06:05:45.902653Z  INFO Stop called
+2025-06-30T06:05:45.902757Z  INFO [ws] draining
+2025-06-30T06:05:46.008791Z  INFO New connection: "127.0.0.1:52625"
+2025-06-30T06:05:46.009580Z  INFO [ws] message_in 707019d4-49c2-43c9-93e6-38785e66c418 for session Some("ws|127.0.0.1:52625")
+2025-06-30T06:05:46.009857Z  INFO [ws] received "test message"
+2025-06-30T06:05:46.009957Z  INFO [ws] message_in 29f02769-23bc-439b-87ef-3d644175006f for session Some("ws|127.0.0.1:52625")
+2025-06-30T06:05:46.009973Z  INFO [ws] draining
+2025-06-30T06:05:46.010192Z  INFO Shutting down peer 127.0.0.1:52625
