@@ -1,22 +1,14 @@
-use std::path::Path;
-use std::process::Stdio;
-use std::sync::Arc;
-
-use dashmap::DashMap;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use strum_macros::{AsRefStr, Display, EnumString};
-use tokio::sync::mpsc::{channel, unbounded_channel};
 use tokio::sync::{mpsc, oneshot};
-use anyhow::{Result, anyhow};
-use serde_json::{json, Value};
-use tracing::error;
-use crate::jsonrpc::{Id, Message, Request, Response};
+use anyhow::anyhow;
+use crate::channel_client::ChannelClient;
+#[cfg(feature = "test-utils")]
+use crate::channel_client::InProcChannelClient;
+use crate::jsonrpc::{Id, Request, Response};
 use crate::message::*;
 use crate::plugin_runtime::PluginHandler;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command as TokioCommand;
-use uuid::Uuid;
 
 // -----------------------------------------------------------------------------
 // Define Commands for actor
@@ -63,139 +55,146 @@ pub type PluginEvent = (String, Request);
 
 /// Returned when you spawn a plugin in-process.
 /// Use it to send JSON-RPC requests to the plugin.
-#[derive(Clone, Debug)]
-pub struct PluginHandle {
-    tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>,
+#[derive( Debug)]
+pub struct PluginHandle<C>
+where
+    C: ChannelClient + Clone + Send + Sync + 'static,
+{
+    /// “Slow-path” control channel (unchanged)
+    cmd_tx: mpsc::Sender<Command>,
+
+    /// Message in/out abstraction – could be JSON-RPC, a gRPC stub,
+    /// a future NATS client, … whatever implements `ChannelClient`.
+    ///
+    /// Notice we *clone* the client for every handle to keep
+    /// `PluginHandle` itself `Clone`.
+    client: C,
     plugin_id: String,
 }
 
-impl PluginHandle {
-    pub fn new(tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>,plugin_id: String,) -> Self {
-        Self{tx,plugin_id}
+impl<C> Clone for PluginHandle<C>
+where
+    C: ChannelClient + Clone + Send + Sync + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            cmd_tx: self.cmd_tx.clone(),
+            client: self.client.clone(),   // fresh receiver for every clone
+            plugin_id: self.plugin_id.clone(),
+        }
     }
-    pub async fn call(&self, req: Request) -> Result<Response> {
-        let (tx_resp, rx_resp) = oneshot::channel();
-        self.tx.send((req, tx_resp)).await
-            .map_err(|_| anyhow!("Plugin actor '{}' is dead", self.plugin_id))?;
-        rx_resp.await.map_err(|_| anyhow!("Plugin actor '{}' dropped response", self.plugin_id))
+}
+
+impl<C> PluginHandle<C>
+where
+    C: ChannelClient + Clone + Send + Sync + 'static,
+{
+    pub fn new(
+        cmd_tx: mpsc::Sender<Command>,
+        client: C,
+        plugin_id: String,) -> Self {
+        Self{cmd_tx, client,plugin_id}
     }
+    
+
+    
 
     pub fn id(&self) -> &str {
         &self.plugin_id
     }
 
-    /// Small generic helper: call any JSON-RPC method and deserialize the
-    /// `.result` into the requested type.
-    async fn rpc_call<T: DeserializeOwned>(
-        &self,
-        method: Method,
-        params: Option<Value>,
-    ) -> anyhow::Result<T> {
-        // 1. build request
-        let req = Request::call(
-            Id::String(Uuid::new_v4().to_string()),
-            method.to_string(),
-            params,
-        );
+   
 
-        // 2. round-trip via existing `call`
-        let rsp = self.call(req).await?;
-
-        // 3. convert the generic `Value` into concrete type `T`
-        let v = rsp.result.ok_or_else(|| anyhow!("no result field"))?;
-        Ok(serde_json::from_value(v)?)
-    }
-
-    pub async fn rpc_notify<P: serde::Serialize>(
-        &self,
-        method: Method,
-        params: Option<P>,
-    ) -> anyhow::Result<()> {
-        let req = Request {
-            jsonrpc: "2.0".to_string(),
-            id: None, // <-- no response expected
-            method: method.to_string(),
-            params: params.map(|p| serde_json::to_value(p)).transpose()?,
-        };
-
-        // Just fire and forget — use a dummy oneshot::Sender
-        let (_tx, _rx) = tokio::sync::oneshot::channel();
-        self.tx.send((req, _tx)).await
-            .map_err(|_| anyhow::anyhow!("ActorHandle '{}' is dead", self.plugin_id))?;
-
-        Ok(())
-    }
+    
 
     // ---------------------------------------------------------------------
     // Convenience wrappers
     // ---------------------------------------------------------------------
 
-    /// `capabilities` → `CapabilitiesResult`
-    pub async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities> {
-        match self.rpc_call::<CapabilitiesResult>(Method::Capabilities, None).await {
-            Ok(cap) => Ok(cap.capabilities),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// `listConfigKeys` → Vec<String>
-    pub async fn list_config_keys(&self) -> anyhow::Result<ListKeysResult> {
-        self.rpc_call::<ListKeysResult>(Method::ListConfigKeys, None).await
-    }
-
-    /// `listSecretKeys` → Vec<String>
-    pub async fn list_secret_keys(&self) -> anyhow::Result<ListKeysResult> {
-       self.rpc_call::<ListKeysResult>(Method::ListSecretKeys, None).await
-    }
-
-    pub async fn start(&mut self, params: InitParams) ->  anyhow::Result<InitResult>{
-        let msg = serde_json::to_value(params)
-        .map_err(|err| anyhow!("Failed to serialize InitParams: {}", err))?;
-        self.rpc_call::<InitResult>(Method::Start, Some(msg)).await
-
-    }
-
-    pub async fn send_message(&mut self, params: MessageOutParams) ->  anyhow::Result<MessageOutResult>{
-        let msg = serde_json::to_value(params)
-        .map_err(|err| anyhow!("Failed to serialize MessageOutParams: {}", err))?;
-        self.rpc_call::<MessageOutResult>(Method::MessageOut, Some(msg)).await
-
-    }
-    /// When a message comes in
-    pub async fn receive_message(&mut self) ->  anyhow::Result<MessageInResult>{
-       self.rpc_call::<MessageInResult>(Method::MessageIn, None).await
-    }
-
-    /// `state` → `StateResult`
     pub async fn state(&self) -> anyhow::Result<ChannelState> {
-        match self.rpc_call::<StateResult>(Method::State, None).await{
-            Ok(state) => Ok(state.state),
-            Err(err) => Err(err),
-        }
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx.send(Command::State(tx)).await?;
+        Ok(rx.await?.state)
     }
 
-    pub async fn drain(&self)  -> anyhow::Result<()> {
-       self.rpc_notify::<()>(Method::Drain, None).await
+    pub async fn send_message(&self, msg: ChannelMessage) -> anyhow::Result<()> {
+        self.client.send(msg).await
     }
 
-    pub async fn stop(&self)  -> anyhow::Result<()> {
-       self.rpc_notify::<()>(Method::Stop, None).await
+    pub async fn next_message(&mut self) -> Option<ChannelMessage> {
+        // We need a &mut self only because `ChannelClient::next_inbound`
+        // takes &mut (to keep an internal receiver).
+        self.client.next_inbound().await
     }
 
-    /// `health` → `HealthResult`
+
+    pub async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx.send(Command::Capabilities(tx)).await?;
+        Ok(rx.await?.capabilities)
+    }
+
+    pub async fn list_config_keys(&self) -> anyhow::Result<ListKeysResult> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx.send(Command::Call(
+            Request::call(
+                Id::String("listConfigKeys".to_string()),
+                Method::ListConfigKeys.to_string(),
+                None,
+            ),
+            tx,
+        )).await?;
+        let res = rx.await?;
+        Ok(serde_json::from_value(res.result.ok_or_else(|| anyhow!("Missing result"))?)?)
+    }
+
+    pub async fn list_secret_keys(&self) -> anyhow::Result<ListKeysResult> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx.send(Command::Call(
+            Request::call(
+                Id::String("listSecretKeys".to_string()),
+                Method::ListSecretKeys.to_string(),
+                None,
+            ),
+            tx,
+        )).await?;
+        let res = rx.await?;
+        Ok(serde_json::from_value(res.result.ok_or_else(|| anyhow!("Missing result"))?)?)
+    }
+
+    pub async fn start(&self, params: InitParams) -> anyhow::Result<InitResult> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx.send(Command::Start(params, tx)).await?;
+        Ok(rx.await?)
+    }
+
+
+
+    pub async fn drain(&self) -> anyhow::Result<()> {
+        self.cmd_tx.send(Command::Drain).await?;
+        Ok(())
+    }
+
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        self.cmd_tx.send(Command::Stop).await?;
+        Ok(())
+    }
+
     pub async fn health(&self) -> anyhow::Result<HealthResult> {
-        self.rpc_call::<HealthResult>(Method::Health, None).await
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx.send(Command::Health(tx)).await?;
+        Ok(rx.await?)
     }
 
-    /// Example with params: `waitUntilDrained`
     pub async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<()> {
-        #[derive(serde::Serialize)]
-        struct DrainParams { timeout_ms: u64 }
-
-        // If the method returns just `null`, ask for `Value`
-        let _: Value = self
-            .rpc_call(Method::WaitUntilDrained, Some(serde_json::to_value(DrainParams { timeout_ms })?))
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(Command::WaitUntilDrained(
+                WaitUntilDrainedParams { timeout_ms },
+                tx,
+            ))
             .await?;
+        let _ = rx.await?;
         Ok(())
     }
 
@@ -203,38 +202,24 @@ impl PluginHandle {
      /* ────────────────────────────────────────────────────────────────────────
      * 1)  In-process actor
      * ──────────────────────────────────────────────────────────────────────── */
-    pub async fn in_process<P: PluginHandler>(
+    #[cfg(feature = "test-utils")]
+    pub async fn in_process<P>(
         plugin: P,
-    ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<PluginEvent>)> {
+    ) -> anyhow::Result<(PluginHandle<InProcChannelClient>,
+                        mpsc::UnboundedReceiver<(String, Request)>)>
+    where
+        P: PluginHandler + Clone + 'static,
+    {
+        // ① run the actor → gives us a fully-wired handle
+        let handle: PluginHandle<InProcChannelClient> =
+            run_plugin_instance(plugin).await;
 
-        // (a) spawn the plugin actor
-        let (cmd_tx, mut msg_rx) = spawn_plugin_actor(plugin).await;
+        // ② dummy “events” receiver (keeps the old tests compiling)
+        let (_ev_tx, ev_rx) = mpsc::unbounded_channel::<(String, Request)>();
 
-        // (b) create JSON-RPC channel for external requests
-        let (tx, mut rx) = channel::<(Request, oneshot::Sender<Response>)>(32);
-
-        // (c) forward requests → actor commands
-        let cmd_tx_clone = cmd_tx.clone();
-        tokio::spawn(async move {
-            while let Some((req, rsp_tx)) = rx.recv().await {
-                let _ = cmd_tx_clone.send(Command::Call(req, rsp_tx)).await;
-            }
-        });
-
-        // (d) translate MessageInResult → PluginEvent
-        let (ev_tx, ev_rx) = unbounded_channel::<PluginEvent>();
-        let plugin_id = "in-process".to_string();
-        let plugin_id_clone = plugin_id.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = msg_rx.recv().await {
-                let req = Request::notification("messageIn", Some(json!(msg)));
-                let _ = ev_tx.send((plugin_id_clone.clone(), req));
-            }
-        });
-
-        Ok((Self::new(tx, plugin_id), ev_rx))
+        Ok((handle, ev_rx))
     }
-
+/* 
     /* ────────────────────────────────────────────────────────────────────────
      * 2)  Child-process (binary on disk)
      * ──────────────────────────────────────────────────────────────────────── */
@@ -252,166 +237,114 @@ impl PluginHandle {
         let handle               = spawn_plugin(exe_path, event_tx).await?;
         Ok((handle, event_rx))
     }
-}
+*/
+    }
 
 // -----------------------------------------------------------------------------
 // Launch plugin actor and return channels
 // -----------------------------------------------------------------------------
-
-pub async fn spawn_plugin_actor<P: PluginHandler>(mut plugin: P)
-    -> (mpsc::Sender<Command>, mpsc::Receiver<MessageInResult>)
+#[cfg(feature = "test-utils")]
+pub async fn run_plugin_instance<P>(
+    plugin: P,
+) -> PluginHandle<InProcChannelClient>
+where
+    P: PluginHandler,
 {
-    let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
-    let (event_tx, event_rx) = mpsc::channel(16);
+    use std::sync::Arc;
 
-    let event_tx_clone = event_tx.clone();
-    let mut plugin_receive = plugin.clone();
+    use tokio::sync::Mutex;
+
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(32);
+    let (msg_tx,  msg_rx)   = mpsc::channel::<ChannelMessage>(32);
+    let name = plugin.name().name.clone();
+    let mut plugin_clone = plugin.clone();
+    let mut plugin_poll = plugin;
     tokio::spawn(async move {
         loop {
-            let res = plugin_receive.receive_message().await;
-            // ignore send errors – receiver might be gone in tests
-            let _ = event_tx_clone.send(res).await;
-            println!("@@@ REMOVE send");
+            tokio::select! {
+                /* ───────────── incoming RPC / control commands ───────────── */
+                Some(cmd) = cmd_rx.recv() => { 
+                    match cmd {
+                        Command::Init(p, tx) => {
+                            println!("@@@ REMOVE init: {:?}",p);
+                            let _ = tx.send(plugin_clone.start(p).await);
+                        },
+                        Command::Start(p, tx) => {
+                            println!("@@@ REMOVE Start: {:?}",p);
+                            let _ = tx.send(plugin_clone.start(p).await);
+                        },
+                        Command::Drain => {
+                            println!("@@@ REMOVE drain: ");
+                            plugin_clone.drain().await;
+                        },
+                        Command::Stop => {
+                            println!("@@@ REMOVE drain: ");
+                            plugin_clone.stop().await;
+                        },
+                        Command::State(tx) => {
+                            println!("@@@ REMOVE drain: ");
+                            let _ = tx.send(plugin_clone.state().await);
+                        },
+                        Command::Health(tx) => {
+                            println!("@@@ REMOVE health: ");
+                            let _ = tx.send(plugin_clone.health().await);
+                        },
+                        Command::SendMessage(p, tx) => {
+                            println!("@@@ REMOVE send: {:?} ",p);
+                            let _ = tx.send(plugin_clone.send_message(p).await);
+                        },
+                        Command::ReceiveMessage(tx) => {
+                            println!("@@@ REMOVE receive");
+                            let _ = tx.send(plugin_clone.receive_message().await);
+                        },
+                        Command::Capabilities(tx) => {
+                            println!("@@@ REMOVE capabilities: ");
+                            let _ = tx.send(plugin_clone.capabilities());
+                        },
+                        Command::SetConfig(p) => {
+                            println!("@@@ REMOVE config: {:?}",p);
+                            let _ = plugin_clone.set_config(p).await;
+                        },
+                        Command::SetSecrets(p) => {
+                            println!("@@@ REMOVE secret: {:?}",p);
+                            let _ = plugin_clone.set_secrets(p).await;
+                        },
+                        Command::WaitUntilDrained(p, tx) => {
+                            let _ = tx.send(plugin_clone.wait_until_drained(p).await);
+                        },
+                        Command::Call(req, tx) => {
+                            println!("@@@ REMOVE call: {:?}",req);
+                            let response = handle_internal_request(&mut plugin_clone, req).await;
+                            let _ = tx.send(response);
+                        },
+                    }
+                },
+               
+            }
         }
     });
-
+        /* ────────────────── 2. message-poller ─────────────── */
     tokio::spawn(async move {
-        while let Some(cmd) = cmd_rx.recv().await {
-             match cmd {
-                    Command::Init(p, tx) => {
-                        println!("@@@ REMOVE init: {:?}",p);
-                        let _ = tx.send(plugin.start(p).await);
-                    }
-                    Command::Start(p, tx) => {
-                        println!("@@@ REMOVE Start: {:?}",p);
-                        let _ = tx.send(plugin.start(p).await);
-                    }
-                    Command::Drain => {
-                        println!("@@@ REMOVE drain: ");
-                        plugin.drain().await;
-                    }
-                    Command::Stop => {
-                        println!("@@@ REMOVE drain: ");
-                        plugin.stop().await;
-                    }
-                    Command::State(tx) => {
-                        println!("@@@ REMOVE drain: ");
-                        let _ = tx.send(plugin.state().await);
-                    }
-                    Command::Health(tx) => {
-                        println!("@@@ REMOVE health: ");
-                        let _ = tx.send(plugin.health().await);
-                    }
-                    Command::SendMessage(p, tx) => {
-                        println!("@@@ REMOVE send: {:?} ",p);
-                        let _ = tx.send(plugin.send_message(p).await);
-                    }
-                    Command::ReceiveMessage(tx) => {
-                        println!("@@@ REMOVE receive");
-                        let _ = tx.send(plugin.receive_message().await);
-                    }
-                    Command::Capabilities(tx) => {
-                        println!("@@@ REMOVE capabilities: ");
-                        let _ = tx.send(plugin.capabilities());
-                    }
-                    Command::SetConfig(p) => {
-                        println!("@@@ REMOVE config: {:?}",p);
-                        let _ = plugin.set_config(p).await;
-                    }
-                    Command::SetSecrets(p) => {
-                        println!("@@@ REMOVE secret: {:?}",p);
-                        let _ = plugin.set_secrets(p).await;
-                    }
-                    Command::WaitUntilDrained(p, tx) => {
-                        let _ = tx.send(plugin.wait_until_drained(p).await);
-                    }
-                    Command::Call(req, tx) => {
-                        println!("@@@ REMOVE call: {:?}",req);
-                        let response = handle_internal_request(&mut plugin, req).await;
-                        let _ = tx.send(response);
-                    }
-                }
+        loop {
+            let res = plugin_poll.receive_message().await;
+            println!("@@@ REMOVE receive");
+            // ignore back-pressure – test mocks never flood
+            if msg_tx.send(res.message).await.is_err() {
+                break;               // all handles dropped → exit
             }
         }
-    );
-    (cmd_tx, event_rx)
+    });
+    let client = InProcChannelClient {
+        cmd_tx: cmd_tx.clone(),
+        in_rx : Arc::new(Mutex::new(msg_rx)),
+    };
+
+    PluginHandle::new(cmd_tx, client, name)
 }
 
 
 
 
-/// Launch `exe_path` as a child-process, wire JSON-RPC over stdin/stdout
-/// and return an `ActorHandle` that speaks plain JSON-RPC.
-///
-/// `event_tx` is forwarded every time the plugin sends a *request*
-/// (e.g. `messageIn`).  
-pub async fn spawn_plugin<P: AsRef<Path>>(
-    exe_path: P,
-    event_tx: mpsc::UnboundedSender<PluginEvent>,
-) -> anyhow::Result<PluginHandle> {
-    // ── launch ───────────────────────────────────────────────────────
-    let mut child = TokioCommand::new(exe_path.as_ref())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    let mut stdin  = child.stdin.take().expect("stdin unavailable");
-    let  stdout    = child.stdout.take().expect("stdout unavailable");
-
-    // ── actor queue (JSON-RPC <Request, Response>) ───────────────────
-    let (tx, mut rx) = mpsc::channel::<(Request, oneshot::Sender<Response>)>(32);
-
-    // track in-flight calls by encoded `id`
-    let inflight: Arc<DashMap<String, oneshot::Sender<Response>>> = Arc::new(DashMap::new());
-    {
-        let inflight = Arc::clone(&inflight);
-        // ── task that proxies rx → child.stdin ───────────────────────────
-        tokio::spawn(async move {
-            while let Some((req, rsp_tx)) = rx.recv().await {
-                // remember responder
-                if let Some(id) = &req.id {
-                    inflight.insert(serde_json::to_string(id).unwrap(), rsp_tx);
-                }
-                // write line
-                if stdin.write_all(serde_json::to_string(&req).unwrap().as_bytes()).await.is_err() { break }
-                let _ = stdin.write_all(b"\n").await;
-                let _ = stdin.flush().await;        // ignore error → handled next read
-            }
-        });
-    }
-
-    // ── task that reads child.stdout → routes Response|Request ───────
-    let plugin_id = exe_path.as_ref()
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("plugin")
-                            .to_string();
-    let plugin_id_clone = plugin_id.clone();
-    {
-        let inflight = Arc::clone(&inflight);
-        tokio::spawn(async move {
-            let mut rdr = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = rdr.next_line().await {
-                if line.trim().is_empty() { continue; }
-                match serde_json::from_str::<Message>(&line) {
-                    Ok(Message::Response(rsp)) => {
-                        let key = serde_json::to_string(&rsp.id).unwrap();
-                        if let Some((_, tx_rsp)) = inflight.remove(&key) { let _ = tx_rsp.send(rsp); }
-                    }
-                    Ok(Message::Request(req)) => {
-                        let _ = event_tx.send((plugin_id_clone.clone(), req));
-                    }
-                    _ => {}   // bad line ⇒ ignore
-                }
-            }
-            let _ = child.kill().await;
-        });
-    }
-
-    Ok( PluginHandle { tx, plugin_id } )
-
-}
 // -----------------------------------------------------------------------------
 // Request handler
 // -----------------------------------------------------------------------------
@@ -419,10 +352,13 @@ pub async fn spawn_plugin<P: AsRef<Path>>(
 /// Dispatch a single JSON-RPC request **inside** an actor task
 /// and return the matching `Response` so the caller can decide
 /// what to do with it (e.g. forward to stdout or a channel).
+#[cfg(feature = "test-utils")]
 async fn handle_internal_request<P: PluginHandler>(
     plugin: &mut P,
     req: Request,
 ) -> Response {
+    use serde_json::Value;
+
     // Convenience helpers ----------------------------------------------------
     fn ok_null(id: Id) -> Response {
         Response::success(id, json!(null))
@@ -545,6 +481,8 @@ async fn handle_internal_request<P: PluginHandler>(
 
         // ─────────────── unknown / unsupported method ───────────────────────
         method => {
+            use tracing::error;
+
             let id = req.id.unwrap_or(Id::Null);
             error!("Plugin is asking for methods which do not exist: {:?}",method);
             err(id, -32601, "Method not found", None)
@@ -555,10 +493,11 @@ async fn handle_internal_request<P: PluginHandler>(
 
 #[cfg(test)]
 mod tests {
-    use crate::plugin_runtime::{HasStore, VERSION};
+    use crate::plugin_runtime::{HasStore, PluginHandler, VERSION};
 
     use super::*;
     use async_trait::async_trait;
+    use dashmap::DashMap;
 
     #[derive(Clone, Default)]
     struct ActorMockPlugin{
@@ -607,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_capabilities_and_state() {
-        let (plugin, mut ev_rx) = PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+        let (plugin, mut ev_rx) = PluginHandle::<InProcChannelClient>::in_process(ActorMockPlugin::default()).await.unwrap();
 
         // State should return "ok"
         let state = plugin.state().await.unwrap();
@@ -628,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_send_message() {
-        let (mut plugin, _ev_rx) = PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+        let (plugin, _ev_rx) = PluginHandle::<InProcChannelClient>::in_process(ActorMockPlugin::default()).await.unwrap();
 
         let msg = MessageOutParams {
             message: ChannelMessage {
@@ -639,13 +578,12 @@ mod tests {
             },
         };
 
-        let result = plugin.send_message(msg).await.unwrap();
-        assert!(result.success);
+        let _ = plugin.send_message(msg.message).await.expect("could not send");
     }
 
     #[tokio::test]
     async fn test_plugin_handle_start() {
-        let (mut plugin, _ev_rx) = PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+        let (plugin, _ev_rx) = PluginHandle::<InProcChannelClient>::in_process(ActorMockPlugin::default()).await.unwrap();
 
         let params = InitParams {
             version: VERSION.to_string(),
@@ -665,10 +603,10 @@ mod tests {
     async fn test_plugin_handle_receive_message_rpc() {
         // fresh mock
         let (mut plugin, _ev_rx) =
-            PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+            PluginHandle::<InProcChannelClient>::in_process(ActorMockPlugin::default()).await.unwrap();
 
         // ActorMockPlugin::receive_message always returns the static "hello"
-        let msg_in = plugin.receive_message().await.expect("RPC failed").message;
+        let msg_in = plugin.next_message().await.expect("RPC failed");
 
         assert_eq!(
             msg_in.content[..],
@@ -680,7 +618,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_wait_until_drained() {
         let (plugin, _ev_rx) =
-            PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+            PluginHandle::<InProcChannelClient>::in_process(ActorMockPlugin::default()).await.unwrap();
 
         // fire-and-forget drain
         plugin.drain().await.unwrap();
@@ -692,7 +630,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_list_config_keys_and_secrets() {
         let (plugin, _ev_rx) =
-            PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
+            PluginHandle::<InProcChannelClient>::in_process(ActorMockPlugin::default()).await.unwrap();
 
         let cfg = plugin.list_config_keys().await.unwrap();
         let sec = plugin.list_secret_keys().await.unwrap();

@@ -28,7 +28,7 @@ use dashmap::DashMap;
 use tracing::{dispatcher, level_filters::LevelFilter, Dispatch};
 use tracing_appender::rolling::daily;
 use tracing_subscriber::{fmt, Registry};
-use crate::jsonrpc::{Id, Message, Request, Response};
+use crate::{jsonrpc::{Id, Message, Request, Response}, plugin_actor::Method};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use tracing_subscriber::Layer;
 use serde_json::{json, Value};
@@ -313,18 +313,18 @@ where
         };
     }
 
-    match req.method.as_str() {
-        "init" => {
+    match req.method.parse::<Method>() {
+        Ok(Method::Init) => {
             if let Some(v) = req.params {
                 if let Ok(p) = serde_json::from_value::<InitParams>(v) { plugin.start(p).await; }
             }
             if let Some(id) = req.id { ok_null!(id); }
         }
-        "drain" => {
+        Ok(Method::Drain) => {
             plugin.drain().await;
             if let Some(id) = req.id { ok_null!(id); }
         }
-        "messageOut" => {
+        Ok(Method::MessageOut) => {
             match serde_json::from_value::<MessageOutParams>(req.params.unwrap_or(Value::Null)) {
                 Ok(p) => {
                     let result = plugin.send_message(p).await;
@@ -341,23 +341,23 @@ where
                 }
             }
         }
-        "health" => {
+        Ok(Method::Health) => {
             if let Some(id) = req.id {
                enqueue(tx, Response::success(id, json!(plugin.health().await)));
             }
         }
-        "state" => {
+        Ok(Method::State) => {
             if let Some(id) = req.id {
                 enqueue(tx, Response::success(id, json!(plugin.state().await)));
             }
         }
-        "setConfig" => {
+        Ok(Method::SetConfig) => {
             if let Some(v) = req.params {
                 if let Ok(p) = serde_json::from_value::<SetConfigParams>(v) { plugin.set_config(p).await; }
             }
             if let Some(id) = req.id { ok_null!(id); }
         }
-        "setSecrets" => {
+        Ok(Method::SetSecrets) => {
             if let Some(v) = req.params {
                 if let Ok(p) = serde_json::from_value::<SetSecretsParams>(v) { plugin.set_secrets(p).await; }
             }

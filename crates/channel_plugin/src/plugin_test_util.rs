@@ -2,13 +2,11 @@
 
 
 use std::{sync::Arc};
-use tokio::sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
+use tokio::sync::{mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::sync::oneshot;
-use tracing::info;
 
-use crate::{jsonrpc::{Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{spawn_plugin_actor, Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
+use crate::{channel_client::ChannelClient, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
 
 
 
@@ -49,6 +47,7 @@ impl MockChannel {
             }
         }
 
+        /* 
     /// Handy factory that gives you a ready-to-use mock `PluginHandle`
     /// and ignores the event stream.
     pub async fn make_mock_handle() -> PluginHandle {
@@ -66,6 +65,7 @@ impl MockChannel {
                 .expect("Failed to create in-process handle");
         handle
     }
+    */
     /// Inject an incoming message and wake any pollers.
     pub async fn inject(&self, msg: ChannelMessage) {
         println!("@@@ REMOVE: inject {:?}",msg);
@@ -76,6 +76,24 @@ impl MockChannel {
         self.outgoing.lock().await.iter().cloned().collect()
     }
 
+}
+
+#[async_trait]
+impl ChannelClient for Arc<MockChannel> {
+    async fn send(&self, msg: ChannelMessage) -> anyhow::Result<()> {
+        // behave exactly like real plugins: push to `outgoing`
+        self.outgoing.lock().await.push(msg);
+        Ok(())
+    }
+
+    async fn next_inbound(&mut self) -> Option<ChannelMessage> {
+        // identical to old receive_message()
+        let mut guard = self.in_rx.lock().await;
+        let rx = guard
+            .as_mut()
+            .expect("next_inbound already taken by another instance");
+        rx.recv().await
+    }
 }
 
 impl HasStore for Arc<MockChannel> {
@@ -158,12 +176,12 @@ impl PluginHandler for Arc<MockChannel> {
     }
 
 }
-
+/* 
 
 /// 2. Helper that turns *any* `PluginHandler` into a ready-to-use `PluginHandle`
 pub async fn in_process_handle<P: PluginHandler>(plugin: P) -> PluginHandle {
     // identical to your `run()` but without stdin/stdout plumbing
-    let (cmd_tx, msg_rx) = spawn_plugin_actor(plugin).await;
+    let (cmd_tx, msg_rx) = run_plugin_instance(plugin).await;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<(Request, oneshot::Sender<Response>)>(8);
 
     // forwarder task
@@ -175,26 +193,36 @@ pub async fn in_process_handle<P: PluginHandler>(plugin: P) -> PluginHandle {
 
     PluginHandle::new(tx,"mock".into())
 }
+*/
+pub async fn spawn_mock_handle() -> PluginHandle<Arc<MockChannel>> {
+    // (1) the control channel – only the commands you still need
+    let (cmd_tx, _cmd_rx) = mpsc::channel::<Command>(32);
 
-/// 3. Factory you can call from tests or from `make_wrapper`
-pub async fn make_mock_handle() -> PluginHandle {
+    // (2) the channel-client abstraction
     let mock = Arc::new(MockChannel::new());
-    in_process_handle(mock).await 
+
+    // (3) DONE – you don’t need the old msg/evt plumbing for tests
+    PluginHandle::new(cmd_tx, mock.clone(), "mock".into())
 }
 
+
 #[cfg(any(test, feature = "test-utils"))]
-#[warn(dead_code)]
 mod tests {
+
     use chrono::Utc;
 
     use crate::message::{MessageContent, Participant};
 
     use super::*;
 
-    /// Convenience helper: fresh `MockChannel` **and** its `PluginHandle`.
-    async fn fresh_mock() -> (Arc<MockChannel>, PluginHandle) {
-        let mock = Arc::new(MockChannel::new());
-        let handle = mock.clone().get_plugin_handle().await;
+
+    pub async fn fresh_mock() -> (Arc<MockChannel>, PluginHandle<Arc<MockChannel>>) {
+        let mock   = Arc::new(MockChannel::new());
+        let handle = PluginHandle::new(
+            mpsc::channel::<Command>(32).0,   // drop rx in tests
+            mock.clone(),
+            "mock".into(),
+        );
         (mock, handle)
     }
 
@@ -216,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_lifecycle_and_health() {
-        let (_mock, mut handle) = fresh_mock().await;
+        let (_mock, handle) = fresh_mock().await;
 
         // initial state is STARTING ---------------------------------------------
         let mut state = handle.state().await.expect("state call");
@@ -261,12 +289,7 @@ mod tests {
             ..Default::default()
         };
         let ok = handle
-            .send_message(MessageOutParams {
-                message: out_msg.clone(),
-            })
-            .await
-            .expect("sendMessage");
-        assert!(ok.success);
+            .send_message(out_msg.clone()).await.expect("send");
 
         // the underlying mock should have recorded it
         assert_eq!(mock.sent_messages().await, vec![out_msg]);
@@ -283,19 +306,18 @@ mod tests {
         };
         mock.inject(in_msg.clone()).await;
 
-        let got = handle
-            .receive_message()
-            .await
-            .expect("receiveMessage")
-            .message;
+        let got = handle.next_message().await.expect("next msg");
         assert_eq!(got, in_msg);
     }
 
     #[tokio::test]
     async fn internal_wait_until_drained_path() {
         // Uses PluginHandler API directly through RPC
-        let (_mock, handle) = fresh_mock().await;
+        let (mock, handle) = fresh_mock().await;
         // No messages → should immediately succeed
         handle.wait_until_drained(100).await.expect("drained");
+        let _ = mock.state;
     }
 }
+
+
