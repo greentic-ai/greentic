@@ -459,18 +459,18 @@ mod tests {
     use async_trait::async_trait;
 
     #[derive(Clone, Default)]
-    struct MockPlugin{
+    struct ActorMockPlugin{
         config: DashMap<String, String>,
         secrets: DashMap<String, String>,
     }
 
-    impl HasStore for MockPlugin{
+    impl HasStore for ActorMockPlugin{
         fn config_store(&self)  -> &DashMap<String, String> { &self.config }
         fn secret_store(&self)  -> &DashMap<String, String> { &self.secrets }
     }
 
     #[async_trait]
-    impl PluginHandler for MockPlugin {
+    impl PluginHandler for ActorMockPlugin {
         async fn start(&mut self, _params: InitParams) -> InitResult {
             InitResult { success: true, error: None }
         }
@@ -504,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_capabilities_and_state() {
-        let (plugin, mut ev_rx) = PluginHandle::in_process(MockPlugin::default()).await.unwrap();
+        let (plugin, mut ev_rx) = PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
 
         // State should return "ok"
         let state = plugin.state().await.unwrap();
@@ -525,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_send_message() {
-        let (mut plugin, _ev_rx) = PluginHandle::in_process(MockPlugin::default()).await.unwrap();
+        let (mut plugin, _ev_rx) = PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
 
         let msg = MessageOutParams {
             message: ChannelMessage {
@@ -542,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_start() {
-        let (mut plugin, _ev_rx) = PluginHandle::in_process(MockPlugin::default()).await.unwrap();
+        let (mut plugin, _ev_rx) = PluginHandle::in_process(ActorMockPlugin::default()).await.unwrap();
 
         let params = InitParams {
             version: VERSION.to_string(),
