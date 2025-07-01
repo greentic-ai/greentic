@@ -1,6 +1,6 @@
 [package]
 name = "channel_plugin"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -25,7 +25,7 @@ strum_macros = "0.27.1"
 crate-type = ["rlib"]
 
 [dev-dependencies]
-channel_plugin = { path = ".", features = ["test-utils"] }
+channel_plugin = { path = ".", version="0.2.0", features = ["test-utils"] }
 
 [features]
 default = []

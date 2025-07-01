@@ -22,10 +22,12 @@ nodes:
           prompt: "👉 What location would you like a forecast for?"
           answer_type: text
           state_key: q
+          max_words: 3
         - id: q_days
           prompt: "👉 Over how many days? (enter a number)"
           answer_type: number
           state_key: days
+          max_words: 2
           validate:
             range:
               min: 0.0

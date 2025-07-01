@@ -1,6 +1,6 @@
 [package]
 name = "greentic"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["maarten <maarten@greentic.com>"]
 description = "The fastest, most secure and extendable agentic platform"
 license = "MIT"
@@ -20,7 +20,7 @@ members = [
 
 
 [dependencies]
-channel_plugin = { version="0.1.2", path = "crates/channel_plugin"}
+channel_plugin = { version="0.2.0", path = "crates/channel_plugin"}
 async-trait = "0.1.88"
 schemars = { version = "1.0.3", features = ["chrono04"] }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -75,5 +75,5 @@ chrono-english = "0.1.7"
 
 [dev-dependencies]
 url = "2.5.4"
-channel_plugin = { version="0.1.2", path = "crates/channel_plugin" , features = ["test-utils"]}
+channel_plugin = { version="0.2.0", path = "crates/channel_plugin" , features = ["test-utils"]}
 
