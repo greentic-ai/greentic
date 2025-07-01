@@ -6,7 +6,7 @@ use tokio::sync::{broadcast, mpsc::{self, unbounded_channel, UnboundedReceiver, 
 use async_trait::async_trait;
 use dashmap::DashMap;
 
-use crate::{channel_client::{ChannelClient, InProcChannelClient}, control_client::InProcControlClient, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
+use crate::{channel_client::{ChannelClient, CloneableChannelClient, InProcChannelClient}, control_client::{CloneableControlClient, InProcControlClient}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
 
 
 
@@ -177,7 +177,7 @@ impl PluginHandler for Arc<MockChannel> {
 
 }
 
-pub type MockHandle = PluginHandle<InProcChannelClient, InProcControlClient>;
+pub type MockHandle = PluginHandle<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>;
 pub async fn spawn_mock_handle() -> MockHandle {
     // ── 1) control-command channel
     let (cmd_tx, _cmd_rx) = mpsc::channel::<Command>(32);
@@ -200,8 +200,8 @@ pub async fn spawn_mock_handle() -> MockHandle {
     }
    
     // ── 4) concrete clients
-    let channel_client = InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx));
-    let control_client = InProcControlClient::new(cmd_tx.clone());
+    let channel_client = Box::new(InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx)));
+    let control_client = Box::new(InProcControlClient::new(cmd_tx.clone()));
 
     // ── 5) assemble the handle  (C = InProcChannelClient, R = InProcControlClient)
     PluginHandle::new(cmd_tx, channel_client, control_client, "mock".into())
@@ -246,8 +246,8 @@ mod tests {
                 }
             }
         });
-        let channel_client = InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx));
-        let control_client = InProcControlClient::new(cmd_tx.clone());
+        let channel_client = Box::new(InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx))) as Box<dyn CloneableChannelClient>;
+        let control_client = Box::new(InProcControlClient::new(cmd_tx.clone())) as Box<dyn CloneableControlClient>;
         let handle = PluginHandle::new(cmd_tx, channel_client, control_client, "mock".into());
 
         (mock, handle)
@@ -315,7 +315,7 @@ mod tests {
             timestamp: Utc::now().to_rfc3339(),
             ..Default::default()
         };
-        let test = handle
+        let _ = handle
             .send_message(out_msg.clone()).await; //.expect("send");
 
         // the underlying mock should have recorded it

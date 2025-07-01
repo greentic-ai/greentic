@@ -1,23 +1,53 @@
-use std::sync::Arc;
-use channel_plugin::{channel_client::ChannelClient, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult, MessageOutParams}, plugin_actor::PluginHandle, plugin_helpers::PluginError, plugin_runtime::VERSION};
+use std::{fmt, sync::Arc};
+use channel_plugin::{channel_client::{ChannelClient, CloneableChannelClient,}, control_client::{CloneableControlClient, ControlClient}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_helpers::PluginError, plugin_runtime::VERSION};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::json;
 use crate::{flow::session::SessionStore, logger::LogConfig}; 
 
-
-#[derive(Clone,Debug)]
+pub type Plugin = (Box<dyn CloneableChannelClient>,Box<dyn CloneableControlClient>);
 pub struct PluginWrapper {
-    inner: PluginClient,
+    name: String,
+    msg: Box<dyn CloneableChannelClient>,
+    inner: Box<dyn CloneableControlClient>,
     state:   Arc<AtomicCell<ChannelState>>,
     log_config: LogConfig,
     session_store: SessionStore,
 }
 
+impl Clone for PluginWrapper {
+    fn clone(&self) -> Self {
+        PluginWrapper {
+            name: self.name.clone(),
+            inner: self.inner.clone(),
+            msg: self.msg.clone(),
+            state: self.state.clone(),
+            log_config: self.log_config.clone(),
+            session_store: self.session_store.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for PluginWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PluginWrapper")
+            .field("name", &self.name)
+            .field("state", &self.state)
+            .field("log_config", &self.log_config)
+            .field("session_store", &"<session_store>")
+            .finish()
+    }
+}
+
+
+
 impl PluginWrapper {
-    pub fn new(inner: PluginClient, session_store: SessionStore, log_config: LogConfig) -> Self {
+    pub async fn new(msg: Box<dyn CloneableChannelClient>, inner: Box<dyn CloneableControlClient>, session_store: SessionStore, log_config: LogConfig) -> Self {
+        let name = inner.name().await.unwrap();
         Self {
+            name,
             inner,
+            msg,
             state:   Arc::new(AtomicCell::new(ChannelState::RUNNING)),
             log_config,
             session_store,
@@ -35,7 +65,7 @@ impl PluginWrapper {
         let schema: Schema = <ChannelCapabilities>::json_schema(&mut generate);
 
         // 2) Fetch the real capabilities
-        let name = self.inner.id().to_string();
+        let name = self.inner.name().await.unwrap();
         let default_value = json!(self.capabilities().await);
 
         // 3) Inject the default into the metadata
@@ -50,7 +80,7 @@ impl PluginWrapper {
     }
 
     pub fn name(&self) -> String {
-        self.inner.id().to_string()
+        self.name.clone()
     }
 
     pub async fn capabilities(&self) -> ChannelCapabilities {
@@ -114,7 +144,7 @@ impl PluginWrapper {
     
     #[tracing::instrument(name = "channel_send_message_async", skip(self, msg))]
     pub async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<(), PluginError> {
-        if self.inner.send_message(MessageOutParams{message:msg}).await.is_ok() {
+        if self.msg.send(msg).await.is_ok() {
             Ok(())
         } else {
             Err(PluginError::Other("plugin_send_message returned false".into()))
@@ -123,9 +153,9 @@ impl PluginWrapper {
 
     #[tracing::instrument(name = "channel_receive_message_async", skip(self))]
     pub async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
-        match self.inner.receive_message().await{
-            Ok(msg) => Ok(msg.message),
-            Err(err) => Err(PluginError::Other(err.to_string())),
+        match self.msg.next_inbound().await{
+            Some(msg) => Ok(msg),
+            _ => Err(PluginError::Other("No message came back from next_inbound".to_string())),
         }
     }
     
@@ -139,13 +169,13 @@ pub mod tests {
     use super::*;
     use channel_plugin::message::{ChannelMessage,};
     use channel_plugin::plugin_runtime::HasStore;
-    use channel_plugin::plugin_test_util::MockChannel;
+    use channel_plugin::plugin_test_util::{spawn_mock_handle, MockChannel};
 
     pub async fn make_wrapper() -> PluginWrapper {
-        let plugin =make_mock_handle().await;   //   👈 real PluginHandle!
+        let plugin =spawn_mock_handle().await;   //   👈 real PluginHandle!
 
         let store = InMemorySessionStore::new(60);
-        PluginWrapper::new(plugin, store, LogConfig::default())
+        PluginWrapper::new(plugin.channel_client(),plugin.control_client(), store, LogConfig::default()).await
     }
 
 
@@ -153,9 +183,9 @@ pub mod tests {
     #[tokio::test]
     async fn test_send_and_poll() {
         let mock = MockChannel::new();
-        let plugin_handle = Arc::new(mock.clone()).get_plugin_handle().await;
+        let plugin_handle = spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
-        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default());
+        let mut w = PluginWrapper::new(plugin_handle.channel_client(),plugin_handle.control_client(), store, LogConfig::default()).await;
         let config = vec![];
         let secrets = vec![];
         w.start(config,secrets).await.expect("could not start");
@@ -194,9 +224,9 @@ pub mod tests {
     #[tokio::test]
     async fn test_config_and_secrets() {
         let mock = Arc::new(MockChannel::new());
-        let plugin_handle = mock.clone().get_plugin_handle().await;
+        let plugin_handle =spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
-        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default());
+        let mut w = PluginWrapper::new(plugin_handle.channel_client(),plugin_handle.control_client(), store, LogConfig::default()).await;
         let config = vec![("k".to_string(),"v".to_string())];
         let secrets = vec![("k".to_string(),"s".to_string())];
         w.start(config, secrets).await.expect("could not start");

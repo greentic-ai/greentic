@@ -10,7 +10,7 @@ use futures::stream::{self, StreamExt};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 use tokio_util::sync::CancellationToken;
-use channel_plugin::{message::{ChannelMessage, ChannelState}, plugin_actor::{PluginClient, PluginHandle}, plugin_helpers::PluginError};
+use channel_plugin::{message::{ChannelMessage, ChannelState}, plugin_actor::CloneablePluginClient, plugin_helpers::PluginError};
 
 use crate::{
     channel::{plugin::{PluginEventHandler, PluginWatcher}, wrapper::PluginWrapper}, config::ConfigManager, flow::session::SessionStore, logger::LogConfig, secret::SecretsManager, watcher::DirectoryWatcher
@@ -196,7 +196,7 @@ impl ChannelManager {
 #[async_trait]
 impl PluginEventHandler for ChannelManager {
     /// Called when a `.so`/`.dll` is added or changed.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginClient) -> Result<(), Error> {
+    async fn plugin_added_or_reloaded(&self, name: &str, plugin: CloneablePluginClient) -> Result<(), Error> {
         info!("Channel plugin added/reloaded: {}", name);
         // If already present, tear down the old one:
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
@@ -221,7 +221,8 @@ impl PluginEventHandler for ChannelManager {
         }
 
         // Wrap + configure:
-        let wrapper = PluginWrapper::new(plugin, self.store.clone(), self.log_config.clone());
+
+        let wrapper = PluginWrapper::new(plugin.channel_client(),plugin.control_client(), self.store.clone(), self.log_config.clone()).await;
            
         // 3) Start it **on its own thread** with its own runtime
         let mut wrapper_cloned = wrapper.clone();
@@ -398,7 +399,7 @@ impl fmt::Debug for ChannelManager {
 
 #[cfg(test)]
 pub mod tests {
-    use channel_plugin::plugin_test_util::MockChannel;
+    use channel_plugin::plugin_test_util::{spawn_mock_handle};
 
     use crate::{config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager};
 
@@ -427,8 +428,8 @@ pub mod tests {
             .await
             .unwrap();
 
-        let plugin_handle = Arc::new(MockChannel::new()).get_plugin_handle().await;
-        let wrapper = PluginWrapper::new(plugin_handle, store, LogConfig::default());
+        let plugin_handle = spawn_mock_handle().await;
+        let wrapper = PluginWrapper::new(plugin_handle.channel_client(), plugin_handle.control_client(), store, LogConfig::default()).await;
         mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);
         mgr.unload_channel("foo").await.unwrap();

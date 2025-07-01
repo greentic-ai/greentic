@@ -1,15 +1,27 @@
+use std::path::Path;
+use std::sync::Arc;
+use anyhow::Result;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "test-utils")]
 use serde_json::json;
 use strum_macros::{AsRefStr, Display, EnumString};
 use tokio::sync::{mpsc, oneshot};
-use crate::channel_client::ChannelClient;
+use crate::channel_client::{ChannelClient, CloneableChannelClient, RpcChannelClient};
 #[cfg(feature = "test-utils")]
 use crate::channel_client::InProcChannelClient;
-use crate::control_client::{ControlClient, InProcControlClient};
-use crate::jsonrpc::{Id, Request, Response};
+use crate::control_client::{CloneableControlClient, ControlClient, RpcControlClient};
+use crate::jsonrpc::{Message, Request, Response};
+#[cfg(feature = "test-utils")]
+use crate::jsonrpc::Id;
 use crate::message::*;
+#[cfg(feature = "test-utils")]
 use crate::plugin_runtime::PluginHandler;
-
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command as TokioCommand,
+    sync::{broadcast},
+};
 // -----------------------------------------------------------------------------
 // Define Commands for actor
 // -----------------------------------------------------------------------------
@@ -52,7 +64,8 @@ pub enum Command {
 
 // Event sent from plugin to outside
 pub type PluginEvent = (String, Request);
-pub type PluginClient = PluginHandle<InProcChannelClient, InProcControlClient>;
+pub type PluginClient = PluginHandle<dyn ChannelClient, dyn ControlClient>;
+pub type CloneablePluginClient = PluginHandle<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>;
 /// Returned when you spawn a plugin in-process.
 /// Use it to send JSON-RPC requests to the plugin.
 #[derive( Debug)]
@@ -89,6 +102,7 @@ where
     }
 }
 
+
 impl<C, R> PluginHandle<C, R>
 where
     C: ChannelClient + Clone + Send + Sync + 'static,
@@ -103,8 +117,13 @@ where
         }
     }
     
-
+    pub fn channel_client(&self) -> Box<dyn CloneableChannelClient>{
+        Box::new(self.client.clone())
+    }
     
+    pub fn control_client(&self) -> Box<dyn CloneableControlClient>{
+       Box::new(self.control.clone())
+    }
 
     pub fn id(&self) -> &str {
         &self.plugin_id
@@ -174,13 +193,13 @@ where
     #[cfg(feature = "test-utils")]
     pub async fn in_process<P>(
         plugin: P,
-    ) -> anyhow::Result<(PluginHandle<InProcChannelClient, InProcControlClient>,
+    ) -> anyhow::Result<(PluginHandle<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>,
                         mpsc::UnboundedReceiver<(String, Request)>)>
     where
         P: PluginHandler + Clone + 'static,
     {
         // ① run the actor → gives us a fully-wired handle
-        let handle: PluginHandle<InProcChannelClient,InProcControlClient> =
+        let handle: PluginHandle<Box<dyn CloneableChannelClient>,Box<dyn CloneableControlClient>> =
             run_plugin_instance(plugin).await;
 
         // ② dummy “events” receiver (keeps the old tests compiling)
@@ -188,26 +207,133 @@ where
 
         Ok((handle, ev_rx))
     }
-/* 
-    /* ────────────────────────────────────────────────────────────────────────
-     * 2)  Child-process (binary on disk)
-     * ──────────────────────────────────────────────────────────────────────── */
-    pub async fn from_exe<P: AsRef<Path>>(
-        exe_path: P,
-    ) -> anyhow::Result<Self> {
-        let (handle, _ev) = Self::from_exe_with_events(exe_path).await?;
-        Ok(handle)
+
+}
+
+
+pub async fn spawn_rpc_plugin<P>(
+    exe: P,
+) -> Result<
+    PluginHandle<
+        Box<dyn CloneableChannelClient>,
+        Box<dyn CloneableControlClient>,
+    >
+>
+where
+    P: AsRef<Path>,
+{
+    // ── launch the child process ──────────────────────────────────────
+    let mut child = TokioCommand::new(exe.as_ref())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .expect("failed to open plugin stdin");
+    let stdout = child
+        .stdout
+        .take()
+        .expect("failed to open plugin stdout");
+
+    // ── JSON-RPC actor queue ──────────────────────────────────────────
+    let (rpc_tx, mut rpc_rx) =
+        mpsc::channel::<(Request, oneshot::Sender<Response>)>(32);
+
+    // broadcast for inbound ChannelMessage events (`messageIn`)
+    let (msg_tx, _) = broadcast::channel::<ChannelMessage>(32);
+
+    // map of <id → responder> for inflight calls
+    let inflight: Arc<DashMap<String, oneshot::Sender<Response>>> =
+        Arc::new(DashMap::new());
+
+    // ── task: forward (Request, rsp_tx) → child.stdin ─────────────────
+    {
+        let inflight = Arc::clone(&inflight);
+        tokio::spawn(async move {
+            while let Some((req, rsp_tx)) = rpc_rx.recv().await {
+                // remember the responder
+                if let Some(id) = &req.id {
+                    inflight.insert(
+                        serde_json::to_string(id).unwrap(),
+                        rsp_tx,
+                    );
+                }
+                // write line to the plugin
+                if stdin
+                    .write_all(serde_json::to_string(&req).unwrap().as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                let _ = stdin.write_all(b"\n").await;
+                let _ = stdin.flush().await;
+            }
+        });
     }
 
-    pub async fn from_exe_with_events<P: AsRef<Path>>(
-        exe_path: P,
-    ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<PluginEvent>)> {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let handle               = spawn_plugin(exe_path, event_tx).await?;
-        Ok((handle, event_rx))
+    // ── task: read child.stdout → route Response | messageIn ──────────
+    {
+        let inflight = Arc::clone(&inflight);
+        let msg_tx_clone = msg_tx.clone();
+
+        tokio::spawn(async move {
+            let mut rdr = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = rdr.next_line().await {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<Message>(&line) {
+                    Ok(Message::Response(rsp)) => {
+                        let key = serde_json::to_string(&rsp.id).unwrap();
+                        if let Some((_, tx_rsp)) = inflight.remove(&key) {
+                            let _ = tx_rsp.send(rsp);
+                        }
+                    }
+                    // plugin sent a *request* (notification) – usually `"messageIn"`
+                    Ok(Message::Request(req))
+                        if req.method == "messageIn" =>
+                    {
+                        if let Some(p) = req.params {
+                            if let Ok(r) =
+                                serde_json::from_value::<MessageInResult>(p)
+                            {
+                                let _ = msg_tx_clone.send(r.message);
+                            }
+                        }
+                    }
+                    _ => {
+                        // ignore malformed or unknown lines
+                    }
+                }
+            }
+            let _ = child.kill().await;
+        });
     }
-*/
-    }
+
+    // ── build concrete clients ────────────────────────────────────────
+    let channel_client =
+        RpcChannelClient::new(rpc_tx.clone(), msg_tx.clone());
+    let control_client = RpcControlClient::new(rpc_tx.clone());
+
+    // dummy cmd channel (unused for RPC plugins but required by struct)
+    let (cmd_tx, _cmd_rx) = mpsc::channel::<Command>(1);
+
+    // assemble the handle
+    Ok(PluginHandle::new(
+        cmd_tx,
+        Box::new(channel_client) as Box<dyn CloneableChannelClient>,
+        Box::new(control_client) as Box<dyn CloneableControlClient>,
+        exe.as_ref()
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+    ))
+}
 
 // -----------------------------------------------------------------------------
 // Launch plugin actor and return channels
@@ -215,7 +341,7 @@ where
 #[cfg(feature = "test-utils")]
 pub async fn run_plugin_instance<P>(
     plugin: P,
-) -> PluginHandle<InProcChannelClient, InProcControlClient>
+) -> PluginHandle<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>
 where
     P: PluginHandler,
 {
@@ -311,15 +437,15 @@ where
                 if send_res.is_err() { break; }  // receiver dropped
             }
     });
-    let client = InProcChannelClient::new(
+    let client = Box::new(InProcChannelClient::new(
         cmd_tx.clone(),
         msg_rx,
         Arc::new(msg_tx),
-    );
+    ));
 
-    let control = InProcControlClient::new(
+    let control = Box::new(InProcControlClient::new(
         cmd_tx.clone()
-    );
+    ));
 
     PluginHandle::new(cmd_tx, client, control,name)
 }
@@ -483,7 +609,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_plugin_handle_capabilities_and_state() {
-        let (plugin, _) = PluginHandle::<InProcChannelClient, InProcControlClient>::in_process(Arc::new(MockChannel::new())).await.unwrap();
+        let (plugin, _) = PluginHandle::<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>::in_process(Arc::new(MockChannel::new())).await.unwrap();
 
         // State should return "ok"
         let state = plugin.state().await.unwrap();
@@ -504,7 +630,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_send_message() {
-        let (plugin, _ev_rx) = PluginHandle::<InProcChannelClient, InProcControlClient>::in_process(Arc::new(MockChannel::new())).await.unwrap();
+        let (plugin, _ev_rx) = PluginHandle::<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>::in_process(Arc::new(MockChannel::new())).await.unwrap();
 
         let msg = MessageOutParams {
             message: ChannelMessage {
@@ -520,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_start() {
-        let (plugin, _ev_rx) = PluginHandle::<InProcChannelClient, InProcControlClient>::in_process(Arc::new(MockChannel::new())).await.unwrap();
+        let (plugin, _ev_rx) = PluginHandle::<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>::in_process(Arc::new(MockChannel::new())).await.unwrap();
 
         let params = InitParams {
             version: VERSION.to_string(),
@@ -541,7 +667,7 @@ mod tests {
         let mock = Arc::new(MockChannel::new());
         // fresh mock
         let (mut plugin, _ev_rx) =
-            PluginHandle::<InProcChannelClient, InProcControlClient>::in_process(mock.clone()).await.unwrap();
+            PluginHandle::<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>::in_process(Arc::new(MockChannel::new())).await.unwrap();
 
         // ActorMockPlugin::receive_message always returns the static "hello"
         let mut msg = ChannelMessage::default();
@@ -559,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_wait_until_drained() {
         let (plugin, _ev_rx) =
-            PluginHandle::<InProcChannelClient, InProcControlClient>::in_process(Arc::new(MockChannel::new())).await.unwrap();
+            PluginHandle::<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>::in_process(Arc::new(MockChannel::new())).await.unwrap();
 
         // fire-and-forget drain
         plugin.drain().await.unwrap();
@@ -571,7 +697,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_list_config_keys_and_secrets() {
         let (plugin, _ev_rx) =
-            PluginHandle::<InProcChannelClient, InProcControlClient>::in_process(Arc::new(MockChannel::new())).await.unwrap();
+            PluginHandle::<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>::in_process(Arc::new(MockChannel::new())).await.unwrap();
 
         let cfg = plugin.list_config_keys().await.unwrap();
         let sec = plugin.list_secret_keys().await.unwrap();

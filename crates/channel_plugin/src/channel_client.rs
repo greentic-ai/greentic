@@ -1,21 +1,18 @@
-use std::path::Path;
-use std::process::Stdio;
 use std::sync::Arc;
-
 use async_trait::async_trait;
-use dashmap::DashMap;
-use crate::jsonrpc::{ Message, Request, Response};
-use crate::message::{ChannelMessage, MessageInResult, MessageOutParams};
+use crate::jsonrpc::{  Request, Response};
+use crate::message::ChannelMessage;
+#[cfg(feature = "test-utils")]
+use crate::message::MessageOutParams;
+#[cfg(feature = "test-utils")]
 use crate::plugin_actor::Command;        // the trait from §1
 use anyhow::{anyhow,Result};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::Command as TokioCommand,
     sync::{mpsc, oneshot, broadcast},
 };
 
 #[async_trait]
-pub trait ChannelClient: Send + Sync {
+pub trait ChannelClient:  Send + Sync {
     /// Send a message **to** the channel (bot → users).
     async fn send(&self, msg: ChannelMessage) -> Result<()>;
 
@@ -23,6 +20,25 @@ pub trait ChannelClient: Send + Sync {
     ///
     /// Returns `None` if the client is permanently closed.
     async fn next_inbound(&mut self) -> Option<ChannelMessage>;
+}
+
+pub trait CloneableChannelClient: ChannelClient {
+    fn clone_box(&self) -> Box<dyn CloneableChannelClient>;
+}
+
+impl<T> CloneableChannelClient for T
+where
+    T: ChannelClient + Clone + Send + 'static,
+{
+    fn clone_box(&self) -> Box<dyn CloneableChannelClient> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn CloneableChannelClient> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 
@@ -35,13 +51,13 @@ pub struct RpcChannelClient {
     rx_src: Arc<broadcast::Sender<ChannelMessage>>,
 }
 
-impl Clone for RpcChannelClient {
-    fn clone(&self) -> Self {
-        Self {
+impl CloneableChannelClient for RpcChannelClient {
+    fn clone_box(&self) ->  Box<dyn CloneableChannelClient> {
+        Box::new(Self {
             tx: self.tx.clone(),
             rx: self.rx_src.subscribe(), // 🔁 Fresh receiver
             rx_src: self.rx_src.clone(),
-        }
+        })
     }
 }
 
@@ -64,29 +80,7 @@ impl RpcChannelClient {
             .map_err(|_| anyhow!("Plugin actor is dead"))?;
         rx_rsp.await.map_err(|_| anyhow!("Plugin actor dropped response"))
     }
-    /* 
-    /// Small generic helper: call any JSON-RPC method and deserialize the
-    /// `.result` into the requested type.
-    async fn rpc_call<T: DeserializeOwned>(
-        &self,
-        method: Method,
-        params: Option<Value>,
-    ) -> anyhow::Result<T> {
-        // 1. build request
-        let req = Request::call(
-            Id::String(Uuid::new_v4().to_string()),
-            method.to_string(),
-            params,
-        );
-
-        // 2. round-trip via existing `call`
-        let rsp = self.call_rpc(req).await?;
-
-        // 3. convert the generic `Value` into concrete type `T`
-        let v = rsp.result.ok_or_else(|| anyhow!("no result field"))?;
-        Ok(serde_json::from_value(v)?)
-    }
-*/
+    
     pub async fn rpc_notify(
         &self,
         req: Request,
@@ -121,72 +115,17 @@ impl ChannelClient for RpcChannelClient {
     }
 }
 
-pub async fn spawn_plugin<P: AsRef<Path>>(exe: P)
-        -> anyhow::Result<RpcChannelClient> {
-
-    // ── launch ───────────────────────────────────────────────────────
-    let mut child = TokioCommand::new(exe.as_ref())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    let mut stdin  = child.stdin.take().expect("stdin unavailable");
-    let  stdout    = child.stdout.take().expect("stdout unavailable");
-
-    // ── actor queue (JSON-RPC <Request, Response>) ───────────────────
-    let (rpc_tx, mut rpc_rx) = mpsc::channel::<(Request, oneshot::Sender<Response>)>(32);
-    let (msg_tx, _) = broadcast::channel::<ChannelMessage>(32);
-    // track in-flight calls by encoded `id`
-    let inflight: Arc<DashMap<String, oneshot::Sender<Response>>> = Arc::new(DashMap::new());
-    {
-        let inflight = Arc::clone(&inflight);
-        // ── task that proxies rx → child.stdin ───────────────────────────
-        tokio::spawn(async move {
-            while let Some((req, rsp_tx)) = rpc_rx.recv().await {
-                // remember responder
-                if let Some(id) = &req.id {
-                    inflight.insert(serde_json::to_string(id).unwrap(), rsp_tx);
-                }
-                // write line
-                if stdin.write_all(serde_json::to_string(&req).unwrap().as_bytes()).await.is_err() { break }
-                let _ = stdin.write_all(b"\n").await;
-                let _ = stdin.flush().await;        // ignore error → handled next read
-            }
-        });
+#[async_trait::async_trait]
+impl ChannelClient for Box<dyn CloneableChannelClient> {
+    async fn send(&self, msg: ChannelMessage) -> anyhow::Result<()> {
+        (**self).send(msg).await
     }
 
-    // ── task that reads child.stdout → routes Response|Request ───────
-    {
-        let inflight = Arc::clone(&inflight);
-        let msg_tx_clone = msg_tx.clone();
-        tokio::spawn(async move {
-            let mut rdr = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = rdr.next_line().await {
-                if line.trim().is_empty() { continue; }
-                match serde_json::from_str::<Message>(&line) {
-                    Ok(Message::Response(rsp)) => {
-                        let key = serde_json::to_string(&rsp.id).unwrap();
-                        if let Some((_, tx_rsp)) = inflight.remove(&key) { let _ = tx_rsp.send(rsp); }
-                    }
-                    /* plugin sent a *request* (usually messageIn)            */
-                    Ok(Message::Request(req)) if req.method == "messageIn" => {
-                        if let Some(p) = req.params {
-                            if let Ok(r) = serde_json::from_value::<MessageInResult>(p) {
-                                let _ = msg_tx_clone.send(r.message);
-                            }
-                        }
-                    }
-                    _ => {}   // bad line ⇒ ignore
-                }
-            }
-            let _ = child.kill().await;
-        });
+    async fn next_inbound(&mut self) -> Option<ChannelMessage> {
+        (**self).next_inbound().await
     }
-
-    Ok(RpcChannelClient::new(rpc_tx, msg_tx))
-
 }
+
 
 #[cfg(feature = "test-utils")]
 pub struct InProcChannelClient {
@@ -196,6 +135,7 @@ pub struct InProcChannelClient {
     _msg_rx: broadcast::Receiver<ChannelMessage>,
     msg_rx_src: Arc<broadcast::Sender<ChannelMessage>>,
 }
+#[cfg(feature = "test-utils")]
 impl InProcChannelClient {
     pub fn new(cmd_tx: mpsc::Sender<Command>,msg_rx: broadcast::Receiver<ChannelMessage>,msg_rx_src: Arc<broadcast::Sender<ChannelMessage>>) -> Self {
         Self {
@@ -205,14 +145,16 @@ impl InProcChannelClient {
         }
     }
 }
+#[cfg(feature = "test-utils")]
+impl CloneableChannelClient for InProcChannelClient {
 
-impl Clone for InProcChannelClient {
-    fn clone(&self) -> Self {
-        Self {
+    
+    fn clone_box(&self) -> Box<dyn CloneableChannelClient> {
+        Box::new(Self {
             cmd_tx: self.cmd_tx.clone(),
             _msg_rx: self.msg_rx_src.subscribe(), // 🔁 Fresh receiver
             msg_rx_src: self.msg_rx_src.clone(),
-        }
+        })
     }
 }
 

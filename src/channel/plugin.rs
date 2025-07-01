@@ -2,11 +2,11 @@ use std::{ffi::OsStr, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 
 use anyhow::Error;
 use async_trait::async_trait;
-use channel_plugin::plugin_actor::{PluginClient, PluginHandle};
+use channel_plugin::{control_client::ControlClient, plugin_actor::{spawn_rpc_plugin, CloneablePluginClient,}};
 use dashmap::DashMap;
 use tracing::{error, info, warn};
 
-use crate::watcher::{DirectoryWatcher, WatchedType};
+use crate::{watcher::{DirectoryWatcher, WatchedType}};
 //use once_cell::sync::OnceCell;
 
 //use crate::{flow::session::SessionStore,};
@@ -19,7 +19,7 @@ use crate::watcher::{DirectoryWatcher, WatchedType};
 #[async_trait]
 pub trait PluginEventHandler: Send + Sync + 'static {
     /// A plugin named `name` has just been loaded or re-loaded.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginClient) -> Result<(),Error>;
+    async fn plugin_added_or_reloaded(&self, name: &str, plugin: CloneablePluginClient) -> Result<(),Error>;
 
     /// A plugin named `name` has just been removed.
     async fn plugin_removed(&self, name: &str)  -> Result<(),Error>;
@@ -28,7 +28,7 @@ pub trait PluginEventHandler: Send + Sync + 'static {
 /// Holds all currently‐loaded plugins and knows how to reload them.
 pub struct PluginWatcher {
     dir: PathBuf,
-    pub plugins: DashMap<String, PluginClient>,
+    pub plugins: DashMap<String, CloneablePluginClient>,
     subscribers: Mutex<Vec<Arc<dyn PluginEventHandler>>>,
     path_to_name: DashMap<String,String>,
 }
@@ -36,7 +36,7 @@ pub struct PluginWatcher {
 impl PluginWatcher {
     pub async fn new(dir: PathBuf) -> Self {
         // pre-load everything on startup
-        let plugins: DashMap<String,PluginHandle> = DashMap::new();
+        let plugins: DashMap<String,CloneablePluginClient> = DashMap::new();
         for entry in std::fs::read_dir(&dir).unwrap() {
             let p = entry.unwrap().path();
             if p.extension()
@@ -44,9 +44,10 @@ impl PluginWatcher {
                 .map(|ext| ["exe", "sh", ""].contains(&ext))
                 .unwrap_or(true) // Accept files with no extension
             {
-                if let Ok((plugin, _events)) = PluginHandle::from_exe_with_events(p.clone()).await {
-                    let name = plugin.id();
-                    plugins.insert(name.to_string(), plugin.clone());
+                if let Ok(handle) = spawn_rpc_plugin(p.clone()).await {
+                    let control =handle.control_client();
+                    let name = control.name().await.unwrap();
+                    plugins.insert(name.to_string(), handle.clone());
                     info!("Loaded plugin: {}",name.to_string());
                 }
             
@@ -70,7 +71,7 @@ impl PluginWatcher {
         DirectoryWatcher::new(dir, watcher, &["exe", "",], true).await
     }
 
-    pub fn get(&self, name: &str) -> Option<PluginHandle> {
+    pub fn get(&self, name: &str) -> Option<CloneablePluginClient> {
         self.plugins
             .get(name)                     // returns Option<Ref<'_, String, Arc<Plugin>>>
             .map(|entry| entry.value().clone())
@@ -102,7 +103,7 @@ impl PluginWatcher {
     }
 
      /// Notify all subscribers that `name` was added or reloaded.
-    async fn notify_add_or_reload(&self, name: &str, plugin: &PluginHandle) {
+    async fn notify_add_or_reload(&self, name: &str, plugin: &CloneablePluginClient) {
         let subs = self.subscribers.lock().unwrap().clone();
         for sub in subs {
             let result = sub.plugin_added_or_reloaded(name,plugin.clone()).await;
@@ -142,13 +143,13 @@ impl crate::watcher::WatchedType for PluginWatcher {
     }
 
     async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
-        match PluginHandle::from_exe_with_events(path).await {
-            Ok((plugin, _events)) => {
-                let name = plugin.id();
-                self.plugins.insert(name.to_string(), plugin.clone());
+        match spawn_rpc_plugin(path).await {
+            Ok(handle) => {
+                let name = handle.control_client().name().await.unwrap();
+                self.plugins.insert(name.to_string(), handle.clone());
                 let path_str = path.to_string_lossy().to_string();
                 self.path_to_name.insert(path_str,name.to_string());
-                self.notify_add_or_reload(&name, &plugin).await;
+                self.notify_add_or_reload(&name, &handle).await;
             } 
             Err(err) => {
                 error!("Could not load {:?} because {:?}",path, err);
@@ -179,13 +180,13 @@ pub mod tests {
     use std::{
         fs::{self, File}, path::PathBuf,
     };
-    use channel_plugin::plugin_test_util::MockChannel;
+    use channel_plugin::plugin_test_util::spawn_mock_handle;
     use tempfile::TempDir;
 
 
     #[tokio::test]
     async fn test_mock_channel() {
-        let handle = make_mock_handle().await;
+        let handle = spawn_mock_handle().await;
 
         let caps = handle.capabilities().await.unwrap();
         assert_eq!(caps.name, "mock");
@@ -252,7 +253,7 @@ pub mod tests {
         // Simulate a plugin in the map
         {
             // create a dummy Plugin with a real file path
-            let plugin_handle = Arc::new(MockChannel::new()).get_plugin_handle().await;
+            let plugin_handle = spawn_mock_handle().await;
             watcher.plugins.insert("dummy".into(), plugin_handle);
             watcher.path_to_name.insert(so.to_string_lossy().into_owned(), "dummy".to_string());
         }

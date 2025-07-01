@@ -787,7 +787,7 @@ mod tests {
     use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, ManagedChannel}, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{LogConfig, Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
 
     use super::*;
-    use channel_plugin::{message::{LogLevel, Participant}, plugin_actor::PluginHandle};
+    use channel_plugin::{message::{LogLevel, Participant}, plugin_actor::{spawn_rpc_plugin,}};
     use dashmap::DashMap;
     use serde_json::json;
     use chrono::Utc;
@@ -1430,12 +1430,11 @@ connections:
 
         let path = Path::new("./greentic/plugins/channels/stopped/channel_mock_inout");
 
-        let (plugin, _events) = PluginHandle::from_exe_with_events(path.to_path_buf())
-            .await
-            .expect("Could not load plugin");
+        let plugin = spawn_rpc_plugin(path).await.expect("Could not load plugin");
 
         let log_config = LogConfig::new(LogLevel::Info, Some("./greentic/logs".to_string()), None);
-        let mock = ManagedChannel::new(PluginWrapper::new(plugin, store.clone(), log_config), None, None);
+        
+        let mock = ManagedChannel::new(PluginWrapper::new(plugin.channel_client(),plugin.control_client(), store.clone(), log_config).await, None, None);
         channel_manager
             .register_channel("mock_inout".to_string(), mock)
             .await
