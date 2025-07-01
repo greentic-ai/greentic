@@ -10,7 +10,7 @@ use futures::stream::{self, StreamExt};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 use tokio_util::sync::CancellationToken;
-use channel_plugin::{message::{ChannelMessage, ChannelState}, plugin_actor::PluginHandle, plugin_helpers::PluginError};
+use channel_plugin::{message::{ChannelMessage, ChannelState}, plugin_actor::{PluginClient, PluginHandle}, plugin_helpers::PluginError};
 
 use crate::{
     channel::{plugin::{PluginEventHandler, PluginWatcher}, wrapper::PluginWrapper}, config::ConfigManager, flow::session::SessionStore, logger::LogConfig, secret::SecretsManager, watcher::DirectoryWatcher
@@ -196,7 +196,7 @@ impl ChannelManager {
 #[async_trait]
 impl PluginEventHandler for ChannelManager {
     /// Called when a `.so`/`.dll` is added or changed.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginHandle) -> Result<(), Error> {
+    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginClient) -> Result<(), Error> {
         info!("Channel plugin added/reloaded: {}", name);
         // If already present, tear down the old one:
         if let Some(mut old_plugin) = self.channels.get_mut(name) {

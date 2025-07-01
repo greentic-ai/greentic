@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use channel_plugin::{message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult, MessageOutParams}, plugin_actor::PluginHandle, plugin_helpers::PluginError, plugin_runtime::VERSION};
+use channel_plugin::{channel_client::ChannelClient, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult, MessageOutParams}, plugin_actor::PluginHandle, plugin_helpers::PluginError, plugin_runtime::VERSION};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::json;
@@ -8,14 +8,14 @@ use crate::{flow::session::SessionStore, logger::LogConfig};
 
 #[derive(Clone,Debug)]
 pub struct PluginWrapper {
-    inner: PluginHandle,
+    inner: PluginClient,
     state:   Arc<AtomicCell<ChannelState>>,
     log_config: LogConfig,
     session_store: SessionStore,
 }
 
 impl PluginWrapper {
-    pub fn new(inner: PluginHandle, session_store: SessionStore, log_config: LogConfig) -> Self {
+    pub fn new(inner: PluginClient, session_store: SessionStore, log_config: LogConfig) -> Self {
         Self {
             inner,
             state:   Arc::new(AtomicCell::new(ChannelState::RUNNING)),
@@ -139,7 +139,7 @@ pub mod tests {
     use super::*;
     use channel_plugin::message::{ChannelMessage,};
     use channel_plugin::plugin_runtime::HasStore;
-    use channel_plugin::plugin_test_util::{make_mock_handle, MockChannel};
+    use channel_plugin::plugin_test_util::MockChannel;
 
     pub async fn make_wrapper() -> PluginWrapper {
         let plugin =make_mock_handle().await;   //   👈 real PluginHandle!

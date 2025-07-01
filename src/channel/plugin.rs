@@ -2,7 +2,7 @@ use std::{ffi::OsStr, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 
 use anyhow::Error;
 use async_trait::async_trait;
-use channel_plugin::plugin_actor::PluginHandle;
+use channel_plugin::plugin_actor::{PluginClient, PluginHandle};
 use dashmap::DashMap;
 use tracing::{error, info, warn};
 
@@ -19,7 +19,7 @@ use crate::watcher::{DirectoryWatcher, WatchedType};
 #[async_trait]
 pub trait PluginEventHandler: Send + Sync + 'static {
     /// A plugin named `name` has just been loaded or re-loaded.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginHandle) -> Result<(),Error>;
+    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginClient) -> Result<(),Error>;
 
     /// A plugin named `name` has just been removed.
     async fn plugin_removed(&self, name: &str)  -> Result<(),Error>;
@@ -28,7 +28,7 @@ pub trait PluginEventHandler: Send + Sync + 'static {
 /// Holds all currently‐loaded plugins and knows how to reload them.
 pub struct PluginWatcher {
     dir: PathBuf,
-    pub plugins: DashMap<String, PluginHandle>,
+    pub plugins: DashMap<String, PluginClient>,
     subscribers: Mutex<Vec<Arc<dyn PluginEventHandler>>>,
     path_to_name: DashMap<String,String>,
 }
@@ -179,7 +179,7 @@ pub mod tests {
     use std::{
         fs::{self, File}, path::PathBuf,
     };
-    use channel_plugin::plugin_test_util::{make_mock_handle, MockChannel};
+    use channel_plugin::plugin_test_util::MockChannel;
     use tempfile::TempDir;
 
 
