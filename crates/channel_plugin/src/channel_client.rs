@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tokio::sync::Mutex;
 use crate::jsonrpc::{ Message, Request, Response};
 use crate::message::{ChannelMessage, MessageInResult, MessageOutParams};
 use crate::plugin_actor::Command;        // the trait from §1
@@ -189,13 +188,32 @@ pub async fn spawn_plugin<P: AsRef<Path>>(exe: P)
 
 }
 
-#[derive(Clone)]
 #[cfg(feature = "test-utils")]
 pub struct InProcChannelClient {
     // slow-path control to the actor
-    pub cmd_tx: mpsc::Sender<Command>,
+    cmd_tx: mpsc::Sender<Command>,
     // fast inbound queue (each clone gets its *own* receiver)
-    pub in_rx: Arc<Mutex<mpsc::Receiver<ChannelMessage>>>,
+    _msg_rx: broadcast::Receiver<ChannelMessage>,
+    msg_rx_src: Arc<broadcast::Sender<ChannelMessage>>,
+}
+impl InProcChannelClient {
+    pub fn new(cmd_tx: mpsc::Sender<Command>,msg_rx: broadcast::Receiver<ChannelMessage>,msg_rx_src: Arc<broadcast::Sender<ChannelMessage>>) -> Self {
+        Self {
+            cmd_tx,
+            _msg_rx: msg_rx,
+            msg_rx_src,
+        }
+    }
+}
+
+impl Clone for InProcChannelClient {
+    fn clone(&self) -> Self {
+        Self {
+            cmd_tx: self.cmd_tx.clone(),
+            _msg_rx: self.msg_rx_src.subscribe(), // 🔁 Fresh receiver
+            msg_rx_src: self.msg_rx_src.clone(),
+        }
+    }
 }
 
 #[async_trait]
@@ -211,7 +229,14 @@ impl ChannelClient for InProcChannelClient {
     }
 
     async fn next_inbound(&mut self) -> Option<ChannelMessage> {
-        self.in_rx.lock().await.recv().await
+        let mut subscribe = self.msg_rx_src.subscribe();
+        match subscribe.recv().await {
+            Ok(msg) => Some(msg),
+            Err(err) => {
+                tracing::error!("Could not get next message because {:?}",err.to_string());
+                None
+            },
+        }
     }
 }
 

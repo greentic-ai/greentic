@@ -2,11 +2,11 @@
 
 
 use std::{sync::Arc};
-use tokio::sync::{mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
+use tokio::sync::{broadcast, mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
 use async_trait::async_trait;
 use dashmap::DashMap;
 
-use crate::{channel_client::ChannelClient, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
+use crate::{channel_client::{ChannelClient, InProcChannelClient}, control_client::InProcControlClient, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
 
 
 
@@ -176,53 +176,80 @@ impl PluginHandler for Arc<MockChannel> {
     }
 
 }
-/* 
 
-/// 2. Helper that turns *any* `PluginHandler` into a ready-to-use `PluginHandle`
-pub async fn in_process_handle<P: PluginHandler>(plugin: P) -> PluginHandle {
-    // identical to your `run()` but without stdin/stdout plumbing
-    let (cmd_tx, msg_rx) = run_plugin_instance(plugin).await;
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Request, oneshot::Sender<Response>)>(8);
-
-    // forwarder task
-    tokio::spawn(async move {
-        while let Some((req, rsp_tx)) = rx.recv().await {
-            let _ = cmd_tx.send(Command::Call(req, rsp_tx)).await;
-        }
-    });
-
-    PluginHandle::new(tx,"mock".into())
-}
-*/
-pub async fn spawn_mock_handle() -> PluginHandle<Arc<MockChannel>> {
-    // (1) the control channel – only the commands you still need
+pub type MockHandle = PluginHandle<InProcChannelClient, InProcControlClient>;
+pub async fn spawn_mock_handle() -> MockHandle {
+    // ── 1) control-command channel
     let (cmd_tx, _cmd_rx) = mpsc::channel::<Command>(32);
 
-    // (2) the channel-client abstraction
-    let mock = Arc::new(MockChannel::new());
+    // ── 2) broadcast for outbound messages
+    let (msg_tx, msg_rx) = broadcast::channel::<ChannelMessage>(32);
 
-    // (3) DONE – you don’t need the old msg/evt plumbing for tests
-    PluginHandle::new(cmd_tx, mock.clone(), "mock".into())
+    // ── 3) the mock plugin instance
+    let mock = Arc::new(MockChannel::new());
+    // OPTIONAL: spawn a tiny task that feeds outbound messages from the mock
+    //           into the broadcast sender (so tests can receive them).
+    {
+        let mut mock_clone = mock.clone();
+        let msg_tx_clone = msg_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = mock_clone.next_inbound().await {
+                let _ = msg_tx_clone.send(msg); // ignore if no receivers
+            }
+        });
+    }
+   
+    // ── 4) concrete clients
+    let channel_client = InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx));
+    let control_client = InProcControlClient::new(cmd_tx.clone());
+
+    // ── 5) assemble the handle  (C = InProcChannelClient, R = InProcControlClient)
+    PluginHandle::new(cmd_tx, channel_client, control_client, "mock".into())
+
 }
 
 
 #[cfg(any(test, feature = "test-utils"))]
 mod tests {
-
+    #[cfg(test)]
     use chrono::Utc;
-
-    use crate::message::{MessageContent, Participant};
-
+    #[cfg(test)]
+    use crate::{message::{MessageContent, Participant}, plugin_actor::handle_internal_request};
+    #[cfg(test)]
     use super::*;
 
-
-    pub async fn fresh_mock() -> (Arc<MockChannel>, PluginHandle<Arc<MockChannel>>) {
+    #[cfg(test)]
+    pub async fn fresh_mock() -> (Arc<MockChannel>, MockHandle) {
         let mock   = Arc::new(MockChannel::new());
-        let handle = PluginHandle::new(
-            mpsc::channel::<Command>(32).0,   // drop rx in tests
-            mock.clone(),
-            "mock".into(),
-        );
+         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(32);
+
+        // ── 2) broadcast for outbound messages
+        let (msg_tx, msg_rx) = broadcast::channel::<ChannelMessage>(32);
+
+          let mut plugin = mock.clone(); // Arc<MockChannel>
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    Command::State(tx) => { let _ = tx.send(plugin.state().await); },
+                    Command::Health(tx) => { let _ = tx.send(plugin.health().await); },
+                    Command::Capabilities(tx) => { let _ = tx.send(plugin.capabilities()); },
+                    Command::Start(params, tx) => { let _ = tx.send(plugin.start(params).await); },
+                    Command::Drain => { plugin.drain().await; },
+                    Command::Stop => { plugin.stop().await; },
+                    Command::WaitUntilDrained(params, tx) => { let _ = tx.send(plugin.wait_until_drained(params).await); },
+                    Command::Call(req, tx) => { 
+                        // Handle JSON-RPC calls for listConfigKeys, listSecretKeys, etc.
+                        let resp = handle_internal_request(&mut plugin.clone(), req).await;
+                        let _ = tx.send(resp);
+                    },
+                    _ => { /* Other command variants if any */ }
+                }
+            }
+        });
+        let channel_client = InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx));
+        let control_client = InProcControlClient::new(cmd_tx.clone());
+        let handle = PluginHandle::new(cmd_tx, channel_client, control_client, "mock".into());
+
         (mock, handle)
     }
 
@@ -288,8 +315,8 @@ mod tests {
             timestamp: Utc::now().to_rfc3339(),
             ..Default::default()
         };
-        let ok = handle
-            .send_message(out_msg.clone()).await.expect("send");
+        let test = handle
+            .send_message(out_msg.clone()).await; //.expect("send");
 
         // the underlying mock should have recorded it
         assert_eq!(mock.sent_messages().await, vec![out_msg]);
