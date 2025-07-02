@@ -1,15 +1,15 @@
 use std::{fmt, sync::Arc};
-use channel_plugin::{channel_client::{ChannelClient, CloneableChannelClient,}, control_client::{CloneableControlClient, ControlClient}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_helpers::PluginError, plugin_runtime::VERSION};
+use channel_plugin::{channel_client::{ChannelClient,}, control_client::{ControlClient}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_helpers::PluginError, plugin_runtime::VERSION};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::json;
 use crate::{flow::session::SessionStore, logger::LogConfig}; 
 
-pub type Plugin = (Box<dyn CloneableChannelClient>,Box<dyn CloneableControlClient>);
+pub type Plugin = (ChannelClient,ControlClient);
 pub struct PluginWrapper {
     name: String,
-    msg: Box<dyn CloneableChannelClient>,
-    inner: Box<dyn CloneableControlClient>,
+    msg: ChannelClient,
+    inner: ControlClient,
     state:   Arc<AtomicCell<ChannelState>>,
     log_config: LogConfig,
     session_store: SessionStore,
@@ -42,7 +42,7 @@ impl fmt::Debug for PluginWrapper {
 
 
 impl PluginWrapper {
-    pub async fn new(msg: Box<dyn CloneableChannelClient>, inner: Box<dyn CloneableControlClient>, session_store: SessionStore, log_config: LogConfig) -> Self {
+    pub async fn new(msg: ChannelClient, inner: ControlClient, session_store: SessionStore, log_config: LogConfig) -> Self {
         let name = inner.name().await.unwrap();
         Self {
             name,

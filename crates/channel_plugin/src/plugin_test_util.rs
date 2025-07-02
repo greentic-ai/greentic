@@ -2,11 +2,11 @@
 
 
 use std::{sync::Arc};
-use tokio::sync::{broadcast, mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex};
+use tokio::sync::{broadcast, mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender}, oneshot, Mutex};
 use async_trait::async_trait;
 use dashmap::DashMap;
 
-use crate::{channel_client::{ChannelClient, CloneableChannelClient, InProcChannelClient}, control_client::{CloneableControlClient, InProcControlClient}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{Command, PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
+use crate::{channel_client::{ChannelClient, ChannelClientType,}, control_client::{ControlClient}, jsonrpc::{Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
 
 
 
@@ -79,7 +79,7 @@ impl MockChannel {
 }
 
 #[async_trait]
-impl ChannelClient for Arc<MockChannel> {
+impl ChannelClientType for Arc<MockChannel> {
     async fn send(&self, msg: ChannelMessage) -> anyhow::Result<()> {
         // behave exactly like real plugins: push to `outgoing`
         self.outgoing.lock().await.push(msg);
@@ -177,35 +177,49 @@ impl PluginHandler for Arc<MockChannel> {
 
 }
 
-pub type MockHandle = PluginHandle<Box<dyn CloneableChannelClient>, Box<dyn CloneableControlClient>>;
-pub async fn spawn_mock_handle() -> MockHandle {
-    // ── 1) control-command channel
-    let (cmd_tx, _cmd_rx) = mpsc::channel::<Command>(32);
+pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
+    use crate::plugin_actor::handle_internal_request;
 
-    // ── 2) broadcast for outbound messages
-    let (msg_tx, msg_rx) = broadcast::channel::<ChannelMessage>(32);
+    // JSON-RPC channel for ChannelClient / ControlClient
+    let (rpc_tx, mut rpc_rx) = mpsc::channel::<(Request, oneshot::Sender<Response>)>(8);
+    
+    // broadcast channel for inbound message events
+    let (msg_tx, _) = broadcast::channel::<ChannelMessage>(8);
 
-    // ── 3) the mock plugin instance
+    // ── 1) the mock plugin instance
     let mock = Arc::new(MockChannel::new());
-    // OPTIONAL: spawn a tiny task that feeds outbound messages from the mock
-    //           into the broadcast sender (so tests can receive them).
+
+    // ── 2) spawn task to handle incoming RPC calls
     {
-        let mut mock_clone = mock.clone();
-        let msg_tx_clone = msg_tx.clone();
+        let mut plugin = mock.clone();
         tokio::spawn(async move {
-            while let Some(msg) = mock_clone.next_inbound().await {
-                let _ = msg_tx_clone.send(msg); // ignore if no receivers
+            while let Some((req, tx_rsp)) = rpc_rx.recv().await {
+                let resp = handle_internal_request(&mut plugin, req).await;
+                let _ = tx_rsp.send(resp);
             }
         });
     }
-   
-    // ── 4) concrete clients
-    let channel_client = Box::new(InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx)));
-    let control_client = Box::new(InProcControlClient::new(cmd_tx.clone()));
 
-    // ── 5) assemble the handle  (C = InProcChannelClient, R = InProcControlClient)
-    PluginHandle::new(cmd_tx, channel_client, control_client, "mock".into())
 
+    // ── 4) outbound message listener → test subscribers
+    {
+        let mut plugin = mock.clone();
+        let msg_tx_clone = msg_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = plugin.next_inbound().await {
+                let _ = msg_tx_clone.send(msg);
+            }
+        });
+    }
+
+    // ── 5) create clients
+    let channel_client = ChannelClient::new(rpc_tx.clone(), msg_tx.clone());
+    let control_client = ControlClient::new(rpc_tx.clone());
+
+    // ── 6) assemble plugin handle
+    let handle = PluginHandle::new(channel_client, control_client, "mock".into());
+
+    (mock, handle)
 }
 
 
@@ -214,48 +228,13 @@ mod tests {
     #[cfg(test)]
     use chrono::Utc;
     #[cfg(test)]
-    use crate::{message::{MessageContent, Participant}, plugin_actor::handle_internal_request};
+    use crate::{message::{MessageContent, Participant}};
     #[cfg(test)]
     use super::*;
 
-    #[cfg(test)]
-    pub async fn fresh_mock() -> (Arc<MockChannel>, MockHandle) {
-        let mock   = Arc::new(MockChannel::new());
-         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(32);
-
-        // ── 2) broadcast for outbound messages
-        let (msg_tx, msg_rx) = broadcast::channel::<ChannelMessage>(32);
-
-          let mut plugin = mock.clone(); // Arc<MockChannel>
-        tokio::spawn(async move {
-            while let Some(cmd) = cmd_rx.recv().await {
-                match cmd {
-                    Command::State(tx) => { let _ = tx.send(plugin.state().await); },
-                    Command::Health(tx) => { let _ = tx.send(plugin.health().await); },
-                    Command::Capabilities(tx) => { let _ = tx.send(plugin.capabilities()); },
-                    Command::Start(params, tx) => { let _ = tx.send(plugin.start(params).await); },
-                    Command::Drain => { plugin.drain().await; },
-                    Command::Stop => { plugin.stop().await; },
-                    Command::WaitUntilDrained(params, tx) => { let _ = tx.send(plugin.wait_until_drained(params).await); },
-                    Command::Call(req, tx) => { 
-                        // Handle JSON-RPC calls for listConfigKeys, listSecretKeys, etc.
-                        let resp = handle_internal_request(&mut plugin.clone(), req).await;
-                        let _ = tx.send(resp);
-                    },
-                    _ => { /* Other command variants if any */ }
-                }
-            }
-        });
-        let channel_client = Box::new(InProcChannelClient::new(cmd_tx.clone(), msg_rx, Arc::new(msg_tx))) as Box<dyn CloneableChannelClient>;
-        let control_client = Box::new(InProcControlClient::new(cmd_tx.clone())) as Box<dyn CloneableControlClient>;
-        let handle = PluginHandle::new(cmd_tx, channel_client, control_client, "mock".into());
-
-        (mock, handle)
-    }
-
     #[tokio::test]
     async fn capabilities_and_metadata() {
-        let (_mock, handle) = fresh_mock().await;
+        let (_mock, handle) = spawn_mock_handle().await;
 
         // capabilities ----------------------------------------------------------
         let caps = handle.capabilities().await.expect("cap call failed");
@@ -271,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_lifecycle_and_health() {
-        let (_mock, handle) = fresh_mock().await;
+        let (_mock, handle) = spawn_mock_handle().await;
 
         // initial state is STARTING ---------------------------------------------
         let mut state = handle.state().await.expect("state call");
@@ -303,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn send_and_receive_roundtrip() {
         // keep a reference to the mock so we can inject
-        let (mock, mut handle) = fresh_mock().await;
+        let (mock, mut handle) = spawn_mock_handle().await;
 
         // 1. sendMessage ---------------------------------------------------------
         let out_msg = ChannelMessage {
@@ -340,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn internal_wait_until_drained_path() {
         // Uses PluginHandler API directly through RPC
-        let (mock, handle) = fresh_mock().await;
+        let (mock, handle) = spawn_mock_handle().await;
         // No messages → should immediately succeed
         handle.wait_until_drained(100).await.expect("drained");
         let _ = mock.state;
