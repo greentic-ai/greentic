@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use async_trait::async_trait;
+use serde_json::json;
 use crate::jsonrpc::{  Request, Response};
-use crate::message::ChannelMessage;
+use crate::message::{ChannelMessage, MessageOutParams};
+use crate::plugin_actor::Method;
 use anyhow::{anyhow,Result};
 use tokio::{
     sync::{mpsc, oneshot, broadcast},
@@ -94,8 +96,8 @@ impl RpcChannelClient {
     ) -> anyhow::Result<()> {
 
         // Just fire and forget — use a dummy oneshot::Sender
-        let (_tx, _rx) = tokio::sync::oneshot::channel();
-        self.tx.send((req, _tx)).await
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        self.tx.send((req, tx)).await
             .map_err(|_| anyhow::anyhow!("ActorHandle is dead"))?;
 
         Ok(())
@@ -106,8 +108,9 @@ impl RpcChannelClient {
 #[async_trait::async_trait]
 impl ChannelClientType for RpcChannelClient {
     async fn send(&self, msg: ChannelMessage) -> Result<()> {
-        let params = serde_json::to_value(msg)?;
-        let r = Request::notification("messageOut", Some(params));
+        println!("@@@ REMOVE sending rpc: {:?}",msg);
+        let params = MessageOutParams{message: msg};
+        let r = Request::notification(Method::MessageOut.to_string(), Some(json!(params)));
         self.rpc_notify(r).await
     }
 
@@ -156,7 +159,7 @@ mod tests {
         let (req, _rsp_tx) = outbound_rx.recv().await.expect("nothing sent");
         assert_eq!(req.method, "messageOut");
         assert_eq!(req.id, None, "notification must have no id");
-        assert_eq!(req.params, Some(json!(msg)));
+        assert_eq!(req.params, Some(json!(MessageOutParams{message:msg})));
     }
 
     #[tokio::test]

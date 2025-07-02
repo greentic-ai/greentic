@@ -3,7 +3,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::{mpsc, oneshot};
 use anyhow::{anyhow, Result};
 use uuid::Uuid;
-use crate::{jsonrpc::{Id, Request, Response}, message::{ChannelCapabilities, ChannelState, HealthResult, InitParams, InitResult, ListKeysResult,}};
+use crate::{jsonrpc::{Id, Request, Response}, message::{ChannelCapabilities, ChannelState, HealthResult, InitParams, InitResult, ListKeysResult,}, plugin_actor::Method};
 
 #[async_trait]
 pub trait ControlClientType: Send + Sync + 'static {
@@ -121,7 +121,7 @@ impl RpcControlClient {
     /// deserialize the JSON-RPC result into `R`.
     async fn call<R>(
         &self,
-        method: &str,
+        method: Method,
         params: Option<serde_json::Value>,
     ) -> Result<R>
     where
@@ -153,49 +153,49 @@ impl RpcControlClient {
 #[async_trait]
 impl ControlClientType for RpcControlClient {
     async fn name(&self) -> anyhow::Result<String> {
-        let name: String = self.call(&"name",None).await.expect("Cannot retrieve name");
+        let name: String = self.call(Method::Name,None).await.expect("Cannot retrieve name");
         return Ok(name);
     }
 
     async fn init(&self, p: InitParams) -> Result<InitResult> {
-        self.call("init", Some(serde_json::to_value(p)?)).await
+        self.call(Method::Init, Some(serde_json::to_value(p)?)).await
     }
 
     async fn start(&self, p: InitParams) -> Result<InitResult> {
-        self.call("start", Some(serde_json::to_value(p)?)).await
+        self.call(Method::Start, Some(serde_json::to_value(p)?)).await
     }
 
     async fn drain(&self) -> Result<()> {
-        self.call::<()>(&"drain", None).await
+        self.call::<()>(Method::Drain, None).await
     }
 
     async fn stop(&self) -> Result<()> {
-        self.call::<()>(&"stop", None).await
+        self.call::<()>(Method::Stop, None).await
     }
 
     async fn state(&self) -> Result<ChannelState> {
-        self.call("state", None).await
+        self.call(Method::State, None).await
     }
 
     async fn health(&self) -> Result<HealthResult> {
-        self.call("health", None).await
+        self.call(Method::Health, None).await
     }
 
     async fn capabilities(&self) -> Result<ChannelCapabilities> {
-        self.call("capabilities", None).await
+        self.call(Method::Capabilities, None).await
     }
 
     async fn list_config_keys(&self) -> Result<ListKeysResult> {
-        self.call("listConfigKeys", None).await
+        self.call(Method::ListConfigKeys, None).await
     }
 
     async fn list_secret_keys(&self) -> Result<ListKeysResult> {
-        self.call("listSecretKeys", None).await
+        self.call(Method::ListSecretKeys, None).await
     }
 
     async fn wait_until_drained(&self, t_ms: u64) -> Result<()> {
         self.call::<()>(
-            "waitUntilDrained",
+            Method::WaitUntilDrained,
             Some(serde_json::json!({ "timeout_ms": t_ms })),
         )
         .await

@@ -10,7 +10,7 @@ use futures::stream::{self, StreamExt};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 use tokio_util::sync::CancellationToken;
-use channel_plugin::{message::{ChannelMessage, ChannelState}, plugin_actor::CloneablePluginClient, plugin_helpers::PluginError};
+use channel_plugin::{message::{ChannelMessage, ChannelState}, plugin_actor::PluginHandle, plugin_helpers::PluginError};
 
 use crate::{
     channel::{plugin::{PluginEventHandler, PluginWatcher}, wrapper::PluginWrapper}, config::ConfigManager, flow::session::SessionStore, logger::LogConfig, secret::SecretsManager, watcher::DirectoryWatcher
@@ -196,7 +196,7 @@ impl ChannelManager {
 #[async_trait]
 impl PluginEventHandler for ChannelManager {
     /// Called when a `.so`/`.dll` is added or changed.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: CloneablePluginClient) -> Result<(), Error> {
+    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginHandle) -> Result<(), Error> {
         info!("Channel plugin added/reloaded: {}", name);
         // If already present, tear down the old one:
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
@@ -428,7 +428,7 @@ pub mod tests {
             .await
             .unwrap();
 
-        let plugin_handle = spawn_mock_handle().await;
+        let (_mock,plugin_handle) = spawn_mock_handle().await;
         let wrapper = PluginWrapper::new(plugin_handle.channel_client(), plugin_handle.control_client(), store, LogConfig::default()).await;
         mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);

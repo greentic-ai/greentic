@@ -47,25 +47,6 @@ impl MockChannel {
             }
         }
 
-        /* 
-    /// Handy factory that gives you a ready-to-use mock `PluginHandle`
-    /// and ignores the event stream.
-    pub async fn make_mock_handle() -> PluginHandle {
-        // create an Arc so it can be moved into the actor task
-        let mock = Arc::new(MockChannel::new());
-        mock.get_plugin_handle().await
-    }
-
-    /// Spawn an in-process actor for *this* mock channel
-    /// and return the corresponding `PluginHandle`.
-    pub async fn get_plugin_handle(self: Arc<Self>) -> PluginHandle {
-        let (handle, _events) =
-            PluginHandle::in_process(self)
-                .await
-                .expect("Failed to create in-process handle");
-        handle
-    }
-    */
     /// Inject an incoming message and wake any pollers.
     pub async fn inject(&self, msg: ChannelMessage) {
         println!("@@@ REMOVE: inject {:?}",msg);
@@ -82,6 +63,7 @@ impl MockChannel {
 impl ChannelClientType for Arc<MockChannel> {
     async fn send(&self, msg: ChannelMessage) -> anyhow::Result<()> {
         // behave exactly like real plugins: push to `outgoing`
+        println!("@@@ REMOVE: sending {:?}",msg);
         self.outgoing.lock().await.push(msg);
         Ok(())
     }
@@ -159,7 +141,7 @@ impl PluginHandler for Arc<MockChannel> {
     }
     
     async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult{
-
+        println!("@@@ REMOVE send_message: {:?}",params.message);
         self.outgoing.lock().await.push(params.message);
         MessageOutResult{ success: true, error: None }
     }
@@ -188,10 +170,11 @@ pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
 
     // ── 1) the mock plugin instance
     let mock = Arc::new(MockChannel::new());
+    let mut plugin = mock.clone(); // used in RPC task
+    let mut plugin2 = mock.clone();
 
     // ── 2) spawn task to handle incoming RPC calls
     {
-        let mut plugin = mock.clone();
         tokio::spawn(async move {
             while let Some((req, tx_rsp)) = rpc_rx.recv().await {
                 let resp = handle_internal_request(&mut plugin, req).await;
@@ -203,10 +186,9 @@ pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
 
     // ── 4) outbound message listener → test subscribers
     {
-        let mut plugin = mock.clone();
         let msg_tx_clone = msg_tx.clone();
         tokio::spawn(async move {
-            while let Some(msg) = plugin.next_inbound().await {
+            while let Some(msg) = plugin2.next_inbound().await {
                 let _ = msg_tx_clone.send(msg);
             }
         });
@@ -282,7 +264,7 @@ mod tests {
     #[tokio::test]
     async fn send_and_receive_roundtrip() {
         // keep a reference to the mock so we can inject
-        let (mock, mut handle) = spawn_mock_handle().await;
+        let (mut mock, mut handle) = spawn_mock_handle().await;
 
         // 1. sendMessage ---------------------------------------------------------
         let out_msg = ChannelMessage {
@@ -294,8 +276,8 @@ mod tests {
             timestamp: Utc::now().to_rfc3339(),
             ..Default::default()
         };
-        let _ = handle
-            .send_message(out_msg.clone()).await; //.expect("send");
+
+        let _ = mock.send_message(MessageOutParams { message: out_msg.clone() }).await;
 
         // the underlying mock should have recorded it
         assert_eq!(mock.sent_messages().await, vec![out_msg]);

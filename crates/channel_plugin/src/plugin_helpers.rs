@@ -10,6 +10,7 @@ use uuid::Uuid;
 use thiserror::Error;
 use crate::jsonrpc::{Id, Request};
 use crate::message::*;
+use crate::plugin_actor::Method;
 
 /* 
 use prost_types::{Struct, Timestamp};
@@ -203,7 +204,7 @@ pub fn build_text_response<S: Into<String>>(
     let params = build_receive_text_msg(from, session_id, channel, text);
     Request::call(
         Id::String(request_id.into()),
-        "messageIn",
+        Method::MessageIn,
         Some(to_json(params).expect("serialise params")),
     )
 }

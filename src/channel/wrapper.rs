@@ -1,5 +1,5 @@
 use std::{fmt, sync::Arc};
-use channel_plugin::{channel_client::{ChannelClient,}, control_client::{ControlClient}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_helpers::PluginError, plugin_runtime::VERSION};
+use channel_plugin::{channel_client::{ChannelClient, ChannelClientType}, control_client::{ControlClient, ControlClientType}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_helpers::PluginError, plugin_runtime::VERSION};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::json;
@@ -154,8 +154,8 @@ impl PluginWrapper {
     #[tracing::instrument(name = "channel_receive_message_async", skip(self))]
     pub async fn receive_message(&mut self) -> anyhow::Result<ChannelMessage, PluginError> {
         match self.msg.next_inbound().await{
-            Some(msg) => Ok(msg),
-            _ => Err(PluginError::Other("No message came back from next_inbound".to_string())),
+            Some(msg)=>Ok(msg),
+            None =>Err(PluginError::Other("No message came back from next_inbound".to_string())),
         }
     }
     
@@ -169,10 +169,10 @@ pub mod tests {
     use super::*;
     use channel_plugin::message::{ChannelMessage,};
     use channel_plugin::plugin_runtime::HasStore;
-    use channel_plugin::plugin_test_util::{spawn_mock_handle, MockChannel};
+    use channel_plugin::plugin_test_util::spawn_mock_handle;
 
     pub async fn make_wrapper() -> PluginWrapper {
-        let plugin =spawn_mock_handle().await;   //   👈 real PluginHandle!
+        let (_mock,plugin) =spawn_mock_handle().await;   //   👈 real PluginHandle!
 
         let store = InMemorySessionStore::new(60);
         PluginWrapper::new(plugin.channel_client(),plugin.control_client(), store, LogConfig::default()).await
@@ -182,8 +182,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_send_and_poll() {
-        let mock = MockChannel::new();
-        let plugin_handle = spawn_mock_handle().await;
+        let (mock,plugin_handle) = spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
         let mut w = PluginWrapper::new(plugin_handle.channel_client(),plugin_handle.control_client(), store, LogConfig::default()).await;
         let config = vec![];
@@ -223,8 +222,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_config_and_secrets() {
-        let mock = Arc::new(MockChannel::new());
-        let plugin_handle =spawn_mock_handle().await;
+        let (mock,plugin_handle) =spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
         let mut w = PluginWrapper::new(plugin_handle.channel_client(),plugin_handle.control_client(), store, LogConfig::default()).await;
         let config = vec![("k".to_string(),"v".to_string())];

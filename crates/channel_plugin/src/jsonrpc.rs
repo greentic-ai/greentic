@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::plugin_actor::Method;
+
 
 /// JSON‑RPC 2.0 core types for Greentic plugins communicated over stdin/stdout.
 ///
@@ -88,10 +90,11 @@ impl Request {
     }
 
     /// Create a *call* expecting a response.
-    pub fn call(id: Id, method: impl Into<String>, params: Option<Value>) -> Self {
+    pub fn call<M: Into<Method>>(id: Id, method: M, params: Option<Value>) -> Self {
+        let method = method.into();
         Self {
             jsonrpc: JSONRPC_VERSION.to_owned(),
-            method: method.into(),
+            method: method.to_string(),
             params,
             id: Some(id),
         }
@@ -209,10 +212,10 @@ mod tests {
 
     #[test]
     fn roundtrip_request() {
-        let req = Request::call(Id::Number(1), "echo", Some(json!({"msg": "hi"})));
+        let req = Request::call(Id::Number(1), Method::Name, Some(json!({"msg": "hi"})));
         let s = serde_json::to_string(&req).unwrap();
         let de: Request = serde_json::from_str(&s).unwrap();
-        assert_eq!(de.method, "echo");
+        assert_eq!(de.method, "name");
     }
 
     #[test]

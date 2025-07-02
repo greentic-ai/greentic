@@ -1,11 +1,11 @@
 use std::path::Path;
+
 use std::sync::Arc;
 use anyhow::Result;
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
 #[cfg(feature = "test-utils")]
 use serde_json::json;
-use strum_macros::{AsRefStr, Display, EnumString};
+use strum_macros::{Display, EnumString};
 use tokio::sync::{mpsc, oneshot};
 use crate::channel_client::{ChannelClient, ChannelClientType, RpcChannelClient};
 use crate::control_client::{ControlClient, ControlClientType, RpcControlClient};
@@ -23,25 +23,40 @@ use tokio::{
 // -----------------------------------------------------------------------------
 // Define Commands for actor
 // -----------------------------------------------------------------------------
-#[derive(Debug, Clone, PartialEq, Eq, EnumString, AsRefStr, Display, Serialize, Deserialize)]
-#[strum(serialize_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, EnumString, Display)]
 pub enum Method {
+    #[strum(serialize = "name")]
+    Name,
+    #[strum(serialize = "init")]
     Init,
+    #[strum(serialize = "start")]
     Start,
+    #[strum(serialize = "drain")]
     Drain,
+    #[strum(serialize = "stop")]
     Stop,
+    #[strum(serialize = "state")]
     State,
+    #[strum(serialize = "health")]
     Health,
+    #[strum(serialize = "messageIn")]
     MessageIn,
+    #[strum(serialize = "messageOut")]
     MessageOut,
+    #[strum(serialize = "setConfig")]
     SetConfig,
+    #[strum(serialize = "setSecrets")]
     SetSecrets,
+    #[strum(serialize = "capabilities")]
     Capabilities,
+    #[strum(serialize = "listConfigKeys")]
     ListConfigKeys,
+    #[strum(serialize = "listSecretKeys")]
     ListSecretKeys,
+    #[strum(serialize = "waitUntilDrained")]
     WaitUntilDrained,
-    // Add more as needed
 }
+
 #[derive(Debug)]
 pub enum Command {
     Init(InitParams, oneshot::Sender<InitResult>),
@@ -113,6 +128,7 @@ impl PluginHandle
     }
 
     pub async fn send_message(&self, msg: ChannelMessage) -> anyhow::Result<()> {
+        println!("@@@ REMOVE send: {:?}",msg);
         self.client.send(msg).await
     }
 
@@ -261,7 +277,7 @@ where
                     }
                     // plugin sent a *request* (notification) – usually `"messageIn"`
                     Ok(Message::Request(req))
-                        if req.method == "messageIn" =>
+                        if req.method == Method::MessageIn.to_string() =>
                     {
                         if let Some(p) = req.params {
                             if let Ok(r) =
@@ -389,17 +405,23 @@ where
         Ok(Method::Drain) => { plugin.drain().await; ok_null(id) }
         Ok(Method::Stop)  => { plugin.stop().await;  ok_null(id) }
 
-        Ok(Method::WaitUntilDrained) => match req.params
+        Ok(Method::WaitUntilDrained) => match req.params.clone()
             .and_then(|v| serde_json::from_value::<WaitUntilDrainedParams>(v).ok())
         {
-            Some(p) => Response::success(id, json!(plugin.wait_until_drained(p).await)),
+            Some(p) => {
+                plugin.wait_until_drained(p).await;
+                Response::success(id, json!(null))
+            },
             None    => err(id, -32602, "Invalid params"),
         },
 
         /* ───────────── informational ──────────────── */
-        Ok(Method::State)         => Response::success(id, json!(plugin.state().await)),
+        Ok(Method::State)         => {
+            let state = plugin.state().await;
+            Response::success(id, json!(state.state))
+        },
         Ok(Method::Health)        => Response::success(id, json!(plugin.health().await)),
-        Ok(Method::Capabilities)  => Response::success(id, json!(plugin.capabilities())),
+        Ok(Method::Capabilities)  => Response::success(id, json!(plugin.capabilities().capabilities)),
         Ok(Method::ListConfigKeys)=> Response::success(id, json!(plugin.list_config_keys())),
         Ok(Method::ListSecretKeys)=> Response::success(id, json!(plugin.list_secret_keys())),
 
@@ -438,7 +460,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use crate::{plugin_runtime::VERSION, plugin_test_util::MockChannel};
 
@@ -501,10 +522,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_receive_message_rpc() {
-        let mock = Arc::new(MockChannel::new());
+        let mock = MockChannel::new();
         // fresh mock
         let (mut plugin, _ev_rx) =
-            PluginHandle::in_process(MockChannel::new()).await.unwrap();
+            PluginHandle::in_process(mock.clone()).await.unwrap();
 
         // ActorMockPlugin::receive_message always returns the static "hello"
         let mut msg = ChannelMessage::default();
