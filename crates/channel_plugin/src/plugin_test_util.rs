@@ -199,7 +199,7 @@ pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
     let control_client = ControlClient::new(rpc_tx.clone());
 
     // ── 6) assemble plugin handle
-    let handle = PluginHandle::new(channel_client, control_client, "mock".into());
+    let handle = PluginHandle::new(channel_client, control_client).await;
 
     (mock, handle)
 }
@@ -218,14 +218,17 @@ mod tests {
     async fn capabilities_and_metadata() {
         let (_mock, handle) = spawn_mock_handle().await;
 
+        let name = handle.name();
+        assert_eq!(name,"mock");
+
         // capabilities ----------------------------------------------------------
-        let caps = handle.capabilities().await.expect("cap call failed");
+        let caps = handle.capabilities();
         assert_eq!(caps.name, "mock");
         assert!(caps.supports_sending && caps.supports_receiving);
 
         // listConfigKeys / listSecretKeys ---------------------------------------
-        let cfg  = handle.list_config_keys().await.expect("cfg keys");
-        let secr = handle.list_secret_keys().await.expect("sec keys");
+        let cfg  = handle.list_config_keys();
+        let secr = handle.list_secret_keys();
         assert!(cfg.required_keys.is_empty() && cfg.optional_keys.is_empty());
         assert!(secr.required_keys.is_empty() && secr.optional_keys.is_empty());
     }

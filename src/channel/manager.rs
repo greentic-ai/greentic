@@ -222,7 +222,7 @@ impl PluginEventHandler for ChannelManager {
 
         // Wrap + configure:
 
-        let wrapper = PluginWrapper::new(plugin.channel_client(),plugin.control_client(), self.store.clone(), self.log_config.clone()).await;
+        let wrapper = PluginWrapper::new(plugin, self.store.clone(), self.log_config.clone()).await;
            
         // 3) Start it **on its own thread** with its own runtime
         let mut wrapper_cloned = wrapper.clone();
@@ -429,7 +429,7 @@ pub mod tests {
             .unwrap();
 
         let (_mock,plugin_handle) = spawn_mock_handle().await;
-        let wrapper = PluginWrapper::new(plugin_handle.channel_client(), plugin_handle.control_client(), store, LogConfig::default()).await;
+        let wrapper = PluginWrapper::new(plugin_handle, store, LogConfig::default()).await;
         mgr.register_channel("foo".into(), ManagedChannel { wrapper, cancel:None, poller:None}).await.unwrap();
         assert_eq!(mgr.list_channels(), vec!["foo".to_string()]);
         mgr.unload_channel("foo").await.unwrap();

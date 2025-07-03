@@ -1,5 +1,5 @@
 use std::{fmt, sync::Arc};
-use channel_plugin::{channel_client::{ChannelClient, ChannelClientType}, control_client::{ControlClient, ControlClientType}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_helpers::PluginError, plugin_runtime::VERSION};
+use channel_plugin::{channel_client::{ChannelClient, ChannelClientType}, control_client::{ControlClient, ControlClientType}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_actor::PluginHandle, plugin_helpers::PluginError, plugin_runtime::VERSION};
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::json;
@@ -10,6 +10,9 @@ pub struct PluginWrapper {
     name: String,
     msg: ChannelClient,
     inner: ControlClient,
+    capabilities: ChannelCapabilities,
+    config_keys: ListKeysResult,
+    secret_keys: ListKeysResult,
     state:   Arc<AtomicCell<ChannelState>>,
     log_config: LogConfig,
     session_store: SessionStore,
@@ -21,6 +24,9 @@ impl Clone for PluginWrapper {
             name: self.name.clone(),
             inner: self.inner.clone(),
             msg: self.msg.clone(),
+            capabilities: self.capabilities.clone(),
+            config_keys: self.config_keys.clone(),
+            secret_keys: self.secret_keys.clone(),
             state: self.state.clone(),
             log_config: self.log_config.clone(),
             session_store: self.session_store.clone(),
@@ -42,12 +48,20 @@ impl fmt::Debug for PluginWrapper {
 
 
 impl PluginWrapper {
-    pub async fn new(msg: ChannelClient, inner: ControlClient, session_store: SessionStore, log_config: LogConfig) -> Self {
-        let name = inner.name().await.unwrap();
+    pub async fn new(plugin: PluginHandle, session_store: SessionStore, log_config: LogConfig) -> Self {
+        let inner = plugin.control_client();
+        let msg = plugin.channel_client();
+        let name = plugin.name();
+        let capabilities = plugin.capabilities();
+        let config_keys = plugin.list_config_keys();
+        let secret_keys = plugin.list_secret_keys();
         Self {
             name,
             inner,
             msg,
+            capabilities,
+            config_keys,
+            secret_keys,
             state:   Arc::new(AtomicCell::new(ChannelState::RUNNING)),
             log_config,
             session_store,
@@ -84,15 +98,15 @@ impl PluginWrapper {
     }
 
     pub async fn capabilities(&self) -> ChannelCapabilities {
-        self.inner.capabilities().await.expect("Could not get capabilities")
+        self.capabilities.clone()
     }
 
     pub async fn list_config_keys(&self) -> ListKeysResult {
-        self.inner.list_config_keys().await.expect("Could not get config keys")
+        self.config_keys.clone()
     }
 
     pub async  fn list_secret_keys(&self) -> ListKeysResult {
-        self.inner.list_secret_keys().await.expect("Could not get config keys")
+        self.secret_keys.clone()
     }
 
     pub async fn state(&self) -> ChannelState {
@@ -175,7 +189,7 @@ pub mod tests {
         let (_mock,plugin) =spawn_mock_handle().await;   //   👈 real PluginHandle!
 
         let store = InMemorySessionStore::new(60);
-        PluginWrapper::new(plugin.channel_client(),plugin.control_client(), store, LogConfig::default()).await
+        PluginWrapper::new(plugin, store, LogConfig::default()).await
     }
 
 
@@ -184,7 +198,7 @@ pub mod tests {
     async fn test_send_and_poll() {
         let (mock,plugin_handle) = spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
-        let mut w = PluginWrapper::new(plugin_handle.channel_client(),plugin_handle.control_client(), store, LogConfig::default()).await;
+        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default()).await;
         let config = vec![];
         let secrets = vec![];
         w.start(config,secrets).await.expect("could not start");
@@ -224,7 +238,7 @@ pub mod tests {
     async fn test_config_and_secrets() {
         let (mock,plugin_handle) =spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
-        let mut w = PluginWrapper::new(plugin_handle.channel_client(),plugin_handle.control_client(), store, LogConfig::default()).await;
+        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default()).await;
         let config = vec![("k".to_string(),"v".to_string())];
         let secrets = vec![("k".to_string(),"s".to_string())];
         w.start(config, secrets).await.expect("could not start");

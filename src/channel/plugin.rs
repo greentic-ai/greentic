@@ -187,8 +187,9 @@ pub mod tests {
     #[tokio::test]
     async fn test_mock_channel() {
         let (_mock,handle) = spawn_mock_handle().await;
-
-        let caps = handle.capabilities().await.unwrap();
+        let name = handle.name();
+        assert_eq!(name,"mock");
+        let caps = handle.capabilities();
         assert_eq!(caps.name, "mock");
     }
 

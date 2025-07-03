@@ -59,6 +59,7 @@ pub enum Method {
 
 #[derive(Debug)]
 pub enum Command {
+    Name,
     Init(InitParams, oneshot::Sender<InitResult>),
     Start(InitParams, oneshot::Sender<InitResult>),
     Drain,
@@ -89,17 +90,28 @@ pub struct PluginHandle
     /// `PluginHandle` itself `Clone`.
     client: ChannelClient,
     control: ControlClient,
-    plugin_id: String,
+    name: String,
+    capabilities: ChannelCapabilities,
+    list_config_keys: ListKeysResult,
+    list_secret_keys: ListKeysResult,
 }
 
 
 impl PluginHandle
 {
-    pub fn new(client: ChannelClient, control: ControlClient, plugin_id: String) -> Self {
+    pub async fn new(client: ChannelClient, control: ControlClient) -> Self {
+        let name = control.name().await.expect("Could not retrieve name from plugin");
+        let capabilities = control.capabilities().await.expect("Could not retrieve capabilties from plugin");
+        let list_config_keys = control.list_config_keys().await.expect("Could not retrieve config keys from plugin");
+        let list_secret_keys = control.list_secret_keys().await.expect("Could not retrieve secret keys from plugin");
+
         Self {
             client,
             control,
-            plugin_id,
+            name,
+            capabilities,
+            list_config_keys,
+            list_secret_keys,
         }
     }
     
@@ -111,13 +123,9 @@ impl PluginHandle
        self.control.clone()
     }
 
-    pub fn id(&self) -> &str {
-        &self.plugin_id
+    pub fn name(&self) -> String {
+        self.name.clone()
     }
-
-   
-
-    
 
     // ---------------------------------------------------------------------
     // Convenience wrappers
@@ -139,16 +147,16 @@ impl PluginHandle
     }
 
 
-    pub async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities> {
-        self.control.capabilities().await
+    pub fn capabilities(&self) -> ChannelCapabilities {
+        self.capabilities.clone()
     }
 
-    pub async fn list_config_keys(&self) -> anyhow::Result<ListKeysResult> {
-        self.control.list_config_keys().await
+    pub fn list_config_keys(&self) -> ListKeysResult {
+        self.list_config_keys.clone()
     }
 
-    pub async fn list_secret_keys(&self) -> anyhow::Result<ListKeysResult> {
-        self.control.list_secret_keys().await
+    pub fn list_secret_keys(&self) -> ListKeysResult {
+        self.list_secret_keys.clone()
     }
 
     pub async fn start(&self, params: InitParams) -> anyhow::Result<InitResult> {
@@ -169,7 +177,7 @@ impl PluginHandle
         self.control.health().await
     }
 
-    pub async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<()> {
+    pub async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<WaitUntilDrainedResult> {
         self.control.wait_until_drained(timeout_ms).await
     }
 
@@ -301,17 +309,11 @@ where
         ChannelClient::Rpc(RpcChannelClient::new(rpc_tx.clone(), msg_tx.clone()));
     let control_client = ControlClient::Rpc(RpcControlClient::new(rpc_tx.clone()));
 
-
     // assemble the handle
     Ok(PluginHandle::new(
         channel_client,
         control_client,
-        exe.as_ref()
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-    ))
+    ).await)
 }
 
 // -----------------------------------------------------------------------------
@@ -338,7 +340,6 @@ where
     // broadcast for inbound ChannelMessage events
     let (msg_tx, _msg_rx) = broadcast::channel::<ChannelMessage>(32);
 
-    let name = plugin.name().name.clone();
 
     {
         let mut plugin_clone = plugin.clone();
@@ -368,7 +369,7 @@ where
     let channel_client = ChannelClient::new(rpc_tx.clone(), msg_tx.clone());
     let control_client = ControlClient::new(rpc_tx.clone());
 
-    PluginHandle::new( channel_client, control_client, name)
+    PluginHandle::new( channel_client, control_client).await
 }
 
 // -----------------------------------------------------------------------------
@@ -409,8 +410,8 @@ where
             .and_then(|v| serde_json::from_value::<WaitUntilDrainedParams>(v).ok())
         {
             Some(p) => {
-                plugin.wait_until_drained(p).await;
-                Response::success(id, json!(null))
+                let result = plugin.wait_until_drained(p).await;
+                Response::success(id, json!(result))
             },
             None    => err(id, -32602, "Invalid params"),
         },
@@ -418,10 +419,11 @@ where
         /* ───────────── informational ──────────────── */
         Ok(Method::State)         => {
             let state = plugin.state().await;
-            Response::success(id, json!(state.state))
+            Response::success(id, json!(state))
         },
+        Ok(Method::Name)          => Response::success(id, json!(plugin.name())),
         Ok(Method::Health)        => Response::success(id, json!(plugin.health().await)),
-        Ok(Method::Capabilities)  => Response::success(id, json!(plugin.capabilities().capabilities)),
+        Ok(Method::Capabilities)  => Response::success(id, json!(plugin.capabilities())),
         Ok(Method::ListConfigKeys)=> Response::success(id, json!(plugin.list_config_keys())),
         Ok(Method::ListSecretKeys)=> Response::success(id, json!(plugin.list_secret_keys())),
 
@@ -549,7 +551,8 @@ mod tests {
         plugin.drain().await.unwrap();
 
         // should complete without timing out
-        plugin.wait_until_drained(250).await.unwrap();
+        let result = plugin.wait_until_drained(250).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -557,12 +560,31 @@ mod tests {
         let (plugin, _ev_rx) =
             PluginHandle::in_process(MockChannel::new()).await.unwrap();
 
-        let cfg = plugin.list_config_keys().await.unwrap();
-        let sec = plugin.list_secret_keys().await.unwrap();
+        let cfg = plugin.list_config_keys();
+        let sec = plugin.list_secret_keys();
 
         assert!(cfg.required_keys.is_empty());
         assert!(cfg.optional_keys.is_empty());
         assert!(sec.required_keys.is_empty());
         assert!(sec.optional_keys.is_empty());
+    }
+
+
+    #[tokio::test]
+    async fn test_plugin_name_via_rpc() {
+        // 1) spawn the mock plugin process
+        let handle: PluginHandle = spawn_rpc_plugin("../../greentic/plugins/channels/stopped/channel_mock_inout")
+            .await
+            .expect("failed to start mock plugin");
+
+        // 2) call `name()` through the control client
+        let name = handle
+            .control_client()
+            .name()
+            .await
+            .expect("RPC name() failed");
+
+        // 3) assert we got the expected identifier
+        assert_eq!(name, "mock_inout");
     }
 }

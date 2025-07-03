@@ -341,6 +341,11 @@ where
                 }
             }
         }
+        Ok(Method::Name) => {
+            if let Some(id) = req.id {
+               enqueue(tx, Response::success(id, json!(plugin.name())));
+            }
+        }
         Ok(Method::Health) => {
             if let Some(id) = req.id {
                enqueue(tx, Response::success(id, json!(plugin.health().await)));
@@ -350,6 +355,27 @@ where
             if let Some(id) = req.id {
                 enqueue(tx, Response::success(id, json!(plugin.state().await)));
             }
+        }
+        Ok(Method::Capabilities) => {
+            if let Some(id) = req.id {
+                enqueue(tx, Response::success(id, json!(plugin.capabilities())));
+            }
+        }
+        Ok(Method::ListConfigKeys) => {
+            if let Some(id) = req.id {
+                enqueue(tx, Response::success(id, json!(plugin.list_config_keys())));
+            }
+        }
+        Ok(Method::ListSecretKeys) => {
+            if let Some(id) = req.id {
+                enqueue(tx, Response::success(id, json!(plugin.list_secret_keys())));
+            }
+        }
+        Ok(Method::WaitUntilDrained) => {
+            if let Some(v) = req.params {
+                if let Ok(p) = serde_json::from_value::<WaitUntilDrainedParams>(v) { plugin.wait_until_drained(p).await; }
+            }
+            if let Some(id) = req.id { ok_null!(id); }
         }
         Ok(Method::SetConfig) => {
             if let Some(v) = req.params {

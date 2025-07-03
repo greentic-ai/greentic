@@ -301,7 +301,7 @@ pub struct SetSecretsParams {
 
 /// Returns the required and optional keys should be set
 /// For each key, there is also an optional description of what the key is for
-#[derive(Serialize, Deserialize, JsonSchema,)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema,)]
 pub struct ListKeysResult {
     pub required_keys: Vec<(String,Option<String>)>, // key and optional description
     pub optional_keys: Vec<(String,Option<String>)>, // key and optional description

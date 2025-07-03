@@ -1434,7 +1434,7 @@ connections:
 
         let log_config = LogConfig::new(LogLevel::Info, Some("./greentic/logs".to_string()), None);
         
-        let mock = ManagedChannel::new(PluginWrapper::new(plugin.channel_client(),plugin.control_client(), store.clone(), log_config).await, None, None);
+        let mock = ManagedChannel::new(PluginWrapper::new(plugin, store.clone(), log_config).await, None, None);
         channel_manager
             .register_channel("mock_inout".to_string(), mock)
             .await

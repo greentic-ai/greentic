@@ -3,7 +3,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::{mpsc, oneshot};
 use anyhow::{anyhow, Result};
 use uuid::Uuid;
-use crate::{jsonrpc::{Id, Request, Response}, message::{ChannelCapabilities, ChannelState, HealthResult, InitParams, InitResult, ListKeysResult,}, plugin_actor::Method};
+use crate::{jsonrpc::{Id, Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelState, HealthResult, InitParams, InitResult, ListKeysResult, NameResult, StateResult, WaitUntilDrainedResult}, plugin_actor::Method};
 
 #[async_trait]
 pub trait ControlClientType: Send + Sync + 'static {
@@ -17,7 +17,7 @@ pub trait ControlClientType: Send + Sync + 'static {
     async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities>;
     async fn list_config_keys(&self) -> anyhow::Result<ListKeysResult>;
     async fn list_secret_keys(&self) -> anyhow::Result<ListKeysResult>;
-    async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<()>;
+    async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<WaitUntilDrainedResult>;
     // Possibly: set_config, set_secrets, version, etc.
 }
 #[derive(Clone, Debug)]
@@ -97,7 +97,7 @@ impl ControlClientType for ControlClient {
         }
     }
 
-    async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<()> {
+    async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<WaitUntilDrainedResult> {
         match self {
             ControlClient::Rpc(client) => client.wait_until_drained(timeout_ms).await,
         }
@@ -153,8 +153,8 @@ impl RpcControlClient {
 #[async_trait]
 impl ControlClientType for RpcControlClient {
     async fn name(&self) -> anyhow::Result<String> {
-        let name: String = self.call(Method::Name,None).await.expect("Cannot retrieve name");
-        return Ok(name);
+        let name: NameResult = self.call::<NameResult>(Method::Name,None).await.expect("Could not get name");
+        return Ok(name.name);
     }
 
     async fn init(&self, p: InitParams) -> Result<InitResult> {
@@ -174,7 +174,8 @@ impl ControlClientType for RpcControlClient {
     }
 
     async fn state(&self) -> Result<ChannelState> {
-        self.call(Method::State, None).await
+        let state: StateResult = self.call::<StateResult>(Method::State,None).await.expect("Could not get state");
+        return Ok(state.state);
     }
 
     async fn health(&self) -> Result<HealthResult> {
@@ -182,7 +183,8 @@ impl ControlClientType for RpcControlClient {
     }
 
     async fn capabilities(&self) -> Result<ChannelCapabilities> {
-        self.call(Method::Capabilities, None).await
+        let caps: CapabilitiesResult = self.call::<CapabilitiesResult>(Method::Capabilities,None).await.expect("Could not get capabilities");
+        return Ok(caps.capabilities);
     }
 
     async fn list_config_keys(&self) -> Result<ListKeysResult> {
@@ -193,8 +195,8 @@ impl ControlClientType for RpcControlClient {
         self.call(Method::ListSecretKeys, None).await
     }
 
-    async fn wait_until_drained(&self, t_ms: u64) -> Result<()> {
-        self.call::<()>(
+    async fn wait_until_drained(&self, t_ms: u64) -> Result<WaitUntilDrainedResult> {
+        self.call::<WaitUntilDrainedResult>(
             Method::WaitUntilDrained,
             Some(serde_json::json!({ "timeout_ms": t_ms })),
         )
