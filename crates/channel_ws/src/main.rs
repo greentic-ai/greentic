@@ -339,8 +339,8 @@ async fn main() -> anyhow::Result<()> {
     plugin.start(params).await;
     run(plugin).await
 }
-    */
-
+    
+*/
 
     #[cfg(test)]
 mod tests {

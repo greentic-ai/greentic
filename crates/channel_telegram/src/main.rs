@@ -1,7 +1,7 @@
 // channel_telegram/src/lib.rs
 use anyhow::anyhow;
 use crossbeam::channel::{unbounded, Receiver, Sender};
-use channel_plugin::{message::{make_session_key, ChannelCapabilities, CapabilitiesResult, ChannelMessage, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, ChannelState, StateResult, TextMessage}, plugin_helpers::{build_user_joined_event, get_user_joined_left_events,}, plugin_runtime::{run, HasStore, PluginHandler}};
+use channel_plugin::{message::{make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, TextMessage}, plugin_helpers::{build_user_joined_event, get_user_joined_left_events,}, plugin_runtime::{run, HasStore, PluginHandler}};
 use tokio::runtime::{Builder};
 use tracing::{error, info};
 use std::{convert::Infallible, thread};
@@ -576,7 +576,7 @@ async fn main() -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let (config, secrets) =
-        load_env_as_vecs(None /* default: .env in cwd */)
+        load_env_as_vecs(Some("./greentic/secrets/.env"),None /* default: .env in cwd */)
             .expect("failed to read .env");
     let mut plugin = TelegramPlugin::default();
     let params = channel_plugin::message::InitParams {
@@ -591,6 +591,7 @@ async fn main() -> anyhow::Result<()> {
     run(plugin).await
 }
 */
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,7 +601,7 @@ mod tests {
     #[tokio::test]
     async fn test_state_transitions_async() {
         let (config, secrets) =
-        load_env_as_vecs(None /* default: .env in cwd */)
+        load_env_as_vecs(Some("./greentic/secrets/.env"), None /* default: .env in cwd */)
             .expect("failed to read .env");
         let mut p = TelegramPlugin::default();
 

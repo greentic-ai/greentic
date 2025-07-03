@@ -2,7 +2,7 @@ use std::{ffi::OsStr, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 
 use anyhow::Error;
 use async_trait::async_trait;
-use channel_plugin::{control_client::ControlClientType, plugin_actor::{spawn_rpc_plugin, PluginHandle}};
+use channel_plugin::{plugin_actor::{spawn_rpc_plugin, PluginHandle}};
 use dashmap::DashMap;
 use tracing::{error, info, warn};
 
@@ -45,8 +45,7 @@ impl PluginWatcher {
                 .unwrap_or(true) // Accept files with no extension
             {
                 if let Ok(handle) = spawn_rpc_plugin(p.clone()).await {
-                    let control =handle.control_client();
-                    let name = control.name().await.unwrap();
+                    let name = handle.name();
                     plugins.insert(name.to_string(), handle.clone());
                     info!("Loaded plugin: {}",name.to_string());
                 }
@@ -145,7 +144,7 @@ impl crate::watcher::WatchedType for PluginWatcher {
     async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
         match spawn_rpc_plugin(path).await {
             Ok(handle) => {
-                let name = handle.control_client().name().await.unwrap();
+                let name = handle.name();
                 self.plugins.insert(name.to_string(), handle.clone());
                 let path_str = path.to_string_lossy().to_string();
                 self.path_to_name.insert(path_str,name.to_string());

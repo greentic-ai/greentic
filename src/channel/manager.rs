@@ -102,6 +102,10 @@ impl ChannelManager {
     /// Start (or restart) a currently‐loaded channel.
     pub async fn start_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some(mut entry) = self.channels.get_mut(name) {
+            if entry.value_mut().wrapper.state().await == ChannelState::RUNNING {
+                info!("Ignoring start_channel {} because it is already staretd.",name);
+                return Ok(()); // Already started
+            }
             let config = self.config.0.as_ref().as_vec().await;
             let secrets = self.secrets.0.as_ref().as_vec().await;
             entry.value_mut().wrapper.start(config, secrets).await?;

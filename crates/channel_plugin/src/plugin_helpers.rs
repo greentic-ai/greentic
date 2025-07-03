@@ -213,22 +213,29 @@ pub fn build_text_response<S: Into<String>>(
 /// Read a .env-style file and return two vectors:
 ///   * `config`  – all keys that **don't** start with `SECRET_`
 ///   * `secrets` – keys starting with `SECRET_` (prefix stripped)
-pub fn load_env_as_vecs(path: Option<&str>)
+pub fn load_env_as_vecs(secrets_path: Option<&str>,config_path: Option<&str>)
     -> anyhow::Result<(Vec<(String, String)>, Vec<(String, String)>)>
 {
-    let iter = match path {
-        Some(p) => from_path_iter(p)?,
-        None    => dotenv_iter()?,          // default: .env in CWD
-    };
-
     let mut config  = Vec::new();
     let mut secrets = Vec::new();
+    if secrets_path.is_some() {
+        let secrets_iter = match secrets_path {
+            Some(p) => from_path_iter(p)?,
+            None    => dotenv_iter()?,          // default: .env in CWD
+        };
+        for kv in secrets_iter {
+            let (k, v) = kv?;
+            secrets.push((k, v));
+        }
+    }
+    if config_path.is_some() {
+        let config_iter = match config_path {
+            Some(p) => from_path_iter(p)?,
+            None    => dotenv_iter()?,          // default: .env in CWD
+        };
 
-    for kv in iter {
-        let (k, v) = kv?;
-        if k.starts_with("SECRET_") {
-            secrets.push((k.trim_start_matches("SECRET_").to_string(), v));
-        } else {
+        for kv in config_iter {
+            let (k, v) = kv?;
             config.push((k, v));
         }
     }
