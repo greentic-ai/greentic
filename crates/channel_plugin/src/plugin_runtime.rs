@@ -66,7 +66,7 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
         result
     }
     /// Drain the plugin
-    async fn drain(&mut self);
+    async fn drain(&mut self) -> DrainResult;
     async fn wait_until_drained(&self, params: WaitUntilDrainedParams) -> WaitUntilDrainedResult {
         let deadline = Instant::now() + std::time::Duration::from_millis(params.timeout_ms);
 
@@ -85,7 +85,7 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
         }
     }
     /// Stop the plugin
-    async fn stop(&mut self);
+    async fn stop(&mut self) -> StopResult;
     /// When a message needs to be send
     async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult;
     /// When a message comes in
@@ -309,12 +309,6 @@ where
         let _ = tx.send(format!("{}\n", serde_json::to_string(&resp).unwrap()));
     }
 
-    /// Helper that sends `{"result":null}`.
-    macro_rules! ok_null {
-        ($id:expr) => {
-            enqueue(tx, Response::success($id, json!(null)));
-        };
-    }
 
     match req.method.parse::<Method>() {
         Ok(Method::Init) => {
@@ -336,12 +330,14 @@ where
             }
         }
         Ok(Method::Drain) => {
-            plugin.drain().await;
-            if let Some(id) = req.id { ok_null!(id); }
+            if let Some(id) = req.id { 
+                 enqueue(tx, Response::success(id, json!(plugin.drain().await)));
+            }
         }
         Ok(Method::Stop) => {
-            plugin.stop().await;
-            if let Some(id) = req.id { ok_null!(id); }
+            if let Some(id) = req.id { 
+                 enqueue(tx, Response::success(id, json!(plugin.stop().await)));
+            }
         }
         Ok(Method::MessageOut) => {
             match serde_json::from_value::<MessageOutParams>(req.params.unwrap_or(Value::Null)) {
@@ -401,15 +397,21 @@ where
         }
         Ok(Method::SetConfig) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<SetConfigParams>(v) { plugin.set_config(p).await; }
+                if let Ok(p) = serde_json::from_value::<SetConfigParams>(v) { 
+                    if let Some(id) = req.id {
+                        enqueue(tx, Response::success(id, json!(plugin.set_config(p).await)));
+                    }
+                }
             }
-            if let Some(id) = req.id { ok_null!(id); }
         }
         Ok(Method::SetSecrets) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<SetSecretsParams>(v) { plugin.set_secrets(p).await; }
+                if let Ok(p) = serde_json::from_value::<SetSecretsParams>(v) { 
+                    if let Some(id) = req.id {
+                        enqueue(tx, Response::success(id, json!(plugin.set_secrets(p).await)));
+                    }
+                }
             }
-            if let Some(id) = req.id { ok_null!(id); }
         }
         method => {
             error!("Failed to implement method {:?} in handle_request",method);

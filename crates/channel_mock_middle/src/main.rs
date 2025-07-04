@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::{Arc, Condvar, Mutex}};
 
 use async_trait::async_trait;
-use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult}, plugin_runtime::{run, HasStore, PluginHandler}};
+use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult}, plugin_runtime::{run, HasStore, PluginHandler}};
 use dashmap::DashMap;
 use tracing::info;
 
@@ -42,8 +42,8 @@ impl PluginHandler for MockPlugin {
         }}
     }
     async fn state(&self) -> StateResult { StateResult{state:self.state.clone()} }
-    async fn drain(&mut self){ self.state = ChannelState::DRAINING; }
-    async fn stop(&mut self)  { self.state = ChannelState::STOPPED; }
+    async fn drain(&mut self) -> DrainResult { self.state = ChannelState::DRAINING; DrainResult{ success: true, error: None } }
+    async fn stop(&mut self) -> StopResult { self.state = ChannelState::STOPPED; StopResult{ success: true, error: None } }
     
     fn list_config_keys(&self) -> ListKeysResult{
         ListKeysResult{ required_keys: vec![], optional_keys: vec![] }

@@ -243,6 +243,20 @@ pub struct InitResult {
     pub error: Option<String>,
 }
 
+/// Result is an error when a drain fails
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
+pub struct DrainResult {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Result is an error when a stop fails
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema,)]
+pub struct StopResult {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 /// Result for `version` (Plugin → Manager)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct VersionResult {

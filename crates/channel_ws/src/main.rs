@@ -11,7 +11,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 
 use channel_plugin::{
     message::{
-        make_session_key, ChannelCapabilities, CapabilitiesResult, HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, ChannelMessage, ChannelState, StateResult 
+        make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult 
     }, plugin_helpers::{ build_text_message, build_user_joined_event, build_user_left_event, get_user_joined_left_events}, plugin_runtime::{run, HasStore, PluginHandler}
 };
 use tracing::{debug, error, info};
@@ -244,7 +244,7 @@ impl PluginHandler for WsPlugin {
     }
 
     /// Drain the plugin
-    async fn drain(&mut self){
+    async fn drain(&mut self) -> DrainResult {
         info!("[ws] draining");
         self.state= ChannelState::DRAINING;
         if let Some(shutdown) = &self.shutdown_tx {
@@ -264,11 +264,13 @@ impl PluginHandler for WsPlugin {
 
 
         self.state = ChannelState::STOPPED;
+        DrainResult{ success: true, error: None }
     }
     /// Stop the plugin
-    async fn stop(&mut self){
+    async fn stop(&mut self) -> StopResult{
         info!("[ws] Stop called");
         self.drain().await;
+        StopResult{ success: true, error: None }
     }
 
     /// Check the health of the plugin

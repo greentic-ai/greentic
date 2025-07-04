@@ -6,7 +6,7 @@ use tokio::sync::{broadcast, mpsc::{self, unbounded_channel, UnboundedReceiver, 
 use async_trait::async_trait;
 use dashmap::DashMap;
 
-use crate::{channel_client::{ChannelClient, ChannelClientType,}, control_client::{ControlClient}, jsonrpc::{Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::{PluginHandle}, plugin_runtime::{HasStore, PluginHandler}};
+use crate::{channel_client::{ChannelClient, ChannelClientType,}, control_client::ControlClient, jsonrpc::{Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::PluginHandle, plugin_runtime::{HasStore, PluginHandler}};
 
 
 
@@ -128,16 +128,18 @@ impl PluginHandler for Arc<MockChannel> {
         InitResult{ success: true, error: None }
     }
 
-    async fn drain(&mut self) {
+    async fn drain(&mut self) -> DrainResult {
         *self.state.lock().await = ChannelState::DRAINING;
+        DrainResult{ success: true, error: None }
     }
 
     async fn wait_until_drained(&self, _params: WaitUntilDrainedParams) -> WaitUntilDrainedResult {
         WaitUntilDrainedResult{ stopped: true, error: false }
     }
 
-    async fn stop(&mut self) {
+    async fn stop(&mut self) -> StopResult {
         *self.state.lock().await = ChannelState::STOPPED;
+        StopResult{ success: true, error: None }
     }
     
     async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult{

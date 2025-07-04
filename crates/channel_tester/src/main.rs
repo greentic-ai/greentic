@@ -14,11 +14,11 @@ use notify::{
 };
 use serde::{Deserialize, Serialize};
 use serde_yaml_bw;
-use tokio::{fs, sync::{mpsc, Mutex}, task, time};
+use tokio::{fs, sync::{mpsc, Mutex, Notify}, task, time};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult}, plugin_runtime::{run, HasStore, PluginHandler}};
+use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult}, plugin_runtime::{run, HasStore, PluginHandler}};
 
 #[derive(Deserialize, Serialize)]
 struct TestFile {
@@ -44,6 +44,7 @@ pub struct TesterPlugin {
     reply_tx: mpsc::UnboundedSender<String>,
     reply_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
     watcher: Option<PollWatcher>,
+    shutdown: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Clone for TesterPlugin {
@@ -57,6 +58,7 @@ impl Clone for TesterPlugin {
             reply_tx: self.reply_tx.clone(),
             reply_rx: Arc::clone(&self.reply_rx),
             watcher: None, // ⛔️ Do NOT clone the watcher
+            shutdown: self.shutdown.clone(),
         }
     }
 }
@@ -74,6 +76,7 @@ impl Default for TesterPlugin {
             reply_tx,
             reply_rx: Arc::new(Mutex::new(reply_rx)),
             watcher: None,
+            shutdown: None,
         }
     }
 }
@@ -115,6 +118,8 @@ impl PluginHandler for TesterPlugin {
     async fn state(&self) -> StateResult { StateResult{state:self.state.clone()} }
 
     async fn init(&mut self, _params: InitParams) -> InitResult {
+        let shutdown = Arc::new(Notify::new());
+        self.shutdown = Some(shutdown.clone());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let greentic_dir = self
             .config
@@ -153,16 +158,28 @@ impl PluginHandler for TesterPlugin {
         self.state = ChannelState::RUNNING;
         let plugin = Arc::new(self.clone());
 
+        let shutdown_clone = shutdown.clone();
         task::spawn(async move {
-            while let Some(path) = rx.recv().await {
-                let plugin = plugin.clone();
-                task::spawn(async move {
-                    let guard = plugin.clone();
-                    if let Err(e) = guard.run_test_file(&path).await {
-                        error!("{}: {e:#}", path.display());
+                loop {
+                    tokio::select! {
+                        maybe_path = rx.recv() => { 
+                            let plugin = plugin.clone();
+                            task::spawn(async move {
+                                let guard = plugin.clone();
+                                if let Some(path_buf) = maybe_path {
+                                    let path = Path::new(&path_buf);
+                                    if let Err(e) = guard.run_test_file(&path).await {
+                                        error!("{}: {e:#}", path.display());
+                                    }
+                                }
+                            });
+                        }
+                        _ = shutdown_clone.notified() => {
+                            info!("✅ Shutting down watcher receive loop");
+                            return;
+                        }
                     }
-                });
-            }
+                }
         });
 
         #[cfg(test)]
@@ -171,19 +188,27 @@ impl PluginHandler for TesterPlugin {
             let echo_rx = self.incoming_rx.clone();
             let echo_plugin = self.clone();
 
+            let shutdown_test = shutdown.clone();
             tokio::spawn(async move {
                 loop {
-                    let cm = {
-                        let mut rx = echo_rx.lock().await;
-                        rx.recv().await
-                    }.expect("Did not get a channel message");
-
-                    let mut plugin = echo_plugin.clone();
-
-                    
-                    let _ = plugin.send_message(MessageOutParams{message:cm}).await;
-                    
-
+                    tokio::select! {
+                        _ = shutdown_test.notified() => {
+                            info!("✅ Shutting down echo responder");
+                            return;
+                        }
+                        maybe_cm = async {
+                            let mut rx = echo_rx.lock().await;
+                            rx.recv().await
+                        } => {
+                            if let Some(cm) = maybe_cm {
+                                let mut plugin = echo_plugin.clone();
+                                let _ = plugin.send_message(MessageOutParams { message: cm }).await;
+                            } else {
+                                // Channel closed
+                                break;
+                            }
+                        }
+                    }
                 }
             });
 
@@ -192,14 +217,27 @@ impl PluginHandler for TesterPlugin {
         InitResult{ success: true, error: None }
     }
 
-    async fn drain(&mut self) {
-
+    async fn drain(&mut self) -> DrainResult {
+        if let Some(watcher) = self.watcher.take() {
+            drop(watcher); // this stops the thread
+        }
+        if let Some(shutdown) = self.shutdown.take() {
+            shutdown.notify_waiters();
+        }
         self.state = ChannelState::STOPPED;
+        DrainResult{ success: true, error: None }
 
     }
 
-    async fn stop(&mut self) {
+    async fn stop(&mut self) -> StopResult {
+        if let Some(watcher) = self.watcher.take() {
+            drop(watcher); // this stops the thread
+        }
+        if let Some(shutdown) = self.shutdown.take() {
+            shutdown.notify_waiters();
+        }
         self.state = ChannelState::STOPPED;
+        StopResult{ success: true, error: None }
     }
 
     async fn send_message(&mut self,  params: MessageOutParams) -> MessageOutResult {

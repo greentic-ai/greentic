@@ -1,7 +1,7 @@
 use std::{thread, time::Duration};
 use async_trait::async_trait;
 // my_plugin/src/lib.rs
-use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult}, plugin_runtime::{run, HasStore, PluginHandler}};
+use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, StopResult}, plugin_runtime::{run, HasStore, PluginHandler}};
 use dashmap::DashMap;
 use tracing::info;
 
@@ -43,8 +43,8 @@ impl PluginHandler for MockPlugin {
     }
 
     async fn state(&self) -> StateResult { StateResult{state:self.state.clone()} }
-    async fn drain(&mut self){ self.state = ChannelState::DRAINING; }
-    async fn stop(&mut self)  { self.state = ChannelState::STOPPED; }
+    async fn drain(&mut self) -> DrainResult { self.state = ChannelState::DRAINING; DrainResult{ success: true, error: None }}
+    async fn stop(&mut self) -> StopResult { self.state = ChannelState::STOPPED; StopResult{ success: true, error: None } }
     
     fn list_config_keys(&self) -> ListKeysResult{
         ListKeysResult{ required_keys: vec![], optional_keys: vec![] }

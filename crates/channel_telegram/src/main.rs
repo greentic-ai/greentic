@@ -1,10 +1,10 @@
 // channel_telegram/src/lib.rs
 use anyhow::anyhow;
 use crossbeam::channel::{unbounded, Receiver, Sender};
-use channel_plugin::{message::{make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, TextMessage}, plugin_helpers::{build_user_joined_event, get_user_joined_left_events,}, plugin_runtime::{run, HasStore, PluginHandler}};
-use tokio::runtime::{Builder};
+use channel_plugin::{message::{make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, StopResult, TextMessage}, plugin_helpers::{build_user_joined_event, get_user_joined_left_events,}, plugin_runtime::{run, HasStore, PluginHandler}};
+use tokio::{runtime::Builder, sync::Notify};
 use tracing::{error, info};
-use std::{convert::Infallible, thread};
+use std::{convert::Infallible, sync::Arc, thread};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use chrono::Utc;
@@ -170,6 +170,7 @@ pub struct TelegramPlugin {
     bot:     Option<Bot>,
     cfg: DashMap<String, String>,
     secrets: DashMap<String, String>,
+    shutdown: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Default for TelegramPlugin {
@@ -182,6 +183,7 @@ impl Default for TelegramPlugin {
             bot:None, 
             cfg: DashMap::new(),
             secrets: DashMap::new(),
+            shutdown: None,
         }
     }
 }
@@ -197,6 +199,8 @@ impl TelegramPlugin {
 
     /// Spawn a background dispatcher if not already running.
     async fn init_dispatcher(&mut self) {
+        let notify = Arc::new(Notify::new());
+        self.shutdown = Some(notify.clone());
         static STARTED: OnceCell<()> = OnceCell::new();
         if STARTED.set(()).is_ok() {
             // 1) Grab the token & build the Bot
@@ -267,17 +271,22 @@ impl TelegramPlugin {
                     }
                 });
             // 4) Spawn the dispatcher on the Tokio runtime
+            let notify_for_task = notify.clone();
             thread::spawn( move || {  
                 let rt = Builder::new_multi_thread()
                     .enable_all()
                     .build()
                     .expect("failed to build Tokio runtime for Telegram");           
                 rt.block_on(async move {
-                    Dispatcher::builder(bot, handler)
-                        .build()
-                        .dispatch()
-                        .await;
-                    error!("⚠️ Telegram dispatcher exited");
+                    let mut dispatcher = Dispatcher::builder(bot, handler).build();
+                    tokio::select! {
+                        _ = dispatcher.dispatch() => {
+                            error!("Telegram dispatcher exited");
+                        }
+                        _ = notify_for_task.notified() => {
+                            info!("Telegram dispatcher shutting down");
+                        }
+                    }
                 });
             });
         }
@@ -393,18 +402,28 @@ impl PluginHandler for TelegramPlugin {
         InitResult { success: true, error: None }
     }
 
-    async fn drain(&mut self){ 
+    async fn drain(&mut self) -> DrainResult { 
         info!("[telegram] drain called");
+        if let Some(notify) = &self.shutdown {
+            notify.notify_one();
+        }
+
         // Since we use an unbounded channel for incoming messages, and
         // our send_message never blocks, there's nothing to wait for on drain.
         // If you had an outbound queue, you'd await that here.
         self.state = ChannelState::STOPPED;
+        DrainResult{ success: true, error: None }
     }
 
 
-    async fn stop(&mut self) {
+    async fn stop(&mut self) -> StopResult {
         info!("[telegram] stop called");
+        if let Some(notify) = &self.shutdown {
+            notify.notify_one();
+        }
         self.state = ChannelState::STOPPED;
+        StopResult{ success: true, error: None }
+
     }
     
     async fn send_message(&mut self, msg: MessageOutParams) -> MessageOutResult  {
