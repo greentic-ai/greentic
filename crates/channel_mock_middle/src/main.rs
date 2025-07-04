@@ -55,7 +55,7 @@ impl PluginHandler for MockPlugin {
     
     async fn send_message(&mut self,  params: MessageOutParams) -> MessageOutResult {
         let msg = params.message;
-        info!( "enqueueing message {:?}", msg);
+        info!( "[mock-middle] enqueueing message {:?}", msg);
         let (lock, cvar) = &*self.queue;
         let mut q = lock.lock().unwrap();
         q.push_back(msg);
@@ -64,7 +64,7 @@ impl PluginHandler for MockPlugin {
     }
     
     async fn receive_message(&mut self) -> MessageInResult {
-        info!("polling queue");
+        info!("[mock-middle] polling queue");
         let (lock, cvar) = &*self.queue;
         let mut q = lock.lock().unwrap();
         // wait until there is something in the queue

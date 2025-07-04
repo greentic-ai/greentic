@@ -3,6 +3,7 @@ use channel_plugin::{channel_client::{ChannelClient, ChannelClientType}, control
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::json;
+use tracing::error;
 use crate::{flow::session::SessionStore, logger::LogConfig}; 
 
 pub type Plugin = (ChannelClient,ControlClient);
@@ -79,7 +80,7 @@ impl PluginWrapper {
         let schema: Schema = <ChannelCapabilities>::json_schema(&mut generate);
 
         // 2) Fetch the real capabilities
-        let name = self.inner.name().await.unwrap();
+        let name = self.name();
         let default_value = json!(self.capabilities().await);
 
         // 3) Inject the default into the metadata
@@ -122,9 +123,11 @@ impl PluginWrapper {
                 log_dir: self.log_config.log_dir.clone(), 
                 otel_endpoint: self.log_config.otel_endpoint.clone(), 
          };
-        if self.inner.start(init).await.is_ok() {
+        let result = self.inner.start(init).await;
+        if result.is_ok() {
             Ok(())
         } else {
+            error!("Could not start {} because {:?}",self.name(), result);
             Err(PluginError::Other("start failed".into()))
         }
         

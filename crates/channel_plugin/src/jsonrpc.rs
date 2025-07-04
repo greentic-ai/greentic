@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::error;
 
 use crate::plugin_actor::Method;
 
@@ -138,10 +139,13 @@ pub enum PluginMethod {
 
     // Lifecycle
     Init,
+    Start,
     Drain,
     Stop,
     Status,
     Health,
+    WaitUntilDrained,
+    Capabilities,
 
     // Config / Secrets
     SetConfig,
@@ -161,10 +165,13 @@ impl PluginMethod {
             PluginMethod::MessageIn => "messageIn",
             PluginMethod::MessageOut => "messageOut",
             PluginMethod::Init => "init",
+            PluginMethod::Start => "start",
             PluginMethod::Drain => "drain",
             PluginMethod::Stop => "stop",
             PluginMethod::Status => "status",
             PluginMethod::Health => "health",
+            PluginMethod::Capabilities => "capabilities",
+            PluginMethod::WaitUntilDrained => "waitUntilDrained",
             PluginMethod::SetConfig => "setConfig",
             PluginMethod::SetSecrets => "setSecrets",
             PluginMethod::ListConfigKeys => "listConfigKeys",
@@ -189,17 +196,23 @@ impl std::str::FromStr for PluginMethod {
             "messageIn" => Ok(PluginMethod::MessageIn),
             "messageOut" => Ok(PluginMethod::MessageOut),
             "init" => Ok(PluginMethod::Init),
+            "start" => Ok(PluginMethod::Start),
             "drain" => Ok(PluginMethod::Drain),
             "stop" => Ok(PluginMethod::Stop),
             "status" => Ok(PluginMethod::Status),
             "health" => Ok(PluginMethod::Health),
+            "capabilities" => Ok(PluginMethod::Capabilities),
+            "waitUntilDrained" => Ok(PluginMethod::WaitUntilDrained),
             "setConfig" => Ok(PluginMethod::SetConfig),
             "setSecrets" => Ok(PluginMethod::SetSecrets),
             "listConfigKeys" => Ok(PluginMethod::ListConfigKeys),
             "listSecretKeys" => Ok(PluginMethod::ListSecretKeys),
             "getSession" => Ok(PluginMethod::GetSession),
             "invalidateSession" => Ok(PluginMethod::InvalidateSession),
-            _ => Err(()),
+            other => {
+                error!("Fix bug in PluginMethod FromStr for {}",other);
+                Err(())
+            },
         }
     }
 }

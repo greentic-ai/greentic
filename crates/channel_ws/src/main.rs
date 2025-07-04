@@ -70,7 +70,7 @@ async fn manager_loop(
             _ = shutdown.recv() => break,
             Some(cmd) = cmd_rx.recv() => match cmd {
                 Command::Register{peer,tx} => { 
-                    info!("New connection: {:?}",peer);
+                    info!("[ws] New connection: {:?}",peer);
                     peers.insert(peer.clone(), tx); 
                     let session = make_session_key(&name, &peer);
                     let join_msg = build_user_joined_event(&name, &peer, Some(session));
@@ -78,7 +78,7 @@ async fn manager_loop(
 
                 }
                 Command::Unregister{peer}  => { 
-                    info!("Disconnected: {:?}",peer.clone());
+                    info!("[ws] Disconnected: {:?}",peer.clone());
                     peers.remove(&peer); 
                     let session = make_session_key(&name, &peer);
                     let leave_msg = build_user_left_event(&name, &peer, Some(session));
@@ -115,7 +115,7 @@ fn spawn_conn(
         loop {
             tokio::select! {
                 _ = shutdown.recv() => {
-                    info!("Shutting down peer {}",peer_id);    
+                    info!("[ws] Shutting down peer {}",peer_id);    
                     break;
                 },
                 Some(frame) = ws_rx.next() => match frame {
@@ -267,7 +267,7 @@ impl PluginHandler for WsPlugin {
     }
     /// Stop the plugin
     async fn stop(&mut self){
-        info!("Stop called");
+        info!("[ws] Stop called");
         self.drain().await;
     }
 

@@ -56,13 +56,13 @@ impl PluginHandler for MockPlugin {
     
     async fn send_message(&mut self,  params: MessageOutParams) -> MessageOutResult {
         
-        info!("got a new message {:?}",params.message);
+        info!("[mock] got a new message {:?}",params.message);
         MessageOutResult{ success: true, error: None }
         
     }
     
     async fn receive_message(&mut self) -> MessageInResult {
-        info!("receive_message");
+        info!("[mock] receive_message");
         thread::sleep(Duration::from_secs(10));
         // Generate your message here (this example just uses the default)
         let mut msg = ChannelMessage::default();

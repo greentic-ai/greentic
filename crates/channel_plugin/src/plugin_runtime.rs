@@ -25,7 +25,7 @@ use std::{panic, time::Instant};
 use async_trait::async_trait;
 use anyhow::Result;
 use dashmap::DashMap;
-use tracing::{dispatcher, level_filters::LevelFilter, Dispatch};
+use tracing::{dispatcher, error, level_filters::LevelFilter, Dispatch};
 use tracing_appender::rolling::daily;
 use tracing_subscriber::{fmt, Registry};
 use crate::{jsonrpc::{Id, Message, Request, Response}, plugin_actor::Method};
@@ -60,7 +60,10 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
         if !res.success {
             return res;
         }
-        self.init(params).await
+        let result = self.init(params).await;
+        println!("@@@ REMOVE: GOT RESULT {:?}",result);
+
+        result
     }
     /// Drain the plugin
     async fn drain(&mut self);
@@ -316,12 +319,28 @@ where
     match req.method.parse::<Method>() {
         Ok(Method::Init) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<InitParams>(v) { plugin.start(p).await; }
+                if let Ok(p) = serde_json::from_value::<InitParams>(v) { 
+                    if let Some(id) = req.id {
+                        enqueue(tx, Response::success(id, json!(plugin.init(p).await)));
+                    }
+                }
             }
-            if let Some(id) = req.id { ok_null!(id); }
+        }
+        Ok(Method::Start) => {
+            if let Some(v) = req.params {
+                if let Ok(p) = serde_json::from_value::<InitParams>(v) { 
+                    if let Some(id) = req.id {
+                        enqueue(tx, Response::success(id, json!(plugin.start(p).await)));
+                    }
+                }
+            }
         }
         Ok(Method::Drain) => {
             plugin.drain().await;
+            if let Some(id) = req.id { ok_null!(id); }
+        }
+        Ok(Method::Stop) => {
+            plugin.stop().await;
             if let Some(id) = req.id { ok_null!(id); }
         }
         Ok(Method::MessageOut) => {
@@ -373,9 +392,12 @@ where
         }
         Ok(Method::WaitUntilDrained) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<WaitUntilDrainedParams>(v) { plugin.wait_until_drained(p).await; }
+                if let Some(id) = req.id {
+                    if let Ok(p) = serde_json::from_value::<WaitUntilDrainedParams>(v) {
+                        enqueue(tx, Response::success(id, json!(plugin.wait_until_drained(p).await))); 
+                    }
+                }
             }
-            if let Some(id) = req.id { ok_null!(id); }
         }
         Ok(Method::SetConfig) => {
             if let Some(v) = req.params {
@@ -389,7 +411,8 @@ where
             }
             if let Some(id) = req.id { ok_null!(id); }
         }
-        _ => {
+        method => {
+            error!("Failed to implement method {:?} in handle_request",method);
             if let Some(id) = req.id {
                enqueue(tx, Response::fail(id, -32601, "Method not found", None));
             }

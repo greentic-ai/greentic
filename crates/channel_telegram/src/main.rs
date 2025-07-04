@@ -387,14 +387,14 @@ impl PluginHandler for TelegramPlugin {
     }
 
      async fn init(&mut self, _p: channel_plugin::message::InitParams) -> InitResult {
-
+        info!("[telegram] init");
         self.init_dispatcher().await;
         self.state = ChannelState::RUNNING;
         InitResult { success: true, error: None }
     }
 
     async fn drain(&mut self){ 
-        info!("drain called");
+        info!("[telegram] drain called");
         // Since we use an unbounded channel for incoming messages, and
         // our send_message never blocks, there's nothing to wait for on drain.
         // If you had an outbound queue, you'd await that here.
@@ -403,7 +403,7 @@ impl PluginHandler for TelegramPlugin {
 
 
     async fn stop(&mut self) {
-        info!("stop called");
+        info!("[telegram] stop called");
         self.state = ChannelState::STOPPED;
     }
     

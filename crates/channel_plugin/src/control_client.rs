@@ -128,7 +128,7 @@ impl RpcControlClient {
         R: DeserializeOwned,
     {
         let id = Id::String(Uuid::new_v4().to_string());
-        let req = Request::call(id.clone(), method.to_owned(), params);
+        let req = Request::call(id.clone(), method.to_owned(), params.clone());
 
         let (tx_rsp, rx_rsp) = oneshot::channel();
         self.tx

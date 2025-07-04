@@ -12,57 +12,6 @@ use crate::jsonrpc::{Id, Request};
 use crate::message::*;
 use crate::plugin_actor::Method;
 
-/* 
-use prost_types::{Struct, Timestamp};
-
-// -----------------------------------------------------------------------------
-// Prost-compatible helpers
-// -----------------------------------------------------------------------------
-
-pub fn to_prost_timestamp(dt: DateTime<Utc>) -> Timestamp {
-    Timestamp {
-        seconds: dt.timestamp(),
-        nanos: dt.timestamp_subsec_nanos() as i32,
-    }
-}
-
-pub fn json_to_prost_struct(value: Value) -> Option<Struct> {
-    match value {
-        Value::Object(map) => {
-            let fields = map
-                .into_iter()
-                .map(|(k, v)| (k, serde_value_to_prost(v)))
-                .collect();
-            Some(Struct { fields })
-        }
-        _ => None,
-    }
-}
-
-pub fn serde_value_to_prost(val: Value) -> prost_types::Value {
-    use prost_types::value::Kind;
-    use Value::*;
-
-    prost_types::Value {
-        kind: Some(match val {
-            Null => Kind::NullValue(0),
-            Bool(b) => Kind::BoolValue(b),
-            Number(n) => Kind::NumberValue(n.as_f64().unwrap_or(0.0)),
-            String(s) => Kind::StringValue(s),
-            Array(arr) => Kind::ListValue(prost_types::ListValue {
-                values: arr.into_iter().map(serde_value_to_prost).collect(),
-            }),
-            Object(map) => Kind::StructValue(Struct {
-                fields: map
-                    .into_iter()
-                    .map(|(k, v)| (k, serde_value_to_prost(v)))
-                    .collect(),
-            }),
-        }),
-    }
-}
-*/
-
 // -----------------------------------------------------------------------------
 // Event builders
 // -----------------------------------------------------------------------------
