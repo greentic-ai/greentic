@@ -49,7 +49,6 @@ impl MockChannel {
 
     /// Inject an incoming message and wake any pollers.
     pub async fn inject(&self, msg: ChannelMessage) {
-        println!("@@@ REMOVE: inject {:?}",msg);
         let _ = self.in_tx.send(msg);
     }
 

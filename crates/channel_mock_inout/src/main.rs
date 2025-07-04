@@ -62,17 +62,24 @@ impl PluginHandler for MockPlugin {
     }
     
     async fn receive_message(&mut self) -> MessageInResult {
-        info!("[mock] receive_message");
-        thread::sleep(Duration::from_secs(10));
-        // Generate your message here (this example just uses the default)
-        let mut msg = ChannelMessage::default();
-        msg.channel = "mock_in".to_string();
-        let content = MessageContent::Text{text:"mock says hello".to_string()};
-        msg.content = vec![content];
-        let participant = Participant{id:"mockingbird".to_string(), display_name: None, channel_specific_id: None };
-        msg.from = participant;
+        if self.state == ChannelState::RUNNING {
+            info!("[mock] receive_message");
+            thread::sleep(Duration::from_secs(10));
+            // Generate your message here (this example just uses the default)
+            let mut msg = ChannelMessage::default();
+            msg.channel = "mock_in".to_string();
+            let content = MessageContent::Text{text:"mock says hello".to_string()};
+            msg.content = vec![content];
+            let participant = Participant{id:"mockingbird".to_string(), display_name: None, channel_specific_id: None };
+            msg.from = participant;
 
-        MessageInResult{message:msg, error:false}
+            MessageInResult{message:msg, error:false}
+        } else {
+            // ✳️ Instead of sending default/invalid message with error: true, just wait
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Loop back without emitting a message
+            self.receive_message().await
+        }
     }
 }
 

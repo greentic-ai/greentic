@@ -167,38 +167,39 @@ impl IncomingHandler for ChannelsRegistry {
                 if let Some(channel_session_id) = msg.session_id.clone() {
                     // convert to a Greentic uuid session id
                     let session_id = session_store.get_or_create_channel(&channel_session_id).await;
-                    let state = session_store.get(&session_id).await;
-                    if let Some(state) = state {
-                        let session_flows = state.flows().unwrap_or_default();
-                        let session_nodes = state.nodes().unwrap_or_default();
+                    let state = session_store.get_or_create(&session_id).await;
+                    println!("@@@ REMOVE state: {:?}",state);
 
-                        if !session_flows.is_empty() && !session_nodes.is_empty() {
-                            let mut routed = false;
+                    let session_flows = state.flows().unwrap_or_default();
+                    let session_nodes = state.nodes().unwrap_or_default();
 
-                            for flow in session_flows.iter() {
-                                for node in session_nodes.iter() {
-                                    if self.find_if_node_in_flow(flow, node) {
-                                        handle_message(flow, node, &msg, &self.flow_manager).await;
-                                        routed = true;
-                                    }
+                    if !session_flows.is_empty() && !session_nodes.is_empty() {
+                        let mut routed = false;
+
+                        for flow in session_flows.iter() {
+                            for node in session_nodes.iter() {
+                                if self.find_if_node_in_flow(flow, node) {
+                                    handle_message(flow, node, &msg, &self.flow_manager).await;
+                                    routed = true;
                                 }
                             }
+                        }
 
-                            if !routed {
-                                info!("No matching node found for session flows/nodes: {:?} / {:?}", session_flows, session_nodes);
-                                for node in nodes.iter().cloned() {
-                                    node.handle_message(&msg, &self.flow_manager).await;
-                                }
-                            }
-                        
-                
-                        } else {
-                            info!("No flows/nodes recorded in session state. Broadcasting to all the starting nodes for {}", msg.channel);
+                        if !routed {
+                            info!("No matching node found for session flows/nodes: {:?} / {:?}", session_flows, session_nodes);
                             for node in nodes.iter().cloned() {
                                 node.handle_message(&msg, &self.flow_manager).await;
                             }
                         }
+                    
+            
+                    } else {
+                        info!("No flows/nodes recorded in session state. Broadcasting to all the starting nodes for {}", msg.channel);
+                        for node in nodes.iter().cloned() {
+                            node.handle_message(&msg, &self.flow_manager).await;
+                        }
                     }
+                    
                 } else {
                     error!(
                         channel = %msg.channel,

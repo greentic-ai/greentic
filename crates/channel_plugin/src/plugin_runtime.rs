@@ -68,6 +68,7 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
     /// Drain the plugin
     async fn drain(&mut self) -> DrainResult;
     async fn wait_until_drained(&self, params: WaitUntilDrainedParams) -> WaitUntilDrainedResult {
+        println!("@@@ REMOVE wait until drained for: {:?}",params.timeout_ms);
         let deadline = Instant::now() + std::time::Duration::from_millis(params.timeout_ms);
 
         loop {
@@ -237,10 +238,12 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
 
 /// Runs the JSON‑RPC stdin/stdout loop until EOF or fatal error.
 pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
+    print!("@@@ REMOVE started run");
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
         let mut w = BufWriter::new(io::stdout());
         while let Some(line) = rx.recv().await {
+            println!("@@@ REMOVE get line back: {:?}",line);
             if let Err(e) = w.write_all(line.as_bytes()).await {
                 eprintln!("stdout write error: {e}");
                 break;              // abort writer task → plugin will exit
@@ -260,6 +263,7 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
     tokio::spawn(async move {
         loop {
             let result = plugin_clone.receive_message().await;
+            println!("@@@ REMOVE got message in: {:?}",result);
 
             let notif = Request::notification(
                 "messageIn",
@@ -358,6 +362,7 @@ where
         }
         Ok(Method::Name) => {
             if let Some(id) = req.id {
+                println!("@@@ REMOVE got name request");
                enqueue(tx, Response::success(id, json!(plugin.name())));
             }
         }

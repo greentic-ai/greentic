@@ -37,6 +37,8 @@ impl PluginWatcher {
     pub async fn new(dir: PathBuf) -> Self {
         // pre-load everything on startup
         let plugins: DashMap<String,PluginHandle> = DashMap::new();
+        /*
+        @@@ REMOVE test - let's not load plugins here and see what happens
         for entry in std::fs::read_dir(&dir).unwrap() {
             let p = entry.unwrap().path();
             if p.extension()
@@ -52,6 +54,7 @@ impl PluginWatcher {
             
             }
         }
+        */
 
         PluginWatcher {
             dir,

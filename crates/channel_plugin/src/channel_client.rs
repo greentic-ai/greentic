@@ -108,7 +108,6 @@ impl RpcChannelClient {
 #[async_trait::async_trait]
 impl ChannelClientType for RpcChannelClient {
     async fn send(&self, msg: ChannelMessage) -> Result<()> {
-        println!("@@@ REMOVE sending rpc: {:?}",msg);
         let params = MessageOutParams{message: msg};
         let r = Request::notification(Method::MessageOut.to_string(), Some(json!(params)));
         self.rpc_notify(r).await
