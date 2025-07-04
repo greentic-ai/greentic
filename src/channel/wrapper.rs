@@ -134,18 +134,22 @@ impl PluginWrapper {
     }
 
     pub async fn drain(&mut self) -> Result<(),PluginError> {
-        if self.inner.drain().await.is_ok() {
+        let result = self.inner.drain().await;
+        if result.is_ok() {
             self.state.store(ChannelState::DRAINING);
             Ok(())
         } else {
+            error!("Draining {} failed because {:?}",self.name,result);
             Err(PluginError::Other("drain failed".into()))
         }
     }
 
     pub async fn wait_until_drained(&mut self, timeout_ms: u64) -> Result<(), PluginError> {
-        if  self.inner.wait_until_drained(timeout_ms).await.is_ok() {
+        let result = self.inner.wait_until_drained(timeout_ms).await;
+        if  result.is_ok() {
             Ok(())
         } else {
+            error!("Wait until drained {} failed because {:?}",self.name,result);
             Err(PluginError::Other("plugin_drain failed".into()))
         }
     }

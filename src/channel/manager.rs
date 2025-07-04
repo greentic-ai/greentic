@@ -320,12 +320,16 @@ impl PluginEventHandler for ChannelManager {
         if let Some(mut old_plugin) = self.channels.get_mut(name) {
             // stopping the channel
             let mut wrapper = old_plugin.wrapper().clone();
-            if wrapper.drain().await.is_err() {
+            let drain_result = wrapper.drain().await;
+            if drain_result.is_err() {
                 info!("Could not start draining the existing plugin {} ",name);
+                println!("@@@ REMOVE {:?}",drain_result);
             }
             // try for 3 seconds to drain
-            if wrapper.wait_until_drained(3000).await.is_err() {
+            let is_drained_result = wrapper.wait_until_drained(3000).await;
+            if is_drained_result.is_err() {
                 info!("Could not drain the existing plugin {} ",name);
+                println!("@@@ REMOVE {:?}",is_drained_result);
             }
             // signal its poller to exit
             old_plugin.cancel().as_ref().map(|tok| tok.cancel());
