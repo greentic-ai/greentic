@@ -1,37 +1,53 @@
 # Greentic AI 🚀
 
-Welcome to **Greentic AI**, the fastest, most extendable, and secure agentic platform for building autonomous workflows. Whether you’re integrating external systems via channels, calling external APIs and other MCP tools, or crafting complex processes, Greentic AI gives you the building blocks to automate anything. Coming soon: intelligent LLM-powered agents!
+Welcome to **Greentic AI**, the fastest, most extendable, and secure agentic platform for building armies of digital workers. Whether you’re integrating external systems via channels, calling external APIs and other MCP tools, or crafting complex processes, Greentic AI gives you the building blocks to automate anything.
+
+Now with: **intelligent agents** and **processes**!
 
 ---
 
 ## 📋 Table of Contents
 
-1. [Introduction](#introduction)  
-2. [Key Concepts](#key-concepts)  
-   - [Tools (MCP in Wasm)](#tools-mcp-in-wasm)  
-   - [Channels](#channels)  
-   - [Processes (Coming Soon)](#processes)  
-   - [Agents (Coming Soon)](#agents-coming-soon)  
-3. [Getting Started](#getting-started)  
-4. [Quick Flow Example](#quick-flow-example)  
-5. [Controlling Flows, Channels & Tools (Coming Soon)](#controlling-flows-channels--tools)  
-   - [Start / Stop a Flow](#start--stop-a-flow)  
-   - [Start / Stop a Channel](#start--stop-a-channel)  
-   - [Start / Stop a Tool](#start--stop-a-tool)  
-6. [Coming Soon](#coming-soon)  
-7. [Need Custom Agentic Automation?](#need-custom-agentic-automation)  
-8. [Contributing](#contributing)  
-9. [License](#license)  
+1. [Introduction](#introduction)
+2. [What is a Digital Worker?](#digital-worker)
+3. [Key Concepts](#key-concepts)
+   - [Tools (MCP in Wasm)](#tools-mcp-in-wasm)
+   - [Channels](#channels)
+   - [Processes](#processes)
+   - [Agents](#agents)
+4. [Getting Started](#getting-started)
+5. [Quick Flow Example (YAML)](#quick-flow-example-yaml)
+6. [Controlling Flows, Channels & Tools](#controlling-flows-channels--tools)
+7. [Coming Soon](#coming-soon)
+8. [Need Custom Agentic Automation?](#need-custom-agentic-automation)
+9. [Contributing](#contributing)
+10. [License](#license)
 
 ---
 
 ## 📝 Introduction
 
-Greentic AI is an open-source platform designed to let you build, deploy, and manage agentic workflows at lightning speed.  
-- **Fastest** runtime with zero cold-starts for WebAssembly tools.  
-- **Extendable** architecture: plug in your own channels, tools, and processes.  
-- **Secure** by design: sandboxed Wasm allows to securely run untrusted third-party MCP tools.
+Greentic AI is an open-source platform designed to let you build, deploy, and manage digital workers at lightning speed.
+
+- **Fastest** runtime with zero cold-starts for WebAssembly tools.
+- **Extendable** architecture: plug in your own channels, tools, agents and processes, all defined in an easy to understand text-based flow.
+- **Secure** by design: tools are sandboxed inside Wasm allowing securely running untrusted third-party MCP tools.
 - **Observability** via OpenTelemetry integrations
+
+---
+
+## 🤖 What is a Digital Worker?
+
+A **Digital Worker** is a flow that acts autonomously and intelligently to handle a complete task, from end to end.
+
+It:
+
+- Listens for messages (via **Channels** like Telegram or Slack)
+- Extracts meaning or decisions (via **Agents**, powered by LLMs)
+- Calls APIs or executes functions (via **Tools** written in Wasm)
+- Handles control logic (via **Processes** like retries, conditionals, loops)
+
+Flows link these components into one cohesive automation. Your digital workers are secure, modular, and language-agnostic.
 
 ---
 
@@ -39,197 +55,196 @@ Greentic AI is an open-source platform designed to let you build, deploy, and ma
 
 ### Tools (MCP in Wasm)
 
-- **MCP** (Micro-Connector Process) modules compile to WebAssembly.  
-- Each tool exposes a simple API:  
-  ```jsonc
-  {
-    "name": "weather_api",
-    "action": "forecast_weather",
-    "parameters": { "q": "London", "days": 3 }
-  }
-  ```
-- Tools run in a sandbox, ensuring resource limits and security.
+- **MCP** (Model-Context Protocol) modules compile to WebAssembly.
+- Each tool can define its own actions, inputs, outputs, and run logic securely.
+- Tools live in `tools/` and are called by the flows.
+
+👉 [Learn how to build MCP Tools (Coming Soon)](./docs/TOOL_PLUGIN.md)
 
 ### Channels
 
-- **Channels** let your flows send and receive messages to the outside world.  
-- Examples: Telegram, Slack, HTTP webhooks, databases.  
-- Define a channel in your config:
-  ```toml
-  [[channels]]
-  name = "telegram"
-  type = "telegram_bot"
-  token = "TELEGRAM_TOKEN"
-  ```
+- **Channels** allow flows to send/receive messages to/from the outside world.
+- Examples: Telegram, Slack, Email, HTTP Webhooks.
 
-### Processes - (Coming Soon)
+👉 [How to build Channel Plugins](./docs/PLUGIN.md)
 
-- **Processes** encapsulate business logic and control flow (conditionals, retries, loops).  
+### Processes
 
-### Agents (Coming Soon)
+- **Processes** are logic blocks (decisions, branches, loops, retries).
+- Defined declaratively in YAML.
 
-- **Agents** will be LLM-driven “super-processes” that can plan, learn, and adapt.  
-- Stay tuned for:
-  - Prompt management  
-  - Memory & context handling  
-  - Autonomous decision loops  
+### Agents
+
+- **Agents** are LLM-powered nodes capable of autonomous decision-making.
+- Agents understand context, use memory, trigger tools, and follow goals.
 
 ---
 
 ## 🚀 Getting Started
 
-1. **Install Greentic CLI**  
-   ```bash
-   cargo install greentic
-   ```
-2. **Initialize one time **  
-   ```bash
-   greentic init
-   ```
-3. **Manage your flows**  (coming soon)
-   ```bash
-   greentic flow validate my_flow.greentic
-   greentic flow deploy my_flow.greentic
-   greentic flow start/stop my_flow.greentic
-   greentic channel pull telegram
-   greentic channel start/stop telegram
-   greentic tool pull weather_api
-   greentic tool start/stop weather_api 
-   ```
-
----
-
-## 🛠 Quick Flow Example
-
-```json
-{
-  "id": "sample-weather-flow",
-  "description": "Fetch and relay weather forecasts",
-  "channels": [
-    {
-      "name": "telegram",
-      "config": {
-        "token": "TELEGRAM_TOKEN"
-      }
-    }
-  ],
-  "tools": [
-    {
-      "name": "weather_api",
-      "wasm": "weather_api.wasm"
-    }
-  ],
-  "nodes": [
-    {
-      "id": "weather_in",
-      "channel": "telegram",
-      "in": true
-    },
-    {
-      "id": "forecast",
-      "tool": "weather_api.forecast_weather",
-      "parameters": {
-        "q": "{{weather_in.payload.location}}",
-        "days": 3
-      }
-    },
-    {
-      "id": "weather_out",
-      "channel": "telegram",
-      "out": true
-    }
-  ],
-  "connections": [
-    {
-      "from": "weather_in",
-      "to": "forecast"
-    },
-    {
-      "from": "forecast",
-      "to": "weather_out"
-    }
-  ]
-}
+Install greentic via:
+```bash
+cargo install greentic
+```
+The first time around initialise everything:
+```bash
+greentic init
 ```
 
-Start your flow: (coming soon)
-```bash
-# validate the flow is ok
-greentic flow validate ./sample-weather-flow
-# deploy the flow (only needs to happen one time)
-greentic flow deploy ./sample-weather-flow
-# start your flow
-greentic flow start sample-weather-flow
-```
+> Some commands below are coming soon:
 
-Stop your flow:
 ```bash
-greentic flow stop sample-weather-flow
+# 🚧 Coming Soon
+# greentic flow validate my_flow.ygtc
+# greentic channel pull telegram
+# greentic tool pull weather_api
+
+greentic flow start my_flow
+
+greentic channel start telegram
+
+greentic tool start weather_api
 ```
 
 ---
 
-## ⚙️ Controlling Flows, Channels & Tools (Coming soon)
+## 🛠 Quick Flow Example (YAML)
 
-### Start / Stop a Flow
+```yaml
+id: weather_bot
+title: Get your weather prediction
+description: >
+  This flow shows how you can combine either a fixed question and answer process
+  with an AI fallback if the user is not answering the questions correctly.
+channels:
+  - telegram  
+nodes:
+  # 1) Messages come in via Telegram
+  telegram_in:
+    channel: telegram
+    in: true
+
+   # 2) QA node: ask for the city and fallback to the OllamaAgent if more than 3 words are used
+  extract_city:
+    qa:
+      welcome_template: "Hi there! Let's get your weather forecast."
+      questions:
+        - id: q_location
+          prompt: "👉 What location would you like a forecast for?"
+          answer_type: text
+          state_key: q
+          max_words: 3
+      fallback_agent:
+        type: ollama
+        task: |
+          You are a weather bot and have asked the location for a weather forecast.
+          The user responded in free text.  Extract exactly the location they want the weather for.
+          Return **exactly** a JSON object like:
+          {
+            "q": "<location text>",
+          }
+      routing:
+        - to: forecast_weather
+  # 3) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
+  forecast_weather:
+    tool:
+      name: weather_api
+      action: forecast_weather
+    parameters:
+      q: "{{extract_city.payload.city}}"
+      days: 3
+
+  # 4) “weather_template”: format the weather API’s JSON into a friendly sentence.
+  weather_out_template:
+    template: |
+        Here’s your forecast for {{ location.name }}:
+
+        • High: {{ forecast.forecastday.[0].day.maxtemp_c }}°C
+        • Low: {{ forecast.forecastday.[0].day.mintemp_c }}°C
+        • Condition: {{ forecast.forecastday.[0].day.condition.text }}
+        • Rain Today? {{#if (eq (forecast.forecastday.[0].day.daily_will_it_rain) 1)}}Yes{{else}}No{{/if}}
+
+  # 5) “telegram_out”: send the forecast back to Telegram.
+  telegram_out:
+    channel: telegram
+    out: true
+
+connections:
+  telegram_in:
+    - extract_city
+
+  extract_city:
+    - forecast_weather
+
+  forecast_weather:
+    - weather_out_template
+
+  weather_out_template:
+    - telegram_out 
+```
+
+---
+
+## ⚙️ Controlling Flows, Channels & Tools
 
 ```bash
-# Start
+# Start/Stop flows
+# greentic flow validate <file>.ygtc (🚧 Coming Soon)
+greentic flow deploy <file>.ygtc
 greentic flow start <flow-id>
-
-# Stop
 greentic flow stop <flow-id>
-```
 
-### Start / Stop a Channel
-
-```bash
-#
-# Start
+# Start/Stop channels
 greentic channel start <channel-name>
-
-# Stop
 greentic channel stop <channel-name>
+
+# Start/Stop tools
+greentic tool start <tool-name>
+greentic tool stop <tool-name>
 ```
 
 ---
 
 ## 🔭 Coming Soon
 
-- **Agents**: autonomous LLM-backed actors  
+- v0.3.0 oAuth MCP Tools - connect to any SaaS
+- v0.4.0 Serverless Cloud deployment of flows - greentic deploy <flow>
 
-If there is demand:
-- **Process Library**: pre-built workflows (e.g., PR triage, sales outreach)  
-- **UI Dashboard**: visual flow designer and monitor  
+Roadmap:
+- More Agentic: memory persistence, vector databases, A2A,...
+- AI Flow Designer
+- Flow, Tools, Channels & Processes marketplace
 
 ---
 
 ## 📬 Need Custom Agentic Automation?
 
-Have a specific use-case or need expert help?  
+Have a specific use-case or need expert help?\
 Please fill out our form: [Agentic Automation Inquiry](https://forms.gle/h17SdjoUxozJf6XA6)
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions of all kinds!  
-- Bug reports 🐞  
-- Feature requests 🎉  
-- Code & documentation PRs 📝  
+We are actively looking for contributors and welcome contributions of all kinds!
 
-1. Fork the repo  
-2. Create a feature branch  
-3. Open a PR against `main`  
+- Bug reports 🐞
+- Feature requests 🎉
+- Code & documentation PRs 📝
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for full guidelines.
+1. Fork the repo
+2. Create a feature branch
+3. Open a PR against `main`
+
+See [CONTRIBUTING.md](./docs/CONTRIBUTING.md) for full guidelines.
 
 ---
 
 ## 📄 License
 
-Distributed under the **MIT License**. See [LICENSE](./LICENSE) for details.  
+Distributed under the **MIT License**. See [LICENSE](./LICENSE) for details.
 
 ---
 
 Thank you for checking out **Greentic AI**—let’s build the future of automation together! 🚀
+
