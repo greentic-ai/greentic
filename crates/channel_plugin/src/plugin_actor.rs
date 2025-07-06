@@ -165,11 +165,11 @@ impl PluginHandle
 
 
 
-    pub async fn drain(&self) -> anyhow::Result<()> {
+    pub async fn drain(&self) -> anyhow::Result<DrainResult> {
         self.control.drain().await
     }
 
-    pub async fn stop(&self) -> anyhow::Result<()> {
+    pub async fn stop(&self) -> anyhow::Result<StopResult> {
         self.control.stop().await
     }
 

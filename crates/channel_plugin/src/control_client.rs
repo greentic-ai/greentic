@@ -3,15 +3,15 @@ use serde::de::DeserializeOwned;
 use tokio::sync::{mpsc, oneshot};
 use anyhow::{anyhow, Result};
 use uuid::Uuid;
-use crate::{jsonrpc::{Id, Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelState, HealthResult, InitParams, InitResult, ListKeysResult, NameResult, StateResult, WaitUntilDrainedResult}, plugin_actor::Method};
+use crate::{jsonrpc::{Id, Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelState, DrainResult, HealthResult, InitParams, InitResult, ListKeysResult, NameResult, StateResult, StopResult, WaitUntilDrainedResult}, plugin_actor::Method};
 
 #[async_trait]
 pub trait ControlClientType: Send + Sync + 'static {
     async fn name(&self) -> anyhow::Result<String>;
     async fn init(&self, params: InitParams) -> anyhow::Result<InitResult>;
     async fn start(&self, params: InitParams) -> anyhow::Result<InitResult>;
-    async fn drain(&self) -> anyhow::Result<()>;
-    async fn stop(&self) -> anyhow::Result<()>;
+    async fn drain(&self) -> anyhow::Result<DrainResult>;
+    async fn stop(&self) -> anyhow::Result<StopResult>;
     async fn state(&self) -> anyhow::Result<ChannelState>;
     async fn health(&self) -> anyhow::Result<HealthResult>;
     async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities>;
@@ -55,13 +55,13 @@ impl ControlClientType for ControlClient {
         }
     }
 
-    async fn drain(&self) -> anyhow::Result<()> {
+    async fn drain(&self) -> anyhow::Result<DrainResult> {
         match self {
             ControlClient::Rpc(client) => client.drain().await,
         }
     }
 
-    async fn stop(&self) -> anyhow::Result<()> {
+    async fn stop(&self) -> anyhow::Result<StopResult> {
         match self {
             ControlClient::Rpc(client) => client.stop().await,
         }
@@ -165,12 +165,12 @@ impl ControlClientType for RpcControlClient {
         self.call(Method::Start, Some(serde_json::to_value(p)?)).await
     }
 
-    async fn drain(&self) -> Result<()> {
-        self.call::<()>(Method::Drain, None).await
+    async fn drain(&self) -> Result<DrainResult> {
+        self.call(Method::Drain, None).await
     }
 
-    async fn stop(&self) -> Result<()> {
-        self.call::<()>(Method::Stop, None).await
+    async fn stop(&self) -> Result<StopResult> {
+        self.call(Method::Stop, None).await
     }
 
     async fn state(&self) -> Result<ChannelState> {

@@ -1,10 +1,35 @@
-# Greentic AI 🚀
+# Greentic.AI 🚀
 
-Welcome to **Greentic AI**, the fastest, most extendable, and secure agentic platform for building armies of digital workers. Whether you’re integrating external systems via channels, calling external APIs and other MCP tools, or crafting complex processes, Greentic AI gives you the building blocks to automate anything.
+Welcome to **Greentic.AI**, the fastest, most extendable, and secure agentic platform for building armies of digital workers. Whether you’re integrating external systems via channels, calling external APIs and other MCP tools, or crafting complex processes, Greentic.AI gives you the building blocks to automate anything.
 
 Now with: **intelligent agents** and **processes**!
 
 ---
+
+## Greentic.AI's V1.0.0 Vision
+
+When Greentic.AI reaches version 1.0.0 anybody should be able to:
+- Use their favourite messaging system, e.g. Slack, WhatsApp, Teams, Telegram, Messenger,... or other channels like SMS, email, WebChat, voice call and ask Greentic.AI to generate digital workers.
+- "Generte a digital assistant who transcribes and summarises meetings; makes calendar bookings accross organisations; reserves mreeting rooms, fligths, hotels, Uber, AirBNB, ..." should be enough to get what you ask for.
+- "Generate a digital worker who reads incoming customer emails from sales@acme.com; sorts them between requests for a quote vs after-sales vs others; in case of a quote, opens sales leads in HubSpot and generates a quote via our quoting tool XYZ and asks for approval from sales-manager on Slack before reponding with an email to the customer; in case of after-sales a ServiceNow request is opened and if the request can be done automatically, asks approval from operations-manager on Slack before solving the issue and responding with an email to the customer; in case of others, log the request in ServiceNow but ask operations-manager on Slack what to do and if possible do it or categorise as manual."
+
+The objective is that a simple text command is all Greentic.AI needs to generate a digital worker. Greentic.AI will be able to translate this command into a flow (= yaml text file) which a human can review if necessary to understand if the request has been translated correctly. Given each element of Greentic.AI is self-describing with schemas, Greentic.AI should be able to consistently generate these flows and call agents, tools, processes and integrate with external channels. 
+
+Although Greentic.AI is open source, this does not mean no money can be earned. Developers will be able to create new agents, tools, processes and channels which can be added to Greentic.AI so whoever has a subscription can use them and similar to Spotify the most successful contributions will earn the largest portion of the share of subscriptions assigned to paying developers. Alternatively, developers will be able to create agents, tools, processes and channels which are billed for usage or need to be purchases. Examples would be an AI agent which is billed per 1,000 tokens. More info at [contributor@greentic.ai](mailto:contributor@greentic.ai). Finally anybody can decide to upload their best flows and the most popuplar flows will also earn a revenue share.
+
+Sponsors can pay to make their tools and services available for free to anybody using Greentic. The first sponsor of a category will become the default option for 12 months so "greentic tool pull database" is open for any database vendor to sponsor. Same for "greentic deploy <flow>" is open for any Cloud vendor. "greentic agent use <model>" for any AI model API. Afterwards the highest paying sponsor each month will earn the category. Reach out to [sponsor@greentic.ai](mailto:sponsor@greentic.ai).
+
+If you want to avoid that your tool or service is behind the "subscription wall", then you can sponsor for it to be in the free category. Reach out to [sponsor@greentic.ai](mailto:sponsor@greentic.ai). Greentic.AI users who use sponsored tools and services will share an anonymised identifier (SHA256[sponsor_id+customer@email]) with the sponsor and will be able to read a sponsorship message and agree if they want to be contacted.
+
+If you or your company is interested in a future subscription, please contact [sales@greentic.ai](mailto:sales@greentic.ai).
+
+Anybody needing consulting to transition towards digital workers will be able to book an appointment with any of the Greentic.AI certified consultants. Certified consultants will earn a commissions for reselling Greentic.AI subscriptions and third-party tools and services. More info at [sales@greentic.ai](mailto:sales@greentic.ai).
+
+All MCP tools and processes use WASM, for which they can be digitally signed. If you need industry specific certifications, e.g. regulatory compliance, security standards,... then either industry expert partners will be able to offer you digitally signed versions or offer a curated and certified list via a custom industry-specific store. More info at [sales@greentic.ai](mailto:sales@greentic.ai).
+
+For any press questions, please contact: [press@greentic.ai](mailto:press@greentic.ai). If you found a security issue, please do not open a Github issue, contact: [security@greentic.ai](mailto:security@greentic.ai) instead.  
+
+Greentic.AI is and always will be **open source** so it will be **free** to download. Partners will be able to upsell through Greentic.AI for which joining the Greentic.AI movement enables you to **earn**. If you want to contribute to make Greentic.AI v1.0.0 a reality asap, reach out to [contributor@greentic.ai](mailto:contributor@greentic.ai). All early contributors will gain unfair advantages, e.g. their tools and services will be listed first before others.
 
 ## 📋 Table of Contents
 
@@ -27,7 +52,7 @@ Now with: **intelligent agents** and **processes**!
 
 ## 📝 Introduction
 
-Greentic AI is an open-source platform designed to let you build, deploy, and manage digital workers at lightning speed.
+Greentic.AI is an open-source platform designed to let you build, deploy, and manage digital workers at lightning speed.
 
 - **Fastest** runtime with zero cold-starts for WebAssembly tools.
 - **Extendable** architecture: plug in your own channels, tools, agents and processes, all defined in an easy to understand text-based flow.
@@ -82,7 +107,7 @@ Flows link these components into one cohesive automation. Your digital workers a
 
 ## 🚀 Getting Started
 
-Install greentic via:
+Install Greentic.AI via:
 ```bash
 cargo install greentic
 ```
@@ -246,5 +271,5 @@ Distributed under the **MIT License**. See [LICENSE](./LICENSE) for details.
 
 ---
 
-Thank you for checking out **Greentic AI**—let’s build the future of automation together! 🚀
+Thank you for checking out **Greentic.AI**—let’s build the future of automation together! 🚀
 

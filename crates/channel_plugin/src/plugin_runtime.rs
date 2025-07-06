@@ -245,12 +245,12 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
         while let Some(line) = rx.recv().await {
             println!("@@@ REMOVE get line back: {:?}",line);
             if let Err(e) = w.write_all(line.as_bytes()).await {
-                eprintln!("stdout write error: {e}");
+                error!("stdout write error: {e}");
                 break;              // abort writer task → plugin will exit
             }
             // avoid tight loop when channel is empty
             if w.flush().await.is_err() {
-                eprintln!("stdout flush error");
+                error!("stdout flush error");
                 break;
             }
         }
