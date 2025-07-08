@@ -115,20 +115,20 @@ The first time around initialise everything:
 ```bash
 greentic init
 ```
-
-> Some commands below are coming soon:
-
+Before running a flow, you can validate that the yaml/json
+format is valid, all channels and tools are present as well 
+as all required config keys and secrets are set up.
+If a channel or tool are not present, they will be pulled automatically. 
+Afterwards you can deploy the flow. You only need to validate/deploy
+one time. Afterwards you can start/stop the flow.
 ```bash
-# 🚧 Coming Soon
-# greentic flow validate my_flow.ygtc
-# greentic channel pull telegram
-# greentic tool pull weather_api
+greentic flow validate <file>.ygtc
+greentic flow deploy <file>.ygtc
+```
 
-greentic flow start my_flow
-
-greentic channel start telegram
-
-greentic tool start weather_api
+When you are ready to start a flow you can call:
+```bash
+greentic flow start <flow_id>
 ```
 
 ---
@@ -214,18 +214,10 @@ connections:
 
 ```bash
 # Start/Stop flows
-# greentic flow validate <file>.ygtc (🚧 Coming Soon)
+greentic flow validate <file>.ygtc 
 greentic flow deploy <file>.ygtc
 greentic flow start <flow-id>
 greentic flow stop <flow-id>
-
-# Start/Stop channels
-greentic channel start <channel-name>
-greentic channel stop <channel-name>
-
-# Start/Stop tools
-greentic tool start <tool-name>
-greentic tool stop <tool-name>
 ```
 
 ---

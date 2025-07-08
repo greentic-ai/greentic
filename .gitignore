@@ -4,3 +4,5 @@
 Cargo.lock
 /logs
 /greentic/logs
+/crates/channel_telegram/logs
+/crates/channel_ws/logs

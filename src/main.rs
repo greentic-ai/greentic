@@ -137,14 +137,29 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Flow(flow_args) => match flow_args.command {
             FlowCommands::Validate { file } => {
-                validate_flow_file(file)?;
+                let root = resolve_root_dir();
+                let log_level     = "info".to_string();
+                let log_file      = "logs/greentic-validation.log".to_string();
+                let event_file      = "logs/greentic-validation.json".to_string();
+                let tools_dir    = root.join("plugins").join("tools");
+                validate_flow_file(file, root, tools_dir, log_level, log_file, event_file).await?;
                 println!("✅ Flow file is valid.");
                 Ok(())
             },
             FlowCommands::Deploy { file } => {
                 let root = resolve_root_dir();
-                validate_flow_file(file.clone())?;
-                deploy_flow_file(file, root)?;
+                let log_level     = "info".to_string();
+                let log_file      = "logs/greentic-validation.log".to_string();
+                let event_file      = "logs/greentic-validation.json".to_string();
+                let tools_dir    = root.join("plugins").join("tools");
+                validate_flow_file(
+                    file.clone(), 
+                    root.clone(), 
+                    tools_dir.clone(), 
+                    log_level.clone(), 
+                    log_file.clone(), 
+                    event_file.clone()).await?;
+                deploy_flow_file(file, root,tools_dir,log_level,log_file,event_file).await?;
                 Ok(())
             },
             FlowCommands::Start { name } => {

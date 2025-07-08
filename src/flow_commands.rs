@@ -4,33 +4,64 @@ use tracing::info;
 use serde_json::Value as JsonValue;
 use serde_yaml_bw::Value as YamlValue;
 
+use crate::validate::validate;
+
 /// Validate that the provided file is a valid YAML or JSON flow definition.
-pub fn validate_flow_file(path: PathBuf) -> Result<()> {
-    if !path.exists() {
-        bail!("File does not exist: {}", path.display());
+pub async fn validate_flow_file(
+    flow_file: PathBuf,
+    root_dir:  PathBuf,
+    tools_dir: PathBuf,
+    log_level: String,
+    log_dir:   String,
+    event_dir: String,) -> Result<()> {
+    if !flow_file.exists() {
+        bail!("File does not exist: {}", flow_file.display());
     }
 
-    let content = fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read file: {}", path.display()))?;
+    let content = fs::read_to_string(&flow_file)
+        .with_context(|| format!("Failed to read file: {}", flow_file.display()))?;
 
-    if path.extension().and_then(|s| s.to_str()) == Some("jgtc") {
+    if flow_file.extension().and_then(|s| s.to_str()) == Some("jgtc") {
         serde_json::from_str::<JsonValue>(&content)
-            .with_context(|| format!("Invalid JSON in file: {}", path.display()))?;
-        info!("✅ Valid JSON flow: {}", path.display());
-    } else if path.extension().and_then(|s| s.to_str()) == Some("ygtc") {
+            .with_context(|| format!("Invalid JSON in file: {}", flow_file.display()))?;
+        info!("✅ Valid JSON flow: {}", flow_file.display());
+    } else if flow_file.extension().and_then(|s| s.to_str()) == Some("ygtc") {
         serde_yaml_bw::from_str::<YamlValue>(&content)
-            .with_context(|| format!("Invalid YAML in file: {}", path.display()))?;
-        info!("✅ Valid YAML flow: {}", path.display());
+            .with_context(|| format!("Invalid YAML in file: {}", flow_file.display()))?;
+        info!("✅ Valid YAML flow: {}", flow_file.display());
     } else {
-        bail!("Unsupported file extension for: {}", path.display());
+        bail!("Unsupported file extension for: {}", flow_file.display());
+    }
+
+    let result = validate(
+        flow_file,
+        root_dir,
+        tools_dir,
+        log_level,
+        log_dir,
+        event_dir,).await;
+    if result.is_err() {
+        bail!("Validation failed");
     }
 
     Ok(())
 }
 
 /// Deploy a flow file after validating and checking dependencies.
-pub fn deploy_flow_file(path: PathBuf, root: PathBuf) -> Result<()> {
-    validate_flow_file(path.clone())?;
+pub async fn deploy_flow_file(
+    path: PathBuf, 
+    root: PathBuf,
+    tools_dir: PathBuf,
+    log_level: String,
+    log_file:   String,
+    event_file: String,) -> Result<()> {
+    validate_flow_file(
+        path.clone(), 
+        root.clone(), 
+        tools_dir,
+        log_level,
+        log_file,
+        event_file,).await?;
 
 
     let content = fs::read_to_string(&path)?;

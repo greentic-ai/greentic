@@ -21,6 +21,7 @@ impl HasStore for MockPlugin {
 #[async_trait]
 impl PluginHandler for MockPlugin {
     async fn init(&mut self, _params: InitParams) -> InitResult{
+        info!("[mock] started");
         self.state = ChannelState::RUNNING;
         InitResult{ success: true, error: None }
     }
@@ -43,8 +44,8 @@ impl PluginHandler for MockPlugin {
     }
 
     async fn state(&self) -> StateResult { StateResult{state:self.state.clone()} }
-    async fn drain(&mut self) -> DrainResult { self.state = ChannelState::DRAINING; DrainResult{ success: true, error: None }}
-    async fn stop(&mut self) -> StopResult { self.state = ChannelState::STOPPED; StopResult{ success: true, error: None } }
+    async fn drain(&mut self) -> DrainResult { info!("[mock] drain"); self.state = ChannelState::DRAINING; DrainResult{ success: true, error: None }}
+    async fn stop(&mut self) -> StopResult { info!("[mock] stop"); self.state = ChannelState::STOPPED; StopResult{ success: true, error: None } }
     
     fn list_config_keys(&self) -> ListKeysResult{
         ListKeysResult{ required_keys: vec![], optional_keys: vec![] }

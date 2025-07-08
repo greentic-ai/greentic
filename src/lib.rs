@@ -14,4 +14,5 @@ pub mod schema;
 pub mod secret;
 pub mod transformer;
 pub mod util;
+pub mod validate;
 pub mod watcher;

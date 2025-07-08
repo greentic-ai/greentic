@@ -24,6 +24,10 @@ crossbeam = "0.8.4"
 name = "channel_telegram"    # or "echo_bot", whatever you like
 path = "src/main.rs"
 
+[[bin]]
+name = "channel_telegram_run"    # or "echo_bot", whatever you like
+path = "src/run_telegram.rs"
+
 [dev-dependencies]
 async-trait = "0.1.88"
 typetag = "0.2.20"
