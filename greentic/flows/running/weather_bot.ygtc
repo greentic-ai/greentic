@@ -35,15 +35,13 @@ nodes:
       fallback_agent:
         type: ollama
         model: llama3.2:1b
-        # task: you can repeat the same instruction you used before
-        task: |
-          The user responded in free text.  Extract exactly two fields from
-          their reply: `"q"` (string location) and `"days"` (integer number of days).
-          Return **exactly** a JSON object like:
-          {
-            "q": "<location text>",
-            "days": <integer>
-          }
+        task: | 
+          Extract the location the user wants a weather forecast and if available the days.
+          Return the information in the format {'q': 'location', 'days': 3}. Example answer:
+          {'q': 'Thames Ditton', 'days': 5} 
+          When the user asked: "What is the weather in Thames Ditton for the next 5 days?" 
+          Location (q) is important. Default to 3 days if not specified. 
+          The next step is `forecast_weather` and set `payload` to a JSON object with `q` and `days`.
       routing:
         - to: forecast_weather
 
@@ -58,13 +56,16 @@ nodes:
   # 5) “weather_out_template”: format the weather API’s JSON into a friendly sentence.
   weather_out_template:
     template: |
-        Here’s your forecast for {{ location.name }}:
+      🌤️ Weather forecast for {{payload.location.name}}:
 
-        • High: {{ forecast.forecastday.[0].day.maxtemp_c }}°C
-        • Low: {{ forecast.forecastday.[0].day.mintemp_c }}°C
-        • Condition: {{ forecast.forecastday.[0].day.condition.text }}
-        • Rain Today? {{#if (eq (forecast.forecastday.[0].day.daily_will_it_rain) 1)}}Yes{{else}}No{{/if}}
+      {{#each payload.forecast.forecastday}}
+      📅 Day {{@indexPlusOne}} ({{this.date}}):
+      • High: {{this.day.maxtemp_c}}°C
+      • Low: {{this.day.mintemp_c}}°C
+      • Condition: {{this.day.condition.text}}
+      • Rain? {{#if (eq this.day.daily_will_it_rain 1)}}Yes{{else}}No{{/if}}
 
+      {{/each}}
   # 6) “telegram_out”: send any payload back to Telegram.
   telegram_out:
     channel: telegram

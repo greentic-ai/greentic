@@ -13,6 +13,7 @@ use serde::{
     ser::SerializeMap,
     Deserialize, Deserializer, Serialize, Serializer,
 };
+use tracing::info;
 
 use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
 /// A QA process allows asking users a series of questions and storing their answers.
@@ -231,8 +232,8 @@ impl NodeType for QAProcessNode {
          // read (or default) our little counter
         let idx_val = ctx
             .get_state("qa.current_question")
-            .unwrap_or(StateValue::Number(0.0));
-        let idx = idx_val.as_number().unwrap() as usize;
+            .unwrap_or(StateValue::Integer(0));
+        let idx = idx_val.as_int().unwrap() as usize;
 
         // 1) first‐time visitor?
         let mut first_time = false;
@@ -240,7 +241,7 @@ impl NodeType for QAProcessNode {
             for q in &self.config.questions {
                 ctx.delete_state(&q.state_key);
             }
-            ctx.set_state("qa.current_question", StateValue::Number(1.));
+            ctx.set_state("qa.current_question", StateValue::Integer(1));
             first_time = true;
         }
 
@@ -267,21 +268,36 @@ impl NodeType for QAProcessNode {
                             msg.session_id(),
                         );
                         // Call the agent node
-                        let output = agent.process(input_msg, ctx).await.map_err(|e| 
+                        let agent_out = agent.process(input_msg, ctx).await.map_err(|e| 
                             NodeErr::fail(NodeError::ExecutionFailed(format!("Fallback agent error: {:?}", e)))
                         )?;
 
-                        // Extract payload from NodeOut (expecting single reply)
-                        let interpreted = output.message().payload();
+                        info!("@@@ REMOVE: agent_out: {:?}",agent_out);
 
-                        // Convert and store
-                        let state_val = StateValue::try_from(interpreted.clone()).map_err(|e| 
-                            NodeErr::fail(NodeError::ExecutionFailed(
-                                format!("Fallback value conversion failed: {:?}", e)
-                            ))
-                        )?;
-                        ctx.set_state(&last_q.state_key, state_val);
-                        ctx.set_state("qa.current_question", StateValue::Number((idx + 1) as f64));
+                        // ➋ If the agent already chose a route, honour it and bubble it up.
+                        match agent_out.routing() {
+                            Routing::ToNode(target) => {
+                                // optional: copy any answers the agent might have put in its payload
+                                //           into ctx.state here before we forward.
+                                info!("Agent decided to route to {}",target);
+                                ctx.delete_state("qa.current_question");
+                                return Ok(agent_out);              // ← early exit, we’re done
+                            }
+                            _ => {
+                                // Extract payload from NodeOut (expecting single reply)
+                                let interpreted = agent_out.message().payload();
+
+                                // Convert and store
+                                let state_val = StateValue::try_from(interpreted.clone()).map_err(|e| 
+                                    NodeErr::fail(NodeError::ExecutionFailed(
+                                        format!("Fallback value conversion failed: {:?}", e)
+                                    ))
+                                )?;
+                                ctx.set_state(&last_q.state_key, state_val);
+                                let next = (idx + 1) as i64;
+                                ctx.set_state("qa.current_question", StateValue::Integer(next));
+                            }
+                        }
 
                     } else {
                         let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
@@ -325,8 +341,8 @@ impl NodeType for QAProcessNode {
                 json!({ "text": msg_text }),
                 session.to_string(),
             );
-            let next = (idx + 1) as f64;
-            ctx.set_state("qa.current_question", StateValue::Number(next));
+            let next = (idx + 1) as i64;
+            ctx.set_state("qa.current_question", StateValue::Integer(next));
 
             return Ok(NodeOut::reply(out));
         }
@@ -615,8 +631,22 @@ pub fn parse_and_validate(
                     return Err(format!("must be between {} and {}", min, max));
                 }
             }
-            // use serde_json::json! to produce a Number
-            Ok(json!(v))
+            // ── build the *right kind* of `serde_json::Number` ──
+            use serde_json::Number;
+
+            let num = if looks_like_float(raw) {
+                // 3.0 / 1e6 / 2.5  → float representation
+                Number::from_f64(v).ok_or("not a finite number")?
+            } else {
+                // 3 / 42 / -7      → integer representation
+                Number::from(
+                    raw.trim()
+                    .parse::<i64>()
+                    .map_err(|_| "please enter a number")?
+                )
+            };
+
+            Ok(JsonValue::Number(num))
         }
 
         AnswerType::Date { max_words, dialect } => {
@@ -663,6 +693,11 @@ pub fn parse_and_validate(
             Err(format!("please choose one of: {}", choices))
                 }
             }
+}
+
+fn looks_like_float(raw: &str) -> bool {
+    let s = raw.trim();
+    s.contains('.') || s.contains('e') || s.contains('E')
 }
 
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
@@ -885,7 +920,7 @@ mod tests {
 
         let name = all.get("name").expect("expected name").as_string();
         assert_eq!(name, Some("Alice".to_string()));
-        assert_eq!(all.get("age").and_then(|v| v.as_number()), Some(25.0));
+        assert_eq!(all.get("age").and_then(|v| v.as_int()), Some(25));
     }
 
     #[test]
@@ -964,7 +999,7 @@ mod tests {
             range: RangeParams { min: 0.0, max: 10.0 },
         };
         let v = parse_and_validate("5", &number_type, Some(rule.clone())).unwrap();
-        assert_eq!(v, json!(5.0));
+        assert_eq!(v, json!(5));
 
         // ❌ Number below range
         let err = parse_and_validate("-1", &number_type, Some(rule.clone())).unwrap_err();

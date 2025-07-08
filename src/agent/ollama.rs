@@ -7,7 +7,7 @@ use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
 use ollama_rs::Ollama;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use tracing::warn;
+use tracing::{error, info, warn};
 use url::Url;
 
 use crate::executor::call_result_to_json;
@@ -94,19 +94,51 @@ impl NodeType for OllamaAgent {
                     
                 // 2) prepare the conversation
                 let system_prompt = r#"You are part of an agentic flow.
-                You have access to:
-                - `task`: what you must do
-                - `payload`: the previous node’s output
-                - `state`: key/value store
-                - `connections`: where you can send next
-                - `tools`: which tools are available
-                Respond *only* with JSON of the form:
+                Your job is to complete the given `task` using information from:
+                - `payload`: the latest message or data
+                - `state`: key/value memory of the session
+                - `connections`: valid next nodes
+                - `tools`: tools you can optionally call
+                The task is often to extract information from a user request so a tool can be called,
+                state memory can be updated, a connection can be called,... So being precise and following the rules 
+                is important.
+
+                You must always respond with a **JSON object** using this fixed structure:
                 {
-                "payload": {...},
-                "state": { "add":[…], "update":[…], "delete":[…] },
-                "tool_call": { "name": "...", "action": "...", "input": {...} },
-                "connections": ["node_a","node_b"]
-                }"#;
+                "payload": {...},  // Required. If you can solve the task, include the extracted fields as per task (e.g., valid json object: { "q": ..., "days": ...} ). If not, ask follow-up as { "text": "..." }
+                "state": { // Only include if the task wants the state to be added, updated or deleted. Otherwise omit entirely.
+                    "add":    [{ "key": ..., "value": ... }], // only include if a new key and value need to be added
+                    "update": [{ "key": ..., "value": ... }], // only include if an existing key has a new value
+                    "delete": [ "key1", "key2" ] // only include if keys need to be removed
+                },
+                "tool_call": {...} // Only include if the task explicitly requires calling a tool with name + action + optional parameter, othrwise omit entirely. 
+                    "name": "tool_name", // only include if a tool name is specified
+                    "action": "method", // only include if a tool action is specified
+                    "input": {...} // only include if a tool input is requested
+                },
+                "connections": ["node_a", "node_b"], // You will be given a list of valid connections. If the task specifies a specific connection, include that one, otherwise include all. 
+                "reply_to_origin": false          // true only if cannot resolve the task and want the user to clarify and payload has a follow-up question
+                }
+                
+                ### Rules:
+
+                - Only include fields relevant to this step (omit empty ones).
+                - You MUST return a valid Json, otherwise your work is useless.
+                - You MUST include `"payload"`:
+                - If task is **resolved**, use it to pass extracted/derived data forward. Add as valid json.
+                - If task is **not resolved**, ask a follow-up in the form:
+                    ```json
+                    { "text": "clarifying question for the user" }
+                    ```
+                - `"state"` is ommitted unless the task include keys to add/update/delete (if required by the task).
+                - `"tool_call"` is ommitted unless the task needs a tool (as described in the task).
+                - `"connections"` should reflect the logical next step(s) in the flow (may be defined in task) Only use connections that are in the 'connections' list.
+                - `"reply_to_origin"` must be:
+                - `false` if you resolved the task.
+                - `true` if you still need user input.
+
+                Do not include explanations or commentary. Only return a valid JSON object.
+                "#;
 
                 let task       = &self.task;
                 let payload    = input.payload();
@@ -134,10 +166,13 @@ impl NodeType for OllamaAgent {
                     req = req.options(opts.clone());
                 }
 
-                let resp = client.send_chat_messages_with_history(&mut vec![], req).await
-                    .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {}", e))))?;
-                let reply = resp.message.content;
-
+                let resp = client.send_chat_messages_with_history(&mut vec![], req).await;
+                if resp.is_err(){
+                    error!("LLM gave error: {:?}",resp);
+                    return Err(NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {:?}", resp.err()))));
+                }
+                let reply = resp.unwrap().message.content;
+                info!("agent response: {}",reply);
                 // 4) parse JSON
                 let result: JsonValue = serde_json::from_str(&reply)
                     .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!(
@@ -177,6 +212,12 @@ impl NodeType for OllamaAgent {
                             }
                         }
                     }
+                }
+
+                let llm_payload = result.get("payload");
+                if result.get("reply_to_origin").and_then(|v| v.as_bool()) == Some(true) && llm_payload.is_some() {
+                    let main_msg = Message::new(&input.id(), llm_payload.unwrap().clone(), input.session_id().clone());
+                    return Ok(NodeOut::reply(main_msg));
                 }
 
                 // Gather inline and deferred tool calls
@@ -361,7 +402,7 @@ mod ollama_agent_tests {
         OllamaAgent {
             mode,
             task: "dummy".into(),
-            model: Some("llama2:latest".into()),
+            model: Some("llama3.2:1b".into()),
             ollama_host: None,
             ollama_port: None,
             model_options: None,
@@ -455,4 +496,5 @@ mod ollama_agent_tests {
         let s = format!("{:?}", err);
         assert!(s.contains("Generate error"), "expected Generate branch");
     }
+
 }

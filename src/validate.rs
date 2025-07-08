@@ -102,8 +102,50 @@ pub async fn validate(
         report.schema_errors.push(err.to_string());
     }
 
-    // If critical schema errors – we can still keep going to collect other
-    // diagnostics, but print them later.
+    if !report.ok() {
+        // Pretty print diagnostics
+        if !report.schema_errors.is_empty() {
+            eprintln!("\n❌ Flow schema errors:");
+            for e in &report.schema_errors {
+                eprintln!("  • {e}");
+            }
+        }
+
+        if !report.missing_plugins.is_empty() {
+            eprintln!("\n❌ Missing channels / tools:");
+            for p in &report.missing_plugins {
+                if p.starts_with("tool:") {
+                    let name = p.strip_prefix("tool:").unwrap();
+                    eprintln!("  • {p} → run: greentic tool pull {name}");
+                } else {
+                    let name = p.strip_prefix("channel:").unwrap();
+                    eprintln!("  • {p} → run: greentic channel pull {name}");
+                }
+            }
+        }
+
+        if !report.missing_wasm.is_empty() {
+            eprintln!("\n❌ Missing Wasm binaries:");
+            for w in &report.missing_wasm {
+                eprintln!("  • {w}");
+            }
+        }
+
+        if !report.missing_config.is_empty() {
+            eprintln!("\n❌ Missing config values:");
+            for (k, desc) in &report.missing_config {
+                eprintln!("  • {k} — {desc}\n    ➜ greentic config add {k} <value>");
+            }
+        }
+
+        if !report.missing_secrets.is_empty() {
+            eprintln!("\n❌ Missing secret values:");
+            for (k, desc) in &report.missing_secrets {
+                eprintln!("  • {k} — {desc}\n    ➜ greentic secrets add {k} <secret>");
+            }
+        }
+        return Err(anyhow!("validation failed – see diagnostics above"));
+    }
 
     // ---------------------------------------------------------------------
     // 2) Spin up Executor + ChannelManager just like schema.rs  -------------
@@ -198,58 +240,12 @@ pub async fn validate(
             }
         }
     }
-
+    
     // ---------------------------------------------------------------------
     // 4) Output diagnostics -------------------------------------------------
     // ---------------------------------------------------------------------
-    if report.ok() {
-        println!("✅ Validation passed: flow is ready to deploy");
-        return Ok(());
-    }
-
-    // Pretty print diagnostics
-    if !report.schema_errors.is_empty() {
-        eprintln!("\n❌ Flow schema errors:");
-        for e in &report.schema_errors {
-            eprintln!("  • {e}");
-        }
-    }
-
-    if !report.missing_plugins.is_empty() {
-        eprintln!("\n❌ Missing channels / tools:");
-        for p in &report.missing_plugins {
-            if p.starts_with("tool:") {
-                let name = p.strip_prefix("tool:").unwrap();
-                eprintln!("  • {p} → run: greentic tool pull {name}");
-            } else {
-                let name = p.strip_prefix("channel:").unwrap();
-                eprintln!("  • {p} → run: greentic channel pull {name}");
-            }
-        }
-    }
-
-    if !report.missing_wasm.is_empty() {
-        eprintln!("\n❌ Missing Wasm binaries:");
-        for w in &report.missing_wasm {
-            eprintln!("  • {w}");
-        }
-    }
-
-    if !report.missing_config.is_empty() {
-        eprintln!("\n❌ Missing config values:");
-        for (k, desc) in &report.missing_config {
-            eprintln!("  • {k} — {desc}\n    ➜ greentic config add {k} <value>");
-        }
-    }
-
-    if !report.missing_secrets.is_empty() {
-        eprintln!("\n❌ Missing secret values:");
-        for (k, desc) in &report.missing_secrets {
-            eprintln!("  • {k} — {desc}\n    ➜ greentic secrets add {k} <secret>");
-        }
-    }
-
-    Err(anyhow!("validation failed – see diagnostics above"))
+    println!("✅ Validation passed: flow is ready to deploy");
+    return Ok(());
 }
 
 // Basic pull function to get a tool. In the future we need login and 

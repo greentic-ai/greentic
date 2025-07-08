@@ -51,7 +51,8 @@ pub trait SessionStateType: Send + Sync + Debug {
 #[serde(untagged)]
 pub enum StateValue {
     String(String),
-    Number(f64),
+    Integer(i64),
+    Float(f64),
     Boolean(bool),
     List(Vec<StateValue>),
     #[schemars(with = "HashMap<String, StateValue>")]
@@ -64,7 +65,8 @@ impl PartialEq for StateValue {
         use StateValue::*;
         match (self, other) {
             (String(a), String(b)) => a == b,
-            (Number(a), Number(b)) => a == b,
+            (Integer(a), Integer(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
             (Boolean(a), Boolean(b)) => a == b,
             (List(a), List(b)) => a == b,
             (Null, Null) => true,
@@ -87,8 +89,16 @@ impl StateValue {
         }
     }
 
-    pub fn as_number(&self) -> Option<f64> {
-        if let StateValue::Number(n) = self {
+    pub fn as_int(&self) -> Option<i64> {
+        if let StateValue::Integer(n) = self {
+            Some(*n)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_float(&self) -> Option<f64> {
+        if let StateValue::Float(n) = self {
             Some(*n)
         } else {
             None
@@ -122,7 +132,8 @@ impl StateValue {
     pub fn to_json(&self) -> Value {
         match self {
             StateValue::String(s) => json!(s),
-            StateValue::Number(n) => json!(n),
+            StateValue::Integer(n) => json!(n),
+            StateValue::Float(n) => json!(n),
             StateValue::Boolean(b) => json!(b),
             StateValue::List(l) => json!(l.iter().map(|v| v.to_json()).collect::<Vec<_>>()),
             StateValue::Map(m) => {
@@ -143,7 +154,15 @@ impl TryFrom<Value> for StateValue {
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::String(s) => Ok(StateValue::String(s)),
-            Value::Number(n) => Ok(StateValue::Number(n.as_f64().ok_or(())?)),
+            Value::Number(n) =>{
+                if n.is_i64() {
+                    Ok(StateValue::Integer(n.as_i64().ok_or(())?))
+                } else if n.is_f64() {
+                    Ok(StateValue::Float(n.as_f64().ok_or(())?))
+                } else {
+                    Err(()) // unlikely unless it's u64 and you don’t support it
+                }
+            },
             Value::Bool(b) => Ok(StateValue::Boolean(b)),
             Value::Array(a) => Ok(StateValue::List(
                 a.into_iter().filter_map(|v| StateValue::try_from(v).ok()).collect(),
@@ -295,10 +314,16 @@ mod tests {
     fn test_state_value_accessors() {
         let string = StateValue::String("hello".into());
         assert_eq!(string.as_string(), Some("hello".to_string()));
-        assert_eq!(string.as_number(), None);
+        assert_eq!(string.as_int(), None);
 
-        let number = StateValue::Number(42.0);
-        assert_eq!(number.as_number(), Some(42.0));
+        let number = StateValue::Float(42.0);
+        assert_eq!(number.as_float(), Some(42.0));
+        assert_eq!(number.as_int(), None);
+        assert_eq!(number.as_string(), None);
+
+        let number = StateValue::Integer(42);
+        assert_eq!(number.as_int(), Some(42));
+        assert_eq!(number.as_float(), None);
         assert_eq!(number.as_string(), None);
 
         let boolean = StateValue::Boolean(true);
@@ -364,7 +389,7 @@ mod tests {
         let store = InMemoryState::new();
 
         let state = vec![
-            ("x".to_string(), StateValue::Number(3.14))
+            ("x".to_string(), StateValue::Float(3.14))
         ];
 
         store.save(state);
@@ -372,6 +397,6 @@ mod tests {
         let loaded = store.all();
         let map: std::collections::HashMap<_, _> = loaded.into_iter().collect();
 
-        assert_eq!(map.get("x"), Some(&StateValue::Number(3.14)));
+        assert_eq!(map.get("x"), Some(&StateValue::Float(3.14)));
     }
 }

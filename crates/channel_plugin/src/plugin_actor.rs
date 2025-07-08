@@ -7,7 +7,6 @@ use dashmap::DashMap;
 use serde_json::json;
 use strum_macros::{Display, EnumString};
 use tokio::sync::{mpsc, oneshot};
-use tracing::info;
 use crate::channel_client::{ChannelClient, ChannelClientType, RpcChannelClient};
 use crate::control_client::{ControlClient, ControlClientType, RpcControlClient};
 use crate::jsonrpc::{Message, Request, Response};
@@ -244,7 +243,6 @@ where
         let inflight = Arc::clone(&inflight);
         tokio::spawn(async move {
             while let Some((req, rsp_tx)) = rpc_rx.recv().await {
-                info!("@@@ REMOVE req: {:?}",req);
                 // remember the responder
                 if let Some(id) = &req.id {
                     inflight.insert(
@@ -274,7 +272,6 @@ where
         tokio::spawn(async move {
             let mut rdr = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = rdr.next_line().await {
-                info!("@@@ REMOVE line: {:?}",line);
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -405,8 +402,8 @@ where
             None    => err(id, -32602, "Invalid params"),
         },
 
-        Ok(Method::Drain) => { plugin.drain().await; ok_null(id) }
-        Ok(Method::Stop)  => { plugin.stop().await;  ok_null(id) }
+        Ok(Method::Drain) => { Response::success(id, json!(plugin.drain().await)) }
+        Ok(Method::Stop)  => { Response::success(id, json!(plugin.stop().await))}
 
         Ok(Method::WaitUntilDrained) => match req.params.clone()
             .and_then(|v| serde_json::from_value::<WaitUntilDrainedParams>(v).ok())

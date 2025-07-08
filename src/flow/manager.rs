@@ -444,7 +444,8 @@ impl Flow {
                             );
 
                             let mut secret_map = HashMap::new();
-                            if let Some(keys) = ctx.executor().executor.secrets(tool.name.clone()) {
+                            let name = format!("{}_{}",tool.name,tool.action);
+                            if let Some(keys) = ctx.executor().executor.secrets(name.clone()) {
                                 for s in keys {
                                     if let Some(tok) = ctx.reveal_secret(&s.name).await {
                                         secret_map.insert(s.name.clone(), tok);

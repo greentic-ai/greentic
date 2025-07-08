@@ -181,7 +181,7 @@ mod tests {
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();
         let payload = output.message().payload();
         let text = payload["text"].as_str().unwrap();
-        assert_eq!(text, "Hi abc123, you are 30.0 and it's 21°C.");
+        assert_eq!(text, "Hi abc123, you are 30 and it's 21°C.");
     }
 
     #[tokio::test]

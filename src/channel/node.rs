@@ -154,7 +154,7 @@ impl ChannelsRegistry {
 
 #[async_trait]
 impl IncomingHandler for ChannelsRegistry {
-    async fn handle_incoming(&self, msg: ChannelMessage, session_store: SessionStore) {
+    async fn handle_incoming(&self, mut msg: ChannelMessage, session_store: SessionStore) {
         // exactly your old `handle_incoming` logic:
         if let Some(nodes) = self.map.get(&msg.channel) {
             if nodes.is_empty() {
@@ -167,6 +167,7 @@ impl IncomingHandler for ChannelsRegistry {
                 if let Some(channel_session_id) = msg.session_id.clone() {
                     // convert to a Greentic uuid session id
                     let session_id = session_store.get_or_create_channel(&channel_session_id).await;
+                    msg.session_id = Some(session_id.clone());
                     let state = session_store.get_or_create(&session_id).await;
 
                     let session_flows = state.flows().unwrap_or_default();

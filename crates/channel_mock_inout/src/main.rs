@@ -63,7 +63,7 @@ impl PluginHandler for MockPlugin {
     }
     
     async fn receive_message(&mut self) -> MessageInResult {
-        if self.state == ChannelState::RUNNING {
+       // if self.state == ChannelState::RUNNING {
             info!("[mock] receive_message");
             thread::sleep(Duration::from_secs(10));
             // Generate your message here (this example just uses the default)
@@ -75,12 +75,13 @@ impl PluginHandler for MockPlugin {
             msg.from = participant;
 
             MessageInResult{message:msg, error:false}
-        } else {
+      /*   } else {
             // ✳️ Instead of sending default/invalid message with error: true, just wait
             tokio::time::sleep(Duration::from_millis(100)).await;
+            info!("@@@ REMOVE - slept");
             // Loop back without emitting a message
             self.receive_message().await
-        }
+        } */
     }
 }
 

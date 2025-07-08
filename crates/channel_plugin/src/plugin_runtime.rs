@@ -20,12 +20,12 @@
 //! }
 //! ```
 
-use std::{panic, time::Instant};
+use std::{panic, time::{Instant}};
 
 use async_trait::async_trait;
 use anyhow::Result;
 use dashmap::DashMap;
-use tracing::{dispatcher, error, info, level_filters::LevelFilter, Dispatch};
+use tracing::{dispatcher, error, level_filters::LevelFilter, Dispatch};
 use tracing_appender::rolling::daily;
 use tracing_subscriber::{fmt, Registry};
 use crate::{jsonrpc::{Id, Message, Request, Response}, plugin_actor::Method};
@@ -236,11 +236,9 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
 /// Runs the JSON‑RPC stdin/stdout loop until EOF or fatal error.
 pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    let poller_tx = tx.clone();
     tokio::spawn(async move {
         let mut w = BufWriter::new(io::stdout());
         while let Some(line) = rx.recv().await {
-            info!("@@@ REMOVE: write {}",line);
             if let Err(e) = w.write_all(line.as_bytes()).await {
                 error!("stdout write error: {e}");
                 break;              // abort writer task → plugin will exit
@@ -258,21 +256,28 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
 
     tokio::spawn(async move {
         loop {
-            let result = plugin_clone.receive_message().await;
-            info!("@@@ REMOVE: {:?}",result);
-            match serde_json::to_value(&result) {
-                Ok(v) => {
-                    let notif = Request::notification("messageIn", Some(v));
-                    if poller_tx.send(format!("{}\n", serde_json::to_string(&notif).unwrap())).is_err() {
-                        error!("writer channel closed – stdout writer already dead");
+            //if plugin_clone.state().await.state == ChannelState::RUNNING {
+                let result = plugin_clone.receive_message().await;
+                match serde_json::to_value(&result) {
+                    Ok(v) => {
+                        let notif = Request::notification("messageIn", Some(v));
+                        let mut w = BufWriter::new(io::stdout());
+                        let msg = format!("{}\n", serde_json::to_string(&notif).unwrap());
+                        if let Err(e) = w.write_all(msg.as_bytes()).await {
+                            error!("stdout write error: {e}");
+                        }
+                        if w.flush().await.is_err() {
+                            error!("stdout flush error");
+                        }
+                    }
+                    Err(e) => {
+                        error!("serde_json error serialising MessageInResult: {e}");
                         break;
                     }
                 }
-                Err(e) => {
-                    error!("serde_json error serialising MessageInResult: {e}");
-                    break;
-                }
-            }
+           // } else {
+           //     tokio::time::sleep(Duration::from_millis(1000)).await;
+           // }
         }
     });
     // ── 3. read stdin, dispatch requests, send responses via the same tx ─────
@@ -345,9 +350,6 @@ where
             if let Some(id) = req.id { 
                  enqueue(tx, Response::success(id, json!(plugin.stop().await)));
             }
-        }
-        Ok(Method::MessageIn) => {
-            info!("@@@ REMOVE req: {:?}",req);
         }
         Ok(Method::MessageOut) => {
             match serde_json::from_value::<MessageOutParams>(req.params.unwrap_or(Value::Null)) {

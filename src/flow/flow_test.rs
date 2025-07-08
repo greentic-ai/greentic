@@ -1069,6 +1069,7 @@ mod tests {
 
         assert!(report.is_some());
         let r = report.unwrap();
+        println!("@@@ REMOVE {:?}",r);
         assert!(r.records.is_empty());
         assert!(r.error.is_some());
         assert_eq!(r.total.num_milliseconds(), 0);
