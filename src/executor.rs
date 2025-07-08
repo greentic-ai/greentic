@@ -646,7 +646,6 @@ pub mod tests {
         let deadline = now + std::time::Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
             if check() {
-                println!("@@@ REMOVE {:?}",(std::time::Instant::now()-now));
                 return true;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -672,7 +671,6 @@ pub mod tests {
         let executor_clone = Arc::clone(&executor);
         let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move {
-            println!("@@@ REMOVE STARTING WATCHER");
             executor_clone.watch_tool_dir(tool_dir.clone()).await.expect("could not start watcher");
             let _ = ready_tx.send(()).await;
         });

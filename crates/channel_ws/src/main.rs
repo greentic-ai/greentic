@@ -132,7 +132,10 @@ fn spawn_conn(
                     }
                     _ => break,
                 },
-                Some(out) = out_rx.recv() => { let _ = ws_tx.send(out).await; }
+                Some(out) = out_rx.recv() => { 
+                    let _ = ws_tx.send(out.clone()).await; 
+                    info!("[ws] received out {:?}", out);
+                }
             }
         }
 

@@ -68,7 +68,7 @@ impl PluginHandler for MockPlugin {
             thread::sleep(Duration::from_secs(10));
             // Generate your message here (this example just uses the default)
             let mut msg = ChannelMessage::default();
-            msg.channel = "mock_in".to_string();
+            msg.channel = "mock_inout".to_string();
             let content = MessageContent::Text{text:"mock says hello".to_string()};
             msg.content = vec![content];
             let participant = Participant{id:"mockingbird".to_string(), display_name: None, channel_specific_id: None };

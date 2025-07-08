@@ -62,7 +62,6 @@ impl MockChannel {
 impl ChannelClientType for Arc<MockChannel> {
     async fn send(&self, msg: ChannelMessage) -> anyhow::Result<()> {
         // behave exactly like real plugins: push to `outgoing`
-        println!("@@@ REMOVE: sending {:?}",msg);
         self.outgoing.lock().await.push(msg);
         Ok(())
     }
@@ -142,7 +141,6 @@ impl PluginHandler for Arc<MockChannel> {
     }
     
     async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult{
-        println!("@@@ REMOVE send_message: {:?}",params.message);
         self.outgoing.lock().await.push(params.message);
         MessageOutResult{ success: true, error: None }
     }

@@ -91,12 +91,12 @@ impl HasStore for TesterPlugin {
 impl PluginHandler for TesterPlugin {
 
     fn name(&self) -> NameResult {
-        NameResult{name:"channel_tester".to_string()}
+        NameResult{name:"tester".to_string()}
     }
 
     fn capabilities(&self) -> CapabilitiesResult {
         CapabilitiesResult { capabilities: ChannelCapabilities {
-            name: "channel_tester".into(),
+            name: "tester".into(),
             supports_sending: true,
             supports_receiving: true,
             supports_text: true,

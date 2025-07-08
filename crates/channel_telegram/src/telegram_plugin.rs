@@ -233,9 +233,9 @@ impl TelegramPlugin {
                         if let Some(content) = extract_content(bot, &msg) {
                             let chat_id = msg.chat.id.to_string();
                             let user_id = msg.from.clone().expect("No user id").id.to_string();
-                            let thread_id = match &msg.thread_id {
-                                Some(tid) => tid.0.0.to_string(),  // ThreadId.0 is MessageId, MessageId.0 is i32
-                                None => "None".to_string(),
+                            let thread_id: Option<String> = match &msg.thread_id {
+                                Some(tid) => Some(tid.0.0.to_string()),  // ThreadId.0 is MessageId, MessageId.0 is i32
+                                None => None,
                             };
                             let reply_to_id: Option<String> = msg
                                 .reply_to_message()
@@ -257,7 +257,7 @@ impl TelegramPlugin {
                                 id:         msg.id.clone().to_string(),
                                 timestamp:  Utc::now().to_rfc3339(),
                                 to:         Vec::new(),
-                                thread_id: Some(thread_id),
+                                thread_id,
                                 reply_to_id,
                                 metadata:   Default::default(),
                             };
@@ -461,7 +461,7 @@ impl PluginHandler for TelegramPlugin {
                 info!("[telegram] message_in {}", msg.id);
                 MessageInResult {
                     message: msg,
-                    error: true,
+                    error: false,
                 }
             }
             Err(err) => {

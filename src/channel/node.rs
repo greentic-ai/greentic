@@ -168,7 +168,6 @@ impl IncomingHandler for ChannelsRegistry {
                     // convert to a Greentic uuid session id
                     let session_id = session_store.get_or_create_channel(&channel_session_id).await;
                     let state = session_store.get_or_create(&session_id).await;
-                    println!("@@@ REMOVE state: {:?}",state);
 
                     let session_flows = state.flows().unwrap_or_default();
                     let session_nodes = state.nodes().unwrap_or_default();

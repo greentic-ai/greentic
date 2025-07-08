@@ -25,7 +25,7 @@ use std::{panic, time::Instant};
 use async_trait::async_trait;
 use anyhow::Result;
 use dashmap::DashMap;
-use tracing::{dispatcher, error, level_filters::LevelFilter, Dispatch};
+use tracing::{dispatcher, error, info, level_filters::LevelFilter, Dispatch};
 use tracing_appender::rolling::daily;
 use tracing_subscriber::{fmt, Registry};
 use crate::{jsonrpc::{Id, Message, Request, Response}, plugin_actor::Method};
@@ -61,14 +61,11 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
             return res;
         }
         let result = self.init(params).await;
-        println!("@@@ REMOVE: GOT RESULT {:?}",result);
-
         result
     }
     /// Drain the plugin
     async fn drain(&mut self) -> DrainResult;
     async fn wait_until_drained(&self, params: WaitUntilDrainedParams) -> WaitUntilDrainedResult {
-        println!("@@@ REMOVE wait until drained for: {:?}",params.timeout_ms);
         let deadline = Instant::now() + std::time::Duration::from_millis(params.timeout_ms);
 
         loop {
@@ -238,12 +235,12 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
 
 /// Runs the JSON‑RPC stdin/stdout loop until EOF or fatal error.
 pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
-    print!("@@@ REMOVE started run");
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let poller_tx = tx.clone();
     tokio::spawn(async move {
         let mut w = BufWriter::new(io::stdout());
         while let Some(line) = rx.recv().await {
-            println!("@@@ REMOVE get line back: {:?}",line);
+            info!("@@@ REMOVE: write {}",line);
             if let Err(e) = w.write_all(line.as_bytes()).await {
                 error!("stdout write error: {e}");
                 break;              // abort writer task → plugin will exit
@@ -257,19 +254,25 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
     });
 
     // ── 2. spawn poller that turns `receive_message()` into `messageIn` notif
-    let poller_tx = tx.clone();
     let mut plugin_clone = plugin.clone();
 
     tokio::spawn(async move {
         loop {
             let result = plugin_clone.receive_message().await;
-            println!("@@@ REMOVE got message in: {:?}",result);
-
-            let notif = Request::notification(
-                "messageIn",
-                Some(serde_json::to_value(result).unwrap()),
-            );
-            let _ = poller_tx.send(format!("{}\n", serde_json::to_string(&notif).unwrap()));
+            info!("@@@ REMOVE: {:?}",result);
+            match serde_json::to_value(&result) {
+                Ok(v) => {
+                    let notif = Request::notification("messageIn", Some(v));
+                    if poller_tx.send(format!("{}\n", serde_json::to_string(&notif).unwrap())).is_err() {
+                        error!("writer channel closed – stdout writer already dead");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("serde_json error serialising MessageInResult: {e}");
+                    break;
+                }
+            }
         }
     });
     // ── 3. read stdin, dispatch requests, send responses via the same tx ─────
@@ -343,6 +346,9 @@ where
                  enqueue(tx, Response::success(id, json!(plugin.stop().await)));
             }
         }
+        Ok(Method::MessageIn) => {
+            info!("@@@ REMOVE req: {:?}",req);
+        }
         Ok(Method::MessageOut) => {
             match serde_json::from_value::<MessageOutParams>(req.params.unwrap_or(Value::Null)) {
                 Ok(p) => {
@@ -362,7 +368,6 @@ where
         }
         Ok(Method::Name) => {
             if let Some(id) = req.id {
-                println!("@@@ REMOVE got name request");
                enqueue(tx, Response::success(id, json!(plugin.name())));
             }
         }

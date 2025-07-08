@@ -243,7 +243,6 @@ impl SessionStateType for InMemoryState {
 
     fn nodes(&self) -> Option<Vec<String>> {
         let nodes = self.nodes.lock().unwrap().iter().cloned().collect::<Vec<String>>();
-        //println!("@@@ STATE PTR (nodes): {:p} and {:?}", self, nodes);
         let all_nodes = if nodes.is_empty() {
             None
         } else {
