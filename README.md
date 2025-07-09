@@ -1,6 +1,12 @@
-# Greentic.AI ![Greentic.AI Logo](assets/greentic-logo-very-small.png)
-Welcome to **Greentic.AI**, the fastest, most extendable, and secure agentic platform for building armies of digital workers. Whether you’re integrating external systems via channels, calling external APIs and other MCP tools, or crafting complex processes, Greentic.AI gives you the building blocks to automate anything.
-
+<table>
+  <tr>
+    <td><img src="assets/greentic-logo-very-small.png" alt="Greentic.AI Logo" width="120"></td>
+    <td>
+      <h1>Greentic.AI 🚀</h1>
+      <p><strong>Build armies of digital workers:</strong> fast, secure, and extendable. Automate anything using Wasm tools, channels, agents, and flows.</p>
+    </td>
+  </tr>
+</table>
 Now with: **intelligent agents** and **processes**!
 
 ---
