@@ -124,6 +124,15 @@ impl ChannelManager {
 
     }
 
+    /// Stop all channels
+    pub async fn stop_all(&self) -> Result<(), PluginError> {
+        for channel in self.channels.iter()
+        {
+            let _ = self.stop_channel(&channel.wrapper().name()).await;
+        }
+        Ok(())
+    }
+
     /// Stop (but keep loaded) a channel.
     pub async fn stop_channel(&self, name: &str) -> Result<(), PluginError> {
         if let Some(mut entry) = self.channels.get_mut(name) {

@@ -32,6 +32,7 @@ pub struct Watched(pub Box<dyn WatchedType>);
 
 /// A small wrapper around all of the spawned watcher‐tasks for a single directory.
 /// Calling `shutdown()` will abort every task in `handles`.
+#[derive(Clone)]
 pub struct DirectoryWatcher;
 
 impl DirectoryWatcher {

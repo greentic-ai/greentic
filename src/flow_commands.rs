@@ -4,7 +4,7 @@ use tracing::info;
 use serde_json::Value as JsonValue;
 use serde_yaml_bw::Value as YamlValue;
 
-use crate::validate::validate;
+use crate::{config::ConfigManager, secret::SecretsManager, validate::validate};
 
 /// Validate that the provided file is a valid YAML or JSON flow definition.
 pub async fn validate_flow_file(
@@ -13,7 +13,10 @@ pub async fn validate_flow_file(
     tools_dir: PathBuf,
     log_level: String,
     log_dir:   String,
-    event_dir: String,) -> Result<()> {
+    event_dir: String,
+    secrets_maanger: SecretsManager,
+    config_manager: ConfigManager,
+    ) -> Result<()> {
     if !flow_file.exists() {
         bail!("File does not exist: {}", flow_file.display());
     }
@@ -39,7 +42,10 @@ pub async fn validate_flow_file(
         tools_dir,
         log_level,
         log_dir,
-        event_dir,).await;
+        event_dir,
+        secrets_maanger,
+        config_manager,
+    ).await;
     if result.is_err() {
         bail!("Validation failed");
     }
@@ -54,14 +60,20 @@ pub async fn deploy_flow_file(
     tools_dir: PathBuf,
     log_level: String,
     log_file:   String,
-    event_file: String,) -> Result<()> {
+    event_file: String,
+    secrets_maanger: SecretsManager,
+    config_manager: ConfigManager,
+    ) -> Result<()> {
     validate_flow_file(
         path.clone(), 
         root.clone(), 
         tools_dir,
         log_level,
         log_file,
-        event_file,).await?;
+        event_file,
+        secrets_maanger,
+        config_manager,
+    ).await?;
 
 
     let content = fs::read_to_string(&path)?;

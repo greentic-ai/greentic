@@ -34,9 +34,7 @@ pub struct OllamaAgent {
    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OllamaMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ollama_host: Option<url::Url>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ollama_port: Option<u16>,
+    pub ollama_url: Option<url::Url>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_options: Option<ollama_rs::models::ModelOptions>,
@@ -56,8 +54,7 @@ impl PartialEq for OllamaAgent {
         self.task == other.task &&
         self.model == other.model &&
         self.mode == other.mode &&
-        self.ollama_host == other.ollama_host &&
-        self.ollama_port == other.ollama_port &&
+        self.ollama_url == other.ollama_url &&
         self.tool_names == other.tool_names
         // tool_nodes and model_config are intentionally skipped from equality check
     }
@@ -81,8 +78,12 @@ impl NodeType for OllamaAgent {
         context: &mut NodeContext,
     ) -> Result<NodeOut, NodeErr> {
         // 1) build our client
-        let mut client = if let (Some(host), Some(port)) = (&self.ollama_host, self.ollama_port) {
-            Ollama::new(host.clone(), port)
+        let mut client = if let Some(url) = &self.ollama_url {
+            if let Some(port) = url.port() {
+                Ollama::new(url.clone(),port)
+            } else {
+                Ollama::default()
+            }   
         } else {
             Ollama::default()
         };
@@ -299,8 +300,7 @@ impl OllamaAgent {
         mode: Option<OllamaMode>,
         task: String,
         model: Option<String>,
-        ollama_host: Option<Url>,
-        ollama_port: Option<u16>,
+        ollama_url: Option<Url>,
         model_options: Option<ModelOptions>,
         tool_names: Option<Vec<String>>,
         tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
@@ -309,8 +309,7 @@ impl OllamaAgent {
             mode,
             task,
             model,
-            ollama_host,
-            ollama_port,
+            ollama_url,
             model_options,
             tool_names,
             tool_nodes,
@@ -403,8 +402,7 @@ mod ollama_agent_tests {
             mode,
             task: "dummy".into(),
             model: Some("llama3.2:1b".into()),
-            ollama_host: None,
-            ollama_port: None,
+            ollama_url: None,
             model_options: None,
             tool_names: None,
             tool_nodes: None,
@@ -417,8 +415,7 @@ mod ollama_agent_tests {
             mode: Some(OllamaMode::Generate),
             task: "t".into(),
             model: Some("m".into()),
-            ollama_host: Some(Url::parse("http://x/").unwrap()),
-            ollama_port: Some(1234),
+            ollama_url: Some(Url::parse("http://x/").unwrap()),
             model_options: None,
             tool_names: Some(vec!["foo".into()]),
             tool_nodes: None,
@@ -429,7 +426,6 @@ mod ollama_agent_tests {
         assert_eq!(de.mode, Some(OllamaMode::Generate));
         assert_eq!(de.task, "t");
         assert_eq!(de.model, Some("m".into()));
-        assert_eq!(de.ollama_port, Some(1234));
 
         // schema
         let schema = schema_for!(OllamaAgent);
@@ -439,7 +435,7 @@ mod ollama_agent_tests {
             .get("properties")
             .expect("no properties in schema");
 
-        for key in &["mode", "task", "model", "ollama_host", "ollama_port", "tool_names"] {
+        for key in &["mode", "task", "model", "ollama_url", "tool_names"] {
             assert!(
                 props.get(*key).is_some(),
                 "missing `{}` in schema",
@@ -451,7 +447,8 @@ mod ollama_agent_tests {
     #[tokio::test]
     async fn default_mode_is_chat_and_bad_endpoint_errors() {
         // no mode => Chat
-        let agent = make_agent(None);
+        let mut agent = make_agent(None);
+        agent.ollama_url = Some(Url::parse("http://localhost:123").unwrap());
         // this will attempt Chat against localhost:11434 and fail
         let msg = Message::new("id", json!({}), "123".to_string());
         let mut ctx = NodeContext::dummy();
@@ -464,8 +461,7 @@ mod ollama_agent_tests {
     async fn embed_mode_goes_to_do_embed_and_parses_payload() {
         let mut agent = make_agent(Some(OllamaMode::Embed));
         // override host to bogus so it errors *after* embedding arguments
-        agent.ollama_host = Some(Url::parse("http://127.0.0.1:1/").unwrap());
-        agent.ollama_port = Some(1);
+        agent.ollama_url = Some(Url::parse("http://127.0.0.1:1/").unwrap());
         let payload = json!({
             "model": "custom-model",
             "text": "hello embed"
@@ -483,8 +479,7 @@ mod ollama_agent_tests {
     #[tokio::test]
     async fn generate_mode_goes_to_do_generate_and_parses_payload() {
         let mut agent = make_agent(Some(OllamaMode::Generate));
-        agent.ollama_host = Some(Url::parse("http://127.0.0.1:1/").unwrap());
-        agent.ollama_port = Some(1);
+        agent.ollama_url = Some(Url::parse("http://127.0.0.1:1/").unwrap());
         let payload = json!({
             "model": "custom-model",
             "prompt": "why?"

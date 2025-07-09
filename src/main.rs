@@ -90,6 +90,14 @@ pub fn resolve_root_dir() -> PathBuf {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
+    // config & secrets
+    let root = resolve_root_dir();
+    let config_dir   = root.join("config");
+    let secrets_dir  = root.join("secrets");   
+    let env_file = config_dir.join(".env");
+    let config_manager = ConfigManager(EnvConfigManager::new(env_file.clone()));
+    let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(secrets_dir.clone())));
+
     let cli = Cli::parse(); 
     match cli.command.unwrap_or(Commands::Run(RunArgs {
         session_timeout: 1800,
@@ -98,17 +106,17 @@ async fn main() -> anyhow::Result<()> {
         otel_events_endpoint: None,
         }))  {
         Commands::Run(args) => {
-            let root = resolve_root_dir();
             run(root,
                 args.session_timeout,
                 args.log_level,
                 args.otel_logs_endpoint,
                 args.otel_events_endpoint,
+                secrets_manager,
+                config_manager,
             ).await?;
             Ok(())
         }
         Commands::Schema(args) => {
-            let root = resolve_root_dir();
             let out_dir = root.join("schemas");
             let log_level     = args.log_level;
             let log_file      = "logs/greentic-schema.log".to_string();
@@ -130,40 +138,47 @@ async fn main() -> anyhow::Result<()> {
             process::exit(0);
         }
         Commands::Init => {
-            let root = resolve_root_dir();
             cmd_init(root.clone()).await?;
             println!("Initialized greentic layout at {}", root.display());
             process::exit(0);
         }
         Commands::Flow(flow_args) => match flow_args.command {
             FlowCommands::Validate { file } => {
-                let root = resolve_root_dir();
-                let log_level     = "info".to_string();
-                let log_file      = "logs/greentic-validation.log".to_string();
-                let event_file      = "logs/greentic-validation.json".to_string();
-                let tools_dir    = root.join("plugins").join("tools");
-                validate_flow_file(file, root, tools_dir, log_level, log_file, event_file).await?;
-                println!("✅ Flow file is valid.");
-                Ok(())
-            },
-            FlowCommands::Deploy { file } => {
-                let root = resolve_root_dir();
                 let log_level     = "info".to_string();
                 let log_file      = "logs/greentic-validation.log".to_string();
                 let event_file      = "logs/greentic-validation.json".to_string();
                 let tools_dir    = root.join("plugins").join("tools");
                 validate_flow_file(
-                    file.clone(), 
-                    root.clone(), 
-                    tools_dir.clone(), 
-                    log_level.clone(), 
-                    log_file.clone(), 
-                    event_file.clone()).await?;
-                deploy_flow_file(file, root,tools_dir,log_level,log_file,event_file).await?;
+                    file, 
+                    root, 
+                    tools_dir, 
+                    log_level, 
+                    log_file, 
+                    event_file,
+                    secrets_manager,
+                    config_manager,
+                ).await?;
+                println!("✅ Flow file is valid.");
+                Ok(())
+            },
+            FlowCommands::Deploy { file } => {
+                let log_level     = "info".to_string();
+                let log_file      = "logs/greentic-validation.log".to_string();
+                let event_file      = "logs/greentic-validation.json".to_string();
+                let tools_dir    = root.join("plugins").join("tools");
+                deploy_flow_file(
+                    file, 
+                    root,
+                    tools_dir,
+                    log_level,
+                    log_file,
+                    event_file,
+                    secrets_manager,
+                    config_manager,
+                ).await?;
                 Ok(())
             },
             FlowCommands::Start { name } => {
-                let root = resolve_root_dir();
                 let from = root.join("flows/stopped");
                 let to = root.join("flows/running");
                 move_flow_file(&name, &from, &to)?;
@@ -171,7 +186,6 @@ async fn main() -> anyhow::Result<()> {
                 Ok(())
             },
             FlowCommands::Stop { name } => {
-                let root = resolve_root_dir();
                 let from = root.join("flows/running");
                 let to = root.join("flows/stopped");
                 move_flow_file(&name, &from, &to)?;
@@ -187,11 +201,11 @@ async fn run(root: PathBuf,
     log_level: String,
     otel_logs_endpoint: Option<String>,
     otel_events_endpoint: Option<String>,
+    secrets_manager: SecretsManager,
+    config_manager: ConfigManager,
 ) -> anyhow::Result<()> {
 
     let flows_dir    = root.join("flows/running");
-    let config_dir   = root.join("config");
-    let secrets_dir  = root.join("secrets");
     let log_file      = "logs/greentic_logs.log".to_string();
     let log_dir= Some(root.join("logs").to_string_lossy().to_string());
     let event_file    = "logs/greentic_events.log".to_string();
@@ -222,10 +236,6 @@ async fn run(root: PathBuf,
         bail!(err);
     }
 
-    // config & secrets
-    let env_file = config_dir.join(".env");
-    let config_mgr = ConfigManager(EnvConfigManager::new(env_file.clone()));
-    let secrets_mgr = SecretsManager(EnvSecretsManager::new(Some(secrets_dir.clone())));
 
     // bootstrap
     let mut app = App::new();
@@ -235,12 +245,12 @@ async fn run(root: PathBuf,
         channels_dir.clone(),
         tools_dir.clone(),
         processes_dir.clone(),
-        config_mgr,
+        config_manager,
         logger,
         convert_level(log_level),
         log_dir,
         otel_logs_endpoint,
-        secrets_mgr,
+        secrets_manager,
     )
     .await;
     if result.is_err()

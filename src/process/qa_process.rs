@@ -1416,7 +1416,7 @@ connections:
                                 },
                             ],
                             fallback_agent: Some(BuiltInAgent::Ollama(OllamaAgent::new(
-                                None, "task".into(), None, None, None, None, None, None,
+                                None, "task".into(), None, None, None, None, None,
                             ))),
                             routing: vec![],
                         },

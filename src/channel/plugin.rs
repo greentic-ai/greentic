@@ -31,6 +31,7 @@ pub struct PluginWatcher {
     pub plugins: DashMap<String, PluginHandle>,
     subscribers: Mutex<Vec<Arc<dyn PluginEventHandler>>>,
     path_to_name: DashMap<String,String>,
+    watcher: Option<DirectoryWatcher>,
 }
 
 impl PluginWatcher {
@@ -61,6 +62,7 @@ impl PluginWatcher {
             plugins,
             subscribers: Mutex::new(Vec::new()),
             path_to_name: DashMap::new(),
+            watcher: None,
         }
     }
 
@@ -69,8 +71,18 @@ impl PluginWatcher {
     pub async fn watch(self: Arc<Self>) -> Result<DirectoryWatcher, Error> {
         // We know `PluginWatcher` already implements `WatchedType`
         let dir = self.dir.clone();
-        let watcher: Arc<dyn WatchedType> = self.clone();
-        DirectoryWatcher::new(dir, watcher, &["exe", "",], true).await
+        let watch_me: Arc<dyn WatchedType> = self.clone();
+        DirectoryWatcher::new(dir, watch_me, &["exe", "",], true).await
+    }
+
+    pub fn set_watcher(&mut self, watcher: DirectoryWatcher) {
+        self.watcher = Some(watcher);
+    }
+
+    pub async fn shutdown(&self) {
+        if let Some(watcher) = self.watcher.clone() {
+            watcher.shutdown();
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<PluginHandle> {

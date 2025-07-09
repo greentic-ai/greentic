@@ -66,6 +66,8 @@ pub async fn validate(
     log_level: String,
     log_file:   String,
     event_file: String,
+    secrets_manager: SecretsManager,
+    config_manager: ConfigManager,
 ) -> Result<()> {
     // ---------------------------------------------------------------------
     // 0) Read + parse YAML / JSON
@@ -111,6 +113,120 @@ pub async fn validate(
             }
         }
 
+        return Err(anyhow!("validation failed – see diagnostics above"));
+    }
+
+    // ---------------------------------------------------------------------
+    // 2) Spin up Executor + ChannelManager just like schema.rs  -------------
+    // ---------------------------------------------------------------------
+    let _ = FileTelemetry::init_files(&log_level, root_dir.join(&log_file), root_dir.join(&event_file));
+
+    let logger  = Logger(Box::new(OpenTelemetryLogger::new()));
+    let executor = Executor::new(secrets_manager.clone(), logger.clone());
+    let tool_watcher = executor.watch_tool_dir(tools_dir.clone()).await?;
+    let sessions = InMemorySessionStore::new(10);
+    let channel_mgr = ChannelManager::new(config_manager.clone(), secrets_manager.clone(), sessions, LogConfig::default()).await?;
+
+    // ---------------------------------------------------------------------
+    // 3) Inspect flow JSON to collect all tool & channel IDs ---------------
+    // ---------------------------------------------------------------------
+    let mut used_tools    = HashSet::new();
+    let mut used_channels = HashSet::new();
+
+    collect_ids(&flow_value, &mut used_tools, &mut used_channels);
+
+    let running_path = root_dir.join("plugins").join("channels").join("running");
+    let stopped_path = root_dir.join("plugins").join("channels").join("stopped");
+    // 3a) missing plugins ---------------------------------------------------
+    for t in &used_channels {
+         let channel_file = match cfg!(target_os = "windows") {
+                true => format!("channel_{t}.exe"),
+                false => format!("channel_{t}"),
+            };
+
+        let running_channel = running_path.join(channel_file.clone());
+        let stopped_channel = stopped_path.join(channel_file.clone());
+
+        if !running_channel.exists() && !stopped_channel.exists() {
+
+            match pull_channel(&channel_file, &running_channel).await {
+                Ok(_) => {
+                    tracing::info!("✅ Pulled and stored missing channel: {t}");
+                }
+                Err(e) => {
+                    tracing::warn!("❌ Could not pull missing channel `{t}`: {e}");
+                    report.missing_plugins.push(format!("channel:{t}"));
+                    continue;
+                }
+            }
+        }
+    }
+
+    // 3b) missing wasm files for tools -------------------------------------
+    for t in &used_tools {
+        if let Some(tool) = executor.get_tool(t.clone()) {
+            let wasm_path = tools_dir.join(format!("{t}.wasm"));
+            if !wasm_path.exists() {
+                match pull_wasm(t, &wasm_path).await {
+                    Ok(_) => {
+                        tracing::info!("Pulled missing Wasm for tool: {t}");
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to pull Wasm for {t}: {e}");
+                        report.missing_wasm.push(wasm_path.display().to_string());
+                    }
+                }
+            }
+
+            // gather required secrets & configs
+            for s in tool.secrets() {
+                if s.required && secrets_manager.0.get(&s.name).is_none() {
+                    tracing::warn!("Failed to find secret {} for tool {t}",s.name);
+                    report.missing_secrets.push((s.name.clone(), s.description.clone()));
+                }
+            }
+        }
+    }
+
+    // 3c) channel required keys --------------------------------------------
+    // then start watching
+    let plugin_watcher = channel_mgr.clone().start_all(running_path.clone()).await?;
+    for c in &used_channels {
+        if let Some(wrapper) = channel_mgr.channel(c) {
+            let req_cfg  = wrapper.list_config_keys().await.required_keys;
+            let req_sec  = wrapper.list_secret_keys().await.required_keys;
+
+            for (k, desc) in req_cfg {
+                if config_manager.0.get(&k).await.is_none() {
+                    report.missing_config.push((k, desc.unwrap_or_default()));
+                }
+            }
+            for (k, desc) in req_sec {
+                if secrets_manager.0.get(&k).is_none() {
+                    report.missing_secrets.push((k, desc.unwrap_or_default()));
+                }
+            }
+        } else {
+            tracing::warn!("❗ Channel `{c}` still not found in manager after pulling.");
+            report.missing_plugins.push(format!("channel:{c}"));
+        }
+    }
+
+    // 3d) channel required keys --------------------------------------------
+    for c in &used_tools {
+        if let Some(wrapper) = executor.get_tool(c.to_string()) {
+            let req_sec  = wrapper.secrets();
+
+            for secret in req_sec {
+                if secret.required && secrets_manager.0.get(&secret.name).is_none() {
+                    report.missing_secrets.push((secret.name, secret.description));
+                }
+            }
+        }
+    }
+
+    if !report.ok() {
+        // Pretty print diagnostics
         if !report.missing_plugins.is_empty() {
             eprintln!("\n❌ Missing channels / tools:");
             for p in &report.missing_plugins {
@@ -144,120 +260,48 @@ pub async fn validate(
                 eprintln!("  • {k} — {desc}\n    ➜ greentic secrets add {k} <secret>");
             }
         }
+        let _ = channel_mgr.clone().stop_all();
+        plugin_watcher.shutdown();
+        tool_watcher.shutdown();
+
         return Err(anyhow!("validation failed – see diagnostics above"));
-    }
-
-    // ---------------------------------------------------------------------
-    // 2) Spin up Executor + ChannelManager just like schema.rs  -------------
-    // ---------------------------------------------------------------------
-    let _ = FileTelemetry::init_files(&log_level, root_dir.join(&log_file), root_dir.join(&event_file));
-
-    let logger  = Logger(Box::new(OpenTelemetryLogger::new()));
-    let secrets = SecretsManager(crate::secret::EmptySecretsManager::new());
-    let executor = Executor::new(secrets.clone(), logger.clone());
-    executor.watch_tool_dir(tools_dir.clone()).await?;
-
-    let cfg_mgr  = ConfigManager(crate::config::MapConfigManager::new());
-    let sessions = InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new(cfg_mgr.clone(), secrets.clone(), sessions, LogConfig::default()).await?;
-
-    // ---------------------------------------------------------------------
-    // 3) Inspect flow JSON to collect all tool & channel IDs ---------------
-    // ---------------------------------------------------------------------
-    let mut used_tools    = HashSet::new();
-    let mut used_channels = HashSet::new();
-
-    collect_ids(&flow_value, &mut used_tools, &mut used_channels);
-
-    // 3a) missing plugins ---------------------------------------------------
-    for t in &used_tools {
-        if executor.get_tool(t.to_string()).is_none() {
-            let wasm_path = tools_dir.join(format!("{t}.wasm"));
-            match pull_wasm(t, &wasm_path) {
-                Ok(_) => {
-                    tracing::info!("✅ Pulled and stored missing tool wasm: {t}");
-                }
-                Err(e) => {
-                    tracing::warn!("❌ Could not pull missing plugin wasm for tool `{t}`: {e}");
-                    report.missing_plugins.push(format!("tool:{t}"));
-                    continue;
-                }
-            }
-
-            // Re-check after pulling
-            if executor.get_tool(t.to_string()).is_none() {
-                tracing::warn!("❗ Tool `{t}` still not found in executor after pulling.");
-                report.missing_plugins.push(format!("tool:{t}"));
-            }
-        }
-    }
-    for c in &used_channels {
-        if channel_mgr.channel(c).is_none() {
-            report.missing_plugins.push(format!("channel:{c}"));
-        }
-    }
-
-    // 3b) missing wasm files for tools -------------------------------------
-    for t in &used_tools {
-        if let Some(tool) = executor.get_tool(t.clone()) {
-            let wasm_path = tools_dir.join(format!("{t}.wasm"));
-            if !wasm_path.exists() {
-                match pull_wasm(t, &wasm_path) {
-                    Ok(_) => {
-                        tracing::info!("Pulled missing Wasm for tool: {t}");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to pull Wasm for {t}: {e}");
-                        report.missing_wasm.push(wasm_path.display().to_string());
-                    }
-                }
-            }
-
-            // gather required secrets & configs
-            for s in tool.secrets() {
-                if s.required && secrets.0.get(&s.name).is_none() {
-                    report.missing_secrets.push((s.name.clone(), s.description.clone()));
-                }
-            }
-        }
-    }
-
-    // 3c) channel required keys --------------------------------------------
-    for c in &used_channels {
-        if let Some(wrapper) = channel_mgr.channel(c) {
-            let req_cfg  = wrapper.list_config_keys().await.required_keys;
-            let req_sec  = wrapper.list_secret_keys().await.required_keys;
-
-            for (k, desc) in req_cfg {
-                if cfg_mgr.0.get(&k).await.is_none() {
-                    report.missing_config.push((k, desc.unwrap_or_default()));
-                }
-            }
-            for (k, desc) in req_sec {
-                if secrets.0.get(&k).is_none() {
-                    report.missing_secrets.push((k, desc.unwrap_or_default()));
-                }
-            }
-        }
     }
     
     // ---------------------------------------------------------------------
     // 4) Output diagnostics -------------------------------------------------
     // ---------------------------------------------------------------------
     println!("✅ Validation passed: flow is ready to deploy");
+    let _ = channel_mgr.clone().stop_all();
+    plugin_watcher.shutdown();
+    tool_watcher.shutdown();
     return Ok(());
 }
 
 // Basic pull function to get a tool. In the future we need login and 
 // more advanced version management, ...
-fn pull_wasm(tool_name: &str, destination: &Path) -> anyhow::Result<()> {
-    let url = format!("https://store.greentic.ai/tools/{tool_name}.wasm");
-    let response = reqwest::blocking::get(&url)?;
+async fn pull_channel(channel_name: &str, destination: &Path) -> anyhow::Result<()> {
+    let url = format!("https://greenticstore.com/channels/channel_{channel_name}");
+    let response = reqwest::get(&url).await?;
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to download channel for channel_{channel_name}: HTTP {}", response.status());
+    }
+
+    let bytes = response.bytes().await?;
+    fs::create_dir_all(destination.parent().unwrap())?;
+    fs::write(destination, &bytes)?;
+    Ok(())
+}
+
+// Basic pull function to get a tool. In the future we need login and 
+// more advanced version management, ...
+async fn pull_wasm(tool_name: &str, destination: &Path) -> anyhow::Result<()> {
+    let url = format!("https://greenticstore.com/tools/{tool_name}.wasm");
+    let response = reqwest::get(&url).await?;
     if !response.status().is_success() {
         anyhow::bail!("Failed to download Wasm for {tool_name}: HTTP {}", response.status());
     }
 
-    let bytes = response.bytes()?;
+    let bytes = response.bytes().await?;
     fs::create_dir_all(destination.parent().unwrap())?;
     fs::write(destination, &bytes)?;
     Ok(())
@@ -292,6 +336,8 @@ fn collect_ids(value: &Value, tools: &mut HashSet<String>, channels: &mut HashSe
 
 #[cfg(test)]
 mod tests {
+    use crate::{config::MapConfigManager, secret::EmptySecretsManager};
+
     use super::*;
     use serde_json::json;
     use tempfile::tempdir;
@@ -355,6 +401,9 @@ connections:
         let flow_file = root_dir.join("flow.ygtc");
         fs::write(&flow_file, sample_flow_yaml("weather_api.forecast", "telegram")).unwrap();
 
+        let secrets_manager = SecretsManager(EmptySecretsManager::new());
+        let config_manager = ConfigManager(MapConfigManager::new());
+
         // run validator – expect an Err because nothing is installed
         let res = validate(
             flow_file,
@@ -363,6 +412,8 @@ connections:
             "info".into(),
             "logs".into(),
             "events".into(),
+            secrets_manager,
+            config_manager,
         ).await;
 
         assert!(res.is_err(), "validation should fail due to missing plugins");
@@ -381,6 +432,9 @@ connections:
         let flow_file = root_dir.join("bad.ygtc");
         fs::write(&flow_file, "this is : not : yaml").unwrap();
 
+        let secrets_manager = SecretsManager(EmptySecretsManager::new());
+        let config_manager = ConfigManager(MapConfigManager::new());
+
         let res = validate(
             flow_file,
             root_dir,
@@ -388,6 +442,8 @@ connections:
             "info".into(),
             "logs".into(),
             "events".into(),
+            secrets_manager,
+            config_manager,
         ).await;
 
         // Should surface a serde_yaml parsing error
