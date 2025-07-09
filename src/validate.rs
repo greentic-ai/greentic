@@ -451,4 +451,58 @@ connections:
         let msg = format!("{res:?}");
         assert!(msg.contains("invalid YAML") || msg.contains("while parsing"));
     }
+
+    // --------- Pull a known working channel (ws) ---------------------------
+    #[tokio::test]
+    async fn test_pull_real_channel_ws() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("channel_ws");
+
+        let result = pull_channel("ws", &dest).await;
+        assert!(result.is_ok(), "expected successful pull: {result:?}");
+        assert!(dest.exists(), "destination file not created");
+        assert!(fs::metadata(&dest).unwrap().len() > 0, "file is empty");
+    }
+
+    // --------- Pull a known working tool (weather_api) ---------------------
+    #[tokio::test]
+    async fn test_pull_real_tool_weather_api() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("weather_api.wasm");
+
+        let result = pull_wasm("weather_api", &dest).await;
+        assert!(result.is_ok(), "expected successful pull: {result:?}");
+        assert!(dest.exists(), "destination file not created");
+        assert!(fs::metadata(&dest).unwrap().len() > 0, "file is empty");
+    }
+
+    // --------- Pull a missing tool -----------------------------------------
+    #[tokio::test]
+    async fn test_pull_missing_tool() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("nonexistent.wasm");
+
+        let result = pull_wasm("nonexistent", &dest).await;
+        assert!(result.is_err(), "expected error but got success");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("HTTP 404") || err.contains("Failed to download"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // --------- Pull a missing channel --------------------------------------
+    #[tokio::test]
+    async fn test_pull_missing_channel() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("channel_fake");
+
+        let result = pull_channel("fake", &dest).await;
+        assert!(result.is_err(), "expected error but got success");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("HTTP 404") || err.contains("Failed to download"),
+            "unexpected error: {err}"
+        );
+    }
 }

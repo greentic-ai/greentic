@@ -27,8 +27,7 @@ impl JsonSchema for OllamaAgent {
                     "type": ["string", "null"],
                     "enum": ["embed", "chat", "generate", null]
                 },
-                "ollama_host": { "type": ["string", "null"] },
-                "ollama_port": { "type": ["integer", "null"] },
+                "ollama_url": { "type": ["string", "null"] },
                 "model_options": {
                     "type": ["object", "null"],
                     "additionalProperties": true
