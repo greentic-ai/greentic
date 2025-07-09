@@ -1,4 +1,4 @@
-<table>
+<table style="border: none;">
 <tr>
 <td><img src="assets/greentic-logo-very-small.png" alt="Greentic.AI Logo" width="150"></td>
 <td><h1>Greentic.AI 🚀</h1><br><strong>Build armies of digital workers:</strong> fast, secure, and extendable. Automate anything using Wasm tools, channels, agents, and flows.</td>
