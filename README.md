@@ -13,7 +13,7 @@ Greentic.ai is currently at v0.2.0. You will have to create your own flows, plug
 ## 📋 Table of Contents
 
 1. [Introduction](#introduction)
-2. [What is a Digital Worker?](#digital-worker)
+2. [What is a Digital Worker?](#wat-is-a-digital-worker)
 3. [Key Concepts](#key-concepts)
    - [Tools (MCP in Wasm)](#tools-mcp-in-wasm)
    - [Channels](#channels)
