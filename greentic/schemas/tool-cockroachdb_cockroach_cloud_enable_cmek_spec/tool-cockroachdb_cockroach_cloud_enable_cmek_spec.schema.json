@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Enable CMEK for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_enable_cmek_spec`]",
+      "properties": {
+        "cluster_id": {
+          "type": "string"
+        },
+        "cmek_cluster_specification": {
+          "$ref": "#/definitions/CmekClusterSpecification"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "cmek_cluster_specification"
+      ],
+      "title": "CockroachCloudEnableCmekSpecParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_enable_cmek_spec",
+  "type": "object"
+}

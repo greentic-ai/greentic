@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Remove a private endpoint trusted owner from a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_remove_private_endpoint_trusted_owner`]",
+      "properties": {
+        "cluster_id": {
+          "description": "cluster_id is the ID for the cluster.",
+          "type": "string"
+        },
+        "owner_id": {
+          "description": "owner_id corresponds to the UUID of the private endpoint trusted owner entry.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "owner_id"
+      ],
+      "title": "CockroachCloudRemovePrivateEndpointTrustedOwnerParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_remove_private_endpoint_trusted_owner",
+  "type": "object"
+}

@@ -10,10 +10,23 @@ use std::path::{Path, PathBuf};
 use std::fmt::Debug;
 use dotenvy::Error as DotenvError;
 
-use crate::watcher::{watch_dir, WatchedType};
+use crate::watcher::{DirectoryWatcher, WatchedType};
 
 #[async_trait::async_trait]
 pub trait SecretsManagerType: Send + Sync {
+    async fn as_vec(&self) -> Vec<(String, String)> {
+        let mut secrets = vec![];
+        for key in self.keys() {
+            if let Some(handle) = self.get(&key) {
+                match self.reveal(handle).await {
+                    Ok(Some(secret)) => secrets.push((key.to_string(), secret)),
+                    Ok(None) => {} // no secret revealed
+                    Err(_) => {}   // optionally log the error
+                }
+            }
+        }
+        secrets
+    }
     fn get(&self, key: &str) -> Option<u32>;
     fn keys(&self) -> Vec<String>;
     async fn add_secret(&mut self, key: &str, secret: &str) -> Result<(),SecretsError>;
@@ -125,7 +138,7 @@ impl EnvSecretsManager {
 
                 let handler = DotenvHandler { path: envfile.clone(), mgr: Arc::clone(&mgr) };
                 tokio::spawn(async move {
-                    if let Err(e) = watch_dir(path, Arc::new(handler), &[] /* no ext filter */, false).await {
+                    if let Err(e) = DirectoryWatcher::new(path, Arc::new(handler), &[], false).await {
                         tracing::error!("dotenv watch_dir failed: {}", e);
                     }
                 });

@@ -61,3 +61,25 @@ pub fn extension_from_mime(mime: &str) -> &str {
         _ => "bin",
     }
 }
+
+use handlebars::Handlebars;
+use serde::Serialize;
+use tracing::warn;
+
+/// Render a Handlebars `template` against the given `context`.
+/// On error, it logs a warning and returns an empty string.
+pub fn render_handlebars<T: Serialize>(template: &str, context: &T) -> String {
+    // You could also cache a Handlebars registry in a `lazy_static!` if you render
+    // thousands of times, but for a few QA dialogs this is fine.
+    let mut hb = Handlebars::new();
+    // Optionally disable HTML‐escaping if your templates are plain text:
+    hb.register_escape_fn(handlebars::no_escape);
+
+    match hb.render_template(template, context) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Handlebars render error: {}", e);
+            String::new()
+        }
+    }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Set the version upgrade deferral policy for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_set_cluster_version_deferral`]",
+      "properties": {
+        "cluster_id": {
+          "type": "string"
+        },
+        "cluster_version_deferral": {
+          "$ref": "#/definitions/ClusterVersionDeferral"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "cluster_version_deferral"
+      ],
+      "title": "CockroachCloudSetClusterVersionDeferralParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_set_cluster_version_deferral",
+  "type": "object"
+}

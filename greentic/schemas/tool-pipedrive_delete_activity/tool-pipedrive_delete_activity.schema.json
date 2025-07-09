@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Delete an activity",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`delete_activity`]",
+      "properties": {
+        "id": {
+          "description": "The ID of the activity",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "DeleteActivityParams",
+      "type": "object"
+    },
+    "secrets": {
+      "properties": {
+        "PIPEDRIVE_ACCESS_TOKEN": {
+          "description": "OAuth2 bearer token",
+          "type": "string"
+        },
+        "PIPEDRIVE_CLIENT_ID": {
+          "description": "OAuth2 client ID",
+          "type": "string"
+        },
+        "PIPEDRIVE_CLIENT_SECRET": {
+          "description": "OAuth2 client secret",
+          "type": "string"
+        },
+        "PIPEDRIVE_REFRESH_TOKEN": {
+          "description": "OAuth2 refresh token (optional)",
+          "type": "string"
+        },
+        "PIPEDRIVE_X-API-TOKEN": {
+          "description": "API key (header)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "PIPEDRIVE_X-API-TOKEN",
+        "PIPEDRIVE_CLIENT_ID",
+        "PIPEDRIVE_CLIENT_SECRET",
+        "PIPEDRIVE_ACCESS_TOKEN"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "PIPEDRIVE_X-API-TOKEN",
+    "PIPEDRIVE_CLIENT_ID",
+    "PIPEDRIVE_CLIENT_SECRET",
+    "PIPEDRIVE_ACCESS_TOKEN",
+    "secrets"
+  ],
+  "title": "pipedrive_delete_activity",
+  "type": "object"
+}

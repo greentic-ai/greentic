@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "List clusters owned by an organization",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_list_clusters`]",
+      "properties": {
+        "pagination_period_as_of_time": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_limit": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pagination_period_page": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_sort_order": {
+          "description": "- ASC: Sort in ascending order. This is the default unless otherwise specified.  - DESC: Sort in descending order.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "show_inactive": {
+          "description": "If `true`, show clusters that have been deleted or failed to initialize. Note that inactive clusters will only be included if the requesting user has organization-scoped cluster read permissions.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "title": "CockroachCloudListClustersParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_list_clusters",
+  "type": "object"
+}

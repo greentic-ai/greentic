@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Patch a user by supplying partial updates",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_patch_user`]",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "patch_user_request": {
+          "$ref": "#/definitions/PatchUserRequest"
+        }
+      },
+      "required": [
+        "id",
+        "patch_user_request"
+      ],
+      "title": "CockroachCloudPatchUserParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_patch_user",
+  "type": "object"
+}

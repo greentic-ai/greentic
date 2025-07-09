@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
+use dashmap::DashMap;
+
 use handlebars::Handlebars;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::state::StateValue;
+use crate::flow::state::StateValue;
 
-#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema )]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, PartialEq )]
 #[serde(tag = "type", rename = "map", rename_all = "snake_case")]
 pub enum Mapper {
     Copy(CopyMapper),
@@ -21,8 +23,10 @@ pub enum MapperOutput {
     Simple(Value),                        // used for input mapping
     Result {
         payload: Value,
-        state_updates: HashMap<String, StateValue>,
-        config_updates: HashMap<String, String>,
+        #[schemars(with = "std::collections::HashMap<String, StateValue>")]
+        state_updates: DashMap<String, StateValue>,
+        #[schemars(with = "std::collections::HashMap<String, String>")]
+        config_updates: DashMap<String, String>,
     },
 }
 
@@ -30,16 +34,18 @@ pub enum MapperOutput {
 #[serde(rename = "map_res")]
 pub struct MapperResult {
     pub payload: Value,
-    pub state_updates: HashMap<String, StateValue>,
-    pub config_updates: HashMap<String, String>,
+    #[schemars(with = "std::collections::HashMap<String, StateValue>")]
+    pub state_updates: DashMap<String, StateValue>,
+    #[schemars(with = "std::collections::HashMap<String, String>")]
+    pub config_updates: DashMap<String, String>,
 }
 
 impl MapperResult {
     pub fn from_payload(payload: Value) -> Self {
         Self {
             payload,
-            state_updates: HashMap::new(),
-            config_updates: HashMap::new(),
+            state_updates: DashMap::new(),
+            config_updates: DashMap::new(),
         }
     }
 }
@@ -48,8 +54,8 @@ impl Mapper {
     pub fn apply_input(
         &self,
         payload: &Value,
-        config: &HashMap<String, String>,
-        state: &HashMap<String, StateValue>,
+        config: &DashMap<String, String>,
+        state: Vec<(String, StateValue)>,
     ) -> Value {
         match self {
             Mapper::Copy(mapper) => mapper.apply(payload, config, state),
@@ -61,8 +67,8 @@ impl Mapper {
     pub fn apply_result(
         &self,
         tool_output: &Value,
-        config: &HashMap<String, String>,
-        state: &HashMap<String, StateValue>,
+        config: &DashMap<String, String>,
+        state: Vec<(String, StateValue)>,
     ) -> MapperResult {
         match self {
             Mapper::Script(m) => m.apply_result(tool_output, config, state), // new method
@@ -87,7 +93,7 @@ impl Mapper {
 ///   "state": ["done", { "tries": 0 }]
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename = "copy")]
 pub struct CopyMapper {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,15 +108,32 @@ pub struct CopyMapper {
 #[serde(untagged)]
 pub enum CopyKey {
     Key(String),
-    WithDefault(HashMap<String, Value>),
+    #[schemars(with = "std::collections::HashMap<String, Value>")]
+    WithDefault(DashMap<String, Value>),
 }
 
+impl PartialEq for CopyKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (CopyKey::Key(a), CopyKey::Key(b)) => a == b,
+            (CopyKey::WithDefault(a), CopyKey::WithDefault(b)) => {
+                // Convert DashMap to regular HashMap for comparison
+                let a_map: HashMap<_, _> = a.iter().map(|entry| (entry.key().clone(), entry.value().clone())).collect();
+                let b_map: HashMap<_, _> = b.iter().map(|entry| (entry.key().clone(), entry.value().clone())).collect();
+                a_map == b_map
+            }
+            _ => false,
+        }
+    }
+}
 impl CopyKey {
     pub fn extract(&self) -> (String, Option<Value>) {
         match self {
             CopyKey::Key(k) => (k.clone(), None),
             CopyKey::WithDefault(map) => {
-                let (k, v) = map.iter().next().expect("default map should have one entry");
+                let entry = map.iter().next().expect("default map should have one entry");
+                let k = entry.key();
+                let v = entry.value();
                 (k.clone(), Some(v.clone()))
             }
         }
@@ -121,8 +144,8 @@ impl CopyMapper {
     pub fn apply(
         &self,
         payload: &Value,
-        config: &HashMap<String, String>,
-        state: &HashMap<String, StateValue>,
+        config: &DashMap<String, String>,
+        state: Vec<(String, StateValue)>,
     ) -> Value {
         let mut out = serde_json::Map::new();
 
@@ -160,7 +183,11 @@ impl CopyMapper {
         if let Some(keys) = &self.state {
             for key in keys {
                 let (k, default) = key.extract();
-                let val = state.get(&k).map(|s| s.to_json()).or(default);
+                let val = state
+                    .iter()
+                    .find(|(key, _)| key == &k)
+                    .map(|(_, v)| v.to_json())
+                    .or(default);
                 if let Some(v) = val {
                     out.insert(k, v);
                 }
@@ -187,9 +214,12 @@ impl CopyMapper {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename = "rename")]
-pub struct RenameMapper(pub HashMap<String, SourceField>);
+pub struct RenameMapper(
+    #[schemars(with = "std::collections::HashMap<String, StateValue>")]
+    pub DashMap<String, SourceField>
+);
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "from", rename="source")]
 pub enum SourceField {
     #[serde(rename = "payload")]
@@ -199,25 +229,39 @@ pub enum SourceField {
     #[serde(rename = "state")]
     State { key: String, #[serde(default)] default: Option<Value> },
 }
+impl PartialEq for RenameMapper {
+    fn eq(&self, other: &Self) -> bool {
+        let self_map: HashMap<_, _> = self.0.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect();
+        let other_map: HashMap<_, _> = other.0.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect();
+        self_map == other_map
+    }
+}
 impl RenameMapper {
     pub fn apply(
         &self,
         payload: &Value,
-        config: &HashMap<String, String>,
-        state: &HashMap<String, StateValue>,
+        config: &DashMap<String, String>,
+        state: Vec<(String, StateValue)>,
     ) -> Value {
        let mut out = serde_json::Map::new();
 
-        for (out_key, source) in &self.0 {
+        for entry in self.0.iter() {
+            let out_key = entry.key();
+            let source = entry.value();
+
             let val = match source {
                 SourceField::Payload { key, default } => {
                     payload.get(key).cloned().or_else(|| default.clone())
                 }
                 SourceField::Config { key, default } => {
-                    config.get(key).map(|v| json!(v)).or_else(|| default.clone())
+                    config.get(key).map(|v| json!(v.clone())).or_else(|| default.clone())
                 }
                 SourceField::State { key, default } => {
-                    state.get(key).map(|v| v.to_json()).or_else(|| default.clone())
+                    state
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.to_json())
+                    .or_else(|| default.clone())
                 }
             };
 
@@ -225,6 +269,7 @@ impl RenameMapper {
                 out.insert(out_key.clone(), v);
             }
         }
+
 
         Value::Object(out)
     }
@@ -252,7 +297,7 @@ impl RenameMapper {
 /// ```json
 /// {"payload": { "temperature": {{root.[0].current.temp_c}} }}
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename = "script")]
 pub struct ScriptMapper {
     pub template: String,
@@ -262,8 +307,8 @@ impl ScriptMapper {
     pub fn apply(
         &self,
         payload: &Value,
-        config: &HashMap<String, String>,
-        state: &HashMap<String, StateValue>,
+        config: &DashMap<String, String>,
+        state: Vec<(String, StateValue)>,
     ) -> Value {
         let mut merged = serde_json::Map::new();
 
@@ -273,12 +318,12 @@ impl ScriptMapper {
             }
         }
 
-        for (k, v) in config {
-            merged.insert(k.clone(), Value::String(v.clone()));
+        for entry in config.iter() {
+            merged.insert(entry.key().clone(), Value::String(entry.value().clone()));
         }
 
-        for (k, v) in state {
-            merged.insert(k.clone(), v.to_json());
+        for (key,value) in state.iter() {
+            merged.insert(key.clone(), value.to_json());
         }
 
         let hbs = Handlebars::new();
@@ -292,8 +337,8 @@ impl ScriptMapper {
     pub fn apply_result(
         &self,
         output: &Value,
-        config: &HashMap<String, String>,
-        state: &HashMap<String, StateValue>,
+        config: &DashMap<String, String>,
+        state: Vec<(String, StateValue)>,
     ) -> MapperResult {
         let mut merged = serde_json::Map::new();
 
@@ -309,12 +354,12 @@ impl ScriptMapper {
             }
         }
 
-        for (k, v) in config {
-            merged.insert(k.clone(), Value::String(v.clone()));
+        for entry in config.iter() {
+            merged.insert(entry.key().clone(), Value::String(entry.value().clone()));
         }
 
-        for (k, v) in state {
-            merged.insert(k.clone(), v.to_json());
+        for (key,value) in state.iter() {
+            merged.insert(key.clone(), value.to_json());
         }
 
         let hbs = Handlebars::new();
@@ -361,14 +406,13 @@ impl ScriptMapper {
 mod tests {
     use super::*;
     use serde_json::json;
-    use crate::state::StateValue;
+    use crate::flow::state::StateValue;
 
     #[test]
     fn test_copy_mapper_with_slash_pointer_and_simple_keys() {
         use super::*;
         use serde_json::json;
-        use crate::state::StateValue;
-        use std::collections::HashMap;
+        use crate::flow::state::StateValue;
 
         // Mapper that pulls q and days out of a nested "parameters" object,
         // plus simple keys for config and state.
@@ -392,14 +436,12 @@ mod tests {
                 "days": 42
             }
         });
-        let config: HashMap<String, String> = [("env".to_string(), "production".to_string())]
+        let config: DashMap<String, String> = [("env".to_string(), "production".to_string())]
             .into_iter()
             .collect();
-        let state: HashMap<String, StateValue> = [("done".to_string(), StateValue::String("yes".into()))]
-            .into_iter()
-            .collect();
+        let state: Vec<(String, StateValue)> = vec![("done".to_string(), StateValue::String("yes".into()))];
 
-        let output = mapper.apply(&payload, &config, &state);
+        let output = mapper.apply(&payload, &config, state);
 
         // Should have unwrapped both pointer keys
         assert_eq!(output["q"], "nested_q");
@@ -415,7 +457,7 @@ mod tests {
         let mapper = CopyMapper {
             payload: Some(vec![
                 CopyKey::WithDefault({
-                    let mut map = HashMap::new();
+                    let map = DashMap::new();
                     map.insert("a".into(), json!("fallback_a"));
                     map
                 }),
@@ -423,14 +465,14 @@ mod tests {
             ]),
             config: Some(vec![
                 CopyKey::WithDefault({
-                    let mut map = HashMap::new();
+                    let map = DashMap::new();
                     map.insert("env".into(), json!("prod"));
                     map
                 }),
             ]),
             state: Some(vec![
                 CopyKey::WithDefault({
-                    let mut map = HashMap::new();
+                    let map = DashMap::new();
                     map.insert("done".into(), json!("yes"));
                     map
                 }),
@@ -439,9 +481,9 @@ mod tests {
 
         let payload = json!({ "a": "from_payload", "b": "from_payload_b" });
         let config = [("env".into(), "from_config".into())].iter().cloned().collect();
-        let state = [("done".into(), StateValue::String("from_state".into()))].iter().cloned().collect();
+        let state = vec![("done".into(), StateValue::String("from_state".into()))];
 
-        let output = mapper.apply(&payload, &config, &state);
+        let output = mapper.apply(&payload, &config, state);
         assert_eq!(output["a"], "from_payload");
         assert_eq!(output["b"], "from_payload_b");
         assert_eq!(output["env"], "from_config");
@@ -450,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_rename_mapper() {
-        let mut mapping = HashMap::new();
+        let mapping = DashMap::new();
         mapping.insert("x".into(), SourceField::Payload {
             key: "a".into(),
             default: Some(json!("default_val")),
@@ -468,9 +510,9 @@ mod tests {
 
         let payload = json!({ "a": "payload_val" });
         let config = [("b".into(), "config_val".into())].iter().cloned().collect();
-        let state = [("c".into(), StateValue::String("state_val".into()))].iter().cloned().collect();
+        let state = vec![("c".into(), StateValue::String("state_val".into()))];
 
-        let output = mapper.apply(&payload, &config, &state);
+        let output = mapper.apply(&payload, &config, state);
         assert_eq!(output["x"], "payload_val");
         assert_eq!(output["y"], "config_val");
         assert_eq!(output["z"], "state_val");
@@ -484,9 +526,9 @@ mod tests {
 
         let payload = json!({ "name": "Alice" });
         let config = [("env".into(), "prod".into())].iter().cloned().collect();
-        let state = [("token".into(), StateValue::String("xyz123".into()))].iter().cloned().collect();
+        let state = vec![("token".into(), StateValue::String("xyz123".into()))];
 
-        let output = mapper.apply(&payload, &config, &state);
+        let output = mapper.apply(&payload, &config, state);
         assert_eq!(
             output["result"],
             "Hello Alice, config says prod and state token is xyz123."
@@ -500,10 +542,10 @@ mod tests {
         };
 
         let output = json!({ "value": "42" });
-        let config = HashMap::new();
-        let state = HashMap::new();
+        let config = DashMap::new();
+        let state = vec![];
 
-        let result = mapper.apply_result(&output, &config, &state);
+        let result = mapper.apply_result(&output, &config, state);
         assert_eq!(result.payload["result"], "42");
         assert!(result.state_updates.is_empty());
         assert!(result.config_updates.is_empty());
@@ -520,14 +562,14 @@ mod tests {
         };
 
         let output = json!({ "msg": "Completed" });
-        let config = HashMap::new();
-        let state = HashMap::new();
+        let config = DashMap::new();
+        let state = vec![];
 
-        let result = mapper.apply_result(&output, &config, &state);
+        let result = mapper.apply_result(&output, &config, state);
 
         assert_eq!(result.payload["message"], "Completed");
-        assert_eq!(result.state_updates["done"], StateValue::String("true".into()));
-        assert_eq!(result.config_updates["step"], "post");
+        assert_eq!(result.state_updates.get("done").as_deref(), Some(&StateValue::String("true".into())));
+        assert_eq!(result.config_updates.get("step").as_deref(), Some(&"post".to_string()));
     }
 
     #[test]
@@ -539,10 +581,10 @@ mod tests {
         };
 
         let output = json!({ "data": "X" });
-        let config = HashMap::new();
-        let state = HashMap::new();
+        let config = DashMap::new();
+        let state = vec![];
 
-        let result = mapper.apply_result(&output, &config, &state);
+        let result = mapper.apply_result(&output, &config, state);
 
         assert_eq!(result.payload["info"], "X");
         assert!(result.state_updates.is_empty());
@@ -556,10 +598,10 @@ mod tests {
         };
 
         let output = json!({ "oops": "!!" });
-        let config = HashMap::new();
-        let state = HashMap::new();
+        let config = DashMap::new();
+        let state = vec![];
 
-        let result = mapper.apply_result(&output, &config, &state);
+        let result = mapper.apply_result(&output, &config, state);
 
         assert!(result.payload.get("error").is_some());
         assert!(result.state_updates.is_empty());
@@ -572,10 +614,10 @@ mod tests {
         };
 
         let output = json!({ "any": "value" });
-        let config = HashMap::new();
-        let state = HashMap::new();
+        let config = DashMap::new();
+        let state = vec![];
 
-        let result = mapper.apply_result(&output, &config, &state);
+        let result = mapper.apply_result(&output, &config, state);
 
         assert!(result.payload.get("error").is_some());
     }
@@ -584,7 +626,6 @@ mod tests {
     fn test_script_mapper_extract_temperature() {
         use crate::mapper::{Mapper, ScriptMapper};
         use serde_json::json;
-        use std::collections::HashMap;
 
         let input_json = serde_json::from_str::<serde_json::Value>(r#"
         [
@@ -638,7 +679,7 @@ mod tests {
         let mapper = ScriptMapper { template: script.into() };
         let mapper = Mapper::Script(mapper);
 
-        let result = mapper.apply_result(&input_json, &HashMap::new(), &HashMap::new());
+        let result = mapper.apply_result(&input_json, &DashMap::new(), vec![]);
 
         assert_eq!(
             result.payload["temperature"],

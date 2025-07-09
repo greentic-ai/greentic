@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Get the CloudWatch Metric Export configuration for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_cloud_watch_metric_export_info`]",
+      "properties": {
+        "cluster_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cluster_id"
+      ],
+      "title": "CockroachCloudGetCloudWatchMetricExportInfoParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_cloud_watch_metric_export_info",
+  "type": "object"
+}

@@ -4,16 +4,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     id: String,
-    session_id: Option<String>,
+    session_id: String,
     payload: Value,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     metadata: HashMap<String, String>,
 }
 
 impl Message {
-    pub fn new(id: &str, payload: Value, session_id: Option<String>) -> Self {
+    pub fn new(id: &str, payload: Value, session_id: String) -> Self {
         Self {
             id: id.to_string(),
             session_id,
@@ -25,7 +26,7 @@ impl Message {
     pub fn new_uuid(id: &str, payload: Value, ) -> Self {
         Self {
             id: id.to_string(),
-            session_id: Some(Uuid::new_v4().to_string()),
+            session_id: Uuid::new_v4().to_string(),
             payload,
             metadata: HashMap::new(),
         }
@@ -37,7 +38,7 @@ impl Message {
 
         Self {
             id: uuid::Uuid::new_v4().to_string(), // Requires the `uuid` crate
-            session_id: None,
+            session_id: uuid::Uuid::new_v4().to_string(),
             payload: json!({ "error": error }),
             metadata,
         }
@@ -47,11 +48,11 @@ impl Message {
         self.id.clone()
     }
 
-    pub fn session_id(&self) -> Option<String> {
+    pub fn session_id(&self) -> String {
         self.session_id.clone()
     }
 
-    pub fn set_session_id(&mut self, session: Option<String>) {
+    pub fn set_session_id(&mut self, session: String) {
         self.session_id = session;
     }
 
@@ -79,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_message_creation() {
-        let msg = Message::new("abc123", json!({"key": "value"}),None);
+        let msg = Message::new("abc123", json!({"key": "value"}),"123".to_string());
         assert_eq!(msg.id(), "abc123");
         assert_eq!(msg.payload(), json!({"key": "value"}));
         assert!(msg.metadata.is_empty());
@@ -87,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_add_and_get_metadata() {
-        let mut msg = Message::new("id", json!(null),None);
+        let mut msg = Message::new("id", json!(null),"123".to_string());
         msg.add("foo".to_string(), "bar".to_string());
 
         assert_eq!(msg.get("foo"), Some(&"bar".to_string()));
@@ -96,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_remove_metadata() {
-        let mut msg = Message::new("id", json!(null),None);
+        let mut msg = Message::new("id", json!(null),"123".to_string());
         msg.add("to_remove".to_string(), "bye".to_string());
 
         assert!(msg.get("to_remove").is_some());
@@ -106,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_metadata_overwrite() {
-        let mut msg = Message::new("id", json!(null),None);
+        let mut msg = Message::new("id", json!(null),"123".to_string());
         msg.add("key".to_string(), "first".to_string());
         msg.add("key".to_string(), "second".to_string());
 

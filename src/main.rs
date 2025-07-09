@@ -1,8 +1,9 @@
+use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
-    apps::{cmd_init, App}, config::{ConfigManager, EnvConfigManager}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
+    apps::{cmd_init, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
 };
-use std::{fs, path::{Path, PathBuf}, process};
+use std::{env, fs, path::PathBuf, process};
 use tracing::{error, info};
 use anyhow::bail;
 
@@ -17,18 +18,8 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Args, Debug)]
-pub struct RootArg {
-    /// where to look for flows, plugins, etc.
-    #[arg(
-        value_name = "GREENTIC_DIR",
-        default_value = "./greentic",
-    )]
-    pub root: PathBuf,
-}
 
 #[derive(Subcommand, Debug)]
-#[command(subcommand = "run")]
 enum Commands {
     /// Run the runtime
     Run(RunArgs),
@@ -37,35 +28,39 @@ enum Commands {
     Schema(SchemaArgs),
 
     /// Initialize a fresh layout
-    Init(InitArgs),
+    Init,
+
+    /// Manage flows
+    Flow(FlowArgs),
 }
 
+#[derive(Args, Debug)]
+struct FlowArgs {
+    #[command(subcommand)]
+    command: FlowCommands,
+}
 
 #[derive(Args, Debug)]
 struct RunArgs {
-    #[command(flatten)]
-    root: RootArg,
-        
+    #[arg(long, default_value = "1800")]
+    session_timeout: u64,    
     /// Optional log level override (e.g. error, warn, info, debug, trace)
     #[arg(long, default_value = "info")]
     log_level: String,
 
     /// OpenTelemetry endpoint (e.g. http://localhost:4317)
     #[arg(long)]
-    otel_logs_endpoint: String,
+    otel_logs_endpoint: Option<String>,
 
     /// OpenTelemetry endpoint (e.g. http://localhost:4317)
     #[arg(long)]
-    otel_events_endpoint: String,
+    otel_events_endpoint: Option<String>,
 }
 
     /// Emit JSON‐Schema for flows, tools and channels into `<root>/schemas`
 
 #[derive(Args, Debug)]
 struct SchemaArgs {
-    #[command(flatten)]
-    root: RootArg,
-
     /// Optional log level override for the internal tracer
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -75,35 +70,60 @@ struct SchemaArgs {
     logs_enabled: bool,
 }
 
-#[derive(Args, Debug)]
-struct InitArgs {
-    #[command(flatten)]
-    root: RootArg,
+
+#[derive(Subcommand, Debug)]
+enum FlowCommands {
+    Validate { file: PathBuf },
+    Deploy { file: PathBuf },
+    Start { name: String },
+    Stop { name: String },
 }
 
-#[tokio::main]
+/// Resolve the greentic root directory from the environment or use default.
+pub fn resolve_root_dir() -> PathBuf {
+    if let Ok(path) = env::var("GREENTIC_ROOT") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("./greentic")
+    }
+}
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
+    // config & secrets
+    let root = resolve_root_dir();
+    let config_dir   = root.join("config");
+    let secrets_dir  = root.join("secrets");   
+    let env_file = config_dir.join(".env");
+    let config_manager = ConfigManager(EnvConfigManager::new(env_file.clone()));
+    let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(secrets_dir.clone())));
+
     let cli = Cli::parse(); 
-    match cli.command {
-        Some(Commands::Run(args)) => {
-            let root = args.root.root;
+    match cli.command.unwrap_or(Commands::Run(RunArgs {
+        session_timeout: 1800,
+        log_level: "info".to_string(),
+        otel_logs_endpoint: None,
+        otel_events_endpoint: None,
+        }))  {
+        Commands::Run(args) => {
             run(root,
+                args.session_timeout,
                 args.log_level,
-                Some(args.otel_logs_endpoint),
-                Some(args.otel_events_endpoint),
+                args.otel_logs_endpoint,
+                args.otel_events_endpoint,
+                secrets_manager,
+                config_manager,
             ).await?;
             Ok(())
         }
-        Some(Commands::Schema(args)) => {
-            let root = args.root.root;
+        Commands::Schema(args) => {
             let out_dir = root.join("schemas");
             let log_level     = args.log_level;
             let log_file      = "logs/greentic-schema.log".to_string();
             let event_file      = "logs/greentic-schema.json".to_string();
             let tools_dir    = root.join("plugins").join("tools");
             let _processes_dir= root.join("plugins").join("processes");
-            let _agents_dir   = root.join("plugins").join("agents");     
-
+            
             fs::create_dir_all(&out_dir)?;
             write_schema(
                 out_dir.clone(),
@@ -117,37 +137,80 @@ async fn main() -> anyhow::Result<()> {
             println!("Schemas written to {}", out_dir.display());
             process::exit(0);
         }
-        Some(Commands::Init(args)) => {
-            let root = args.root.root;
+        Commands::Init => {
             cmd_init(root.clone()).await?;
             println!("Initialized greentic layout at {}", root.display());
             process::exit(0);
         }
-        None => {
-            run(Path::new("./greentic").to_path_buf(), 
-                "info".to_string(),
-                None,
-                None,
-            ).await?;
-            Ok(())
+        Commands::Flow(flow_args) => match flow_args.command {
+            FlowCommands::Validate { file } => {
+                let log_level     = "info".to_string();
+                let log_file      = "logs/greentic-validation.log".to_string();
+                let event_file      = "logs/greentic-validation.json".to_string();
+                let tools_dir    = root.join("plugins").join("tools");
+                validate_flow_file(
+                    file, 
+                    root, 
+                    tools_dir, 
+                    log_level, 
+                    log_file, 
+                    event_file,
+                    secrets_manager,
+                    config_manager,
+                ).await?;
+                println!("✅ Flow file is valid.");
+                Ok(())
+            },
+            FlowCommands::Deploy { file } => {
+                let log_level     = "info".to_string();
+                let log_file      = "logs/greentic-validation.log".to_string();
+                let event_file      = "logs/greentic-validation.json".to_string();
+                let tools_dir    = root.join("plugins").join("tools");
+                deploy_flow_file(
+                    file, 
+                    root,
+                    tools_dir,
+                    log_level,
+                    log_file,
+                    event_file,
+                    secrets_manager,
+                    config_manager,
+                ).await?;
+                Ok(())
+            },
+            FlowCommands::Start { name } => {
+                let from = root.join("flows/stopped");
+                let to = root.join("flows/running");
+                move_flow_file(&name, &from, &to)?;
+                println!("✅ Flow `{}` started. Please make sure greentic is running, i.e. greentic run", name);
+                Ok(())
+            },
+            FlowCommands::Stop { name } => {
+                let from = root.join("flows/running");
+                let to = root.join("flows/stopped");
+                move_flow_file(&name, &from, &to)?;
+                println!("✅ Flow `{}` stopped.", name);
+                Ok(())
+            },
         }
     }
 }
 
-async fn run(root: PathBuf, 
+async fn run(root: PathBuf,
+    session_timeout: u64, 
     log_level: String,
     otel_logs_endpoint: Option<String>,
     otel_events_endpoint: Option<String>,
+    secrets_manager: SecretsManager,
+    config_manager: ConfigManager,
 ) -> anyhow::Result<()> {
 
     let flows_dir    = root.join("flows/running");
-    let config_dir   = root.join("config");
-    let secrets_dir  = root.join("secrets");
     let log_file      = "logs/greentic_logs.log".to_string();
+    let log_dir= Some(root.join("logs").to_string_lossy().to_string());
     let event_file    = "logs/greentic_events.log".to_string();
     let tools_dir    = root.join("plugins").join("tools");
-    let _processes_dir= root.join("plugins").join("processes");
-    let _agents_dir   = root.join("plugins").join("agents");
+    let processes_dir= root.join("plugins").join("processes");
     let channels_dir = root.join("plugins").join("channels/running");       
     // tracing / logger
     let logger = init_tracing(
@@ -173,20 +236,21 @@ async fn run(root: PathBuf,
         bail!(err);
     }
 
-    // config & secrets
-    let env_file = config_dir.join(".env");
-    let config_mgr = ConfigManager(EnvConfigManager::new(env_file.clone()));
-    let secrets_mgr = SecretsManager(EnvSecretsManager::new(Some(secrets_dir.clone())));
 
     // bootstrap
     let mut app = App::new();
     let result = app.bootstrap(
+        session_timeout.clone(),
         flows_dir.clone(),
         channels_dir.clone(),
         tools_dir.clone(),
-        config_mgr,
+        processes_dir.clone(),
+        config_manager,
         logger,
-        secrets_mgr,
+        convert_level(log_level),
+        log_dir,
+        otel_logs_endpoint,
+        secrets_manager,
     )
     .await;
     if result.is_err()
@@ -195,16 +259,73 @@ async fn run(root: PathBuf,
             process::exit(1);
     };
 
+    println!(
+r#"
+                        @@@%@@@         @@@@@              @@@@@@@@@@@@@            
+                        @@*=+@@@@@@@@ @@%+=*@@        @@@@@%#****+**%@@@            
+                        @@@@@#*+===++#@@%=%+=@@     @@@@#*+++++++++#@@@              
+                        @@%*--===========++#=+%@@   @@@#*++**++++++++@@                
+            @@@@@      @%=================*@@@   @@%#++#%*+++++++++*@@                
+        @@@#*+*%@@@@@@@*#@+=====%%+=======#@@  @@#++%%*+++++++++++*@@                
+        @@*=*======+*+**##%#====#**#========%@ @@*+*%%*#####****++++%@@               
+        @@+=%**========*#====+*===============@@@@@#+%@%***++**##%%%%#@@               
+    @@*============*=#%====================%@  @@#*@%@#+++++++++*%@@@@@             
+    @@+=========================%#@@%======#@@  @%*@*+*@#++++++%@@                  
+    @@+==========================#%========#@@  @%*@*+++*@*+++%@@                   
+    @@*=========================%@*========#@@@@@*%%++++++*%+*@@                    
+        @@%+=====================#@@+=========%%+%@**@*++++++++%%@@                    
+        @@@@@@@@@@%#+=======+#%@@#==========*@*##+*%*+++#%@@@@@@@@                    
+            @@#=#@@@@%%@@@@@%%@@%=====*=====*@+====#*++%@@@      @@    @               
+            @@#==*@%#*++++*#@%*=====*%=====*+========+%*+%@@         @@@@              
+            @@%+===+*####*+=====+#@*=====================#@@     @@@%+%@              
+            @@@#++========+*%@%*========================+@@  @@%*===#@@             
+                @@@%@@@@@@@@%%+=============================@@  @@@+==#@@             
+                @@%+++++++++================================*@@@@%+=*@@@              
+                @@#===============================#+=========#@@*===@@@               
+                @@#=============================*%===========+@+==+@@                 
+                @%=========================%==*%============+@+=#@@                  
+                @%===*=====================%+=%#============+@%@@@                   
+                @@====%#======++==========+@++%*============#@@@                     
+                @@+====+%%#+==*#==========*@**%#============@@                       
+                @@*=====+*#@@@@%==========#@*+#@#==========#@@                       
+                @@*=====+++@@@@@==========@@@@@@@@%+=======%@                        
+                @@*======++#@@ @%=========*@@@  @@+========+@@                        
+                @@%+%+%#*=++%@ @@%##=#%+===%@@@ @@%##=%%+===%@                         
+            @@@@@%%%@#*%#%@@@@@%==%@+=#==*@@@@@@@#*%@**%**%@@@@@                      
+                @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                           
+                        G R E E N T I C   A I 🦕
+
+                        Fast | Secure | Extendable
+"#
+    );
+
+
     info!("Greentic runtime running; press Ctrl‐C to exit");
     println!("Greentic runtime running; press Ctrl‐C to exit");
 
     // wait for CTRL‐C
     tokio::signal::ctrl_c().await?;
+
     println!("\nShutting down…");
     info!("Greentic runtime shutting down");
 
     app.shutdown().await;
 
     println!("Goodbye!");
+
     process::exit(0);
+
+}
+
+fn convert_level(level: String) -> LogLevel {
+    match level.to_lowercase().as_str() {
+        "trace" => LogLevel::Trace,
+        "debug" => LogLevel::Debug,
+        "info"  => LogLevel::Info,
+        "warn"  => LogLevel::Warn,
+        "error" => LogLevel::Error,
+        "critical" => LogLevel::Critical,
+        _ => LogLevel::Info,
+    }
+
 }

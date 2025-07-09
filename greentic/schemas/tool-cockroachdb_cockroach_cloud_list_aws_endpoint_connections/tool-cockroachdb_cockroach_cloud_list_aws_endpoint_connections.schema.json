@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "List all AwsEndpointConnections for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_list_aws_endpoint_connections`]",
+      "properties": {
+        "cluster_id": {
+          "description": "cluster_id is the ID for the cluster.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cluster_id"
+      ],
+      "title": "CockroachCloudListAwsEndpointConnectionsParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_list_aws_endpoint_connections",
+  "type": "object"
+}

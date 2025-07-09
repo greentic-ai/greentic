@@ -1,13 +1,13 @@
 // src/schema.rs
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::Error;
 use schemars::schema_for;
 use serde_json::{json, Value};
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger}}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::Flow, logger::{FileTelemetry, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
+    channel::manager::ChannelManager, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
 };
 
 /// The entry point invoked by `main.rs` for `Commands::Schema`.
@@ -45,13 +45,13 @@ pub async fn write_schema(
     // 4) channel schemas
     let config = ConfigManager(MapConfigManager::new());
     
-    let host_logger = HostLogger::new();
-    let channel_mgr = ChannelManager::new( config, secrets, host_logger)
+    let store =InMemorySessionStore::new(10);
+    let channel_mgr = ChannelManager::new( config, secrets, store.clone(), LogConfig::default())
         .await
         .expect("Could not start channels");
     
     for wrapper in channel_mgr.channels().iter() {
-        let (name, schema) = wrapper.schema_json()?;
+        let (name, schema) = wrapper.wrapper().schema_json().await.expect("Could not get schema_json from wrapper");
         let filename = format!("channel-{}.schema.json", name.to_lowercase());
         fs::write(out_dir.join(filename), schema)?;
     }
@@ -74,6 +74,7 @@ fn write_tools_schema(executor: Arc<Executor>, out_dir: &PathBuf) -> anyhow::Res
         props.insert("parameters".to_string(), params_schema);
 
         // secrets subschema, if any
+        
         let mut required = Vec::new();
         let secret_keys = tool.secrets();
         if !secret_keys.is_empty() {
@@ -89,6 +90,16 @@ fn write_tools_schema(executor: Arc<Executor>, out_dir: &PathBuf) -> anyhow::Res
                     required.push(Value::String(sk.name.clone()));
                 }
             }
+            // de-duplicaet secrets
+            let mut seen = HashSet::new();
+            required.retain(|v| {
+                if let Value::String(s) = v {
+                    seen.insert(s.clone())
+                } else {
+                    true
+                }
+            });
+
             let mut sec_schema = serde_json::Map::new();
             sec_schema.insert("type".into(), json!("object"));
             sec_schema.insert("properties".into(), Value::Object(sec_props));

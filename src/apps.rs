@@ -2,29 +2,35 @@
 use std::{fs, io::Write, path::PathBuf, sync::Arc};
 use anyhow::{Context, Error};
 
+use channel_plugin::message::LogLevel;
 use tokio::task::JoinHandle;
 use tracing::error;
 
 use crate::{
-    channel::{manager::{ChannelManager, HostLogger, IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::FlowManager, logger::Logger, secret::SecretsManager, state::InMemoryState
+    channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
 };
 
 pub struct App
 {
+    watcher: Option<DirectoryWatcher>,
     tools_task: Option<JoinHandle<()>>,
     flow_task: Option<JoinHandle<()>>,
     channels_task: Option<JoinHandle<()>>,
     flow_manager: Option<Arc<FlowManager>>,
+    process_manager: Option<ProcessManager>,
     executor: Option<Arc<Executor>>,
     channel_manager: Option<Arc<ChannelManager>>,
 }
 
 impl App {
     pub fn new() -> Self {
-        Self{tools_task:None,
+        Self{
+            watcher: None,
+            tools_task:None,
             flow_task:None,
             channels_task:None,
             flow_manager: None,
+            process_manager: None,
             executor: None,
             channel_manager: None,
         }
@@ -36,15 +42,43 @@ impl App {
     /// Returns (flow_manager, channel_manager).
     pub async fn bootstrap(
         &mut self,
-        flows_dir:    PathBuf,
-        channels_dir: PathBuf,
-        tools_dir:    PathBuf,
-        config:       ConfigManager,
-        logger:       Logger,
-        secrets:      SecretsManager,
+        session_timeout: u64,
+        flows_dir:     PathBuf,
+        channels_dir:  PathBuf,
+        tools_dir:     PathBuf,
+        processes_dir: PathBuf,
+        config:        ConfigManager,
+        logger:        Logger,
+        log_level:     LogLevel,
+        log_dir:       Option<String>,
+        otel_endpoint: Option<String>,
+        secrets:       SecretsManager,
     ) -> Result<(),Error> {
         // 1) Flow manager & initial load + watcher
-        let store = InMemoryState::new();
+        let store = InMemorySessionStore::new(session_timeout);
+        // Process Manager
+        match ProcessManager::new(processes_dir)
+        {
+            Ok(mut pm) => {
+                match pm.watch_process_dir().await {
+                    Ok(watcher) => {
+                        self.process_manager = Some(pm.clone());
+                        self.watcher = Some(watcher)
+                    },
+                    Err(error) => {
+                        let werror = format!("Could not start up process manager because {:?}",error);
+                        error!(werror);
+                        return Err(error);
+                    },
+                }
+            },
+            Err(err) => {
+                let perror = format!("Could not start up process manager because {:?}",err);
+                error!(perror);
+                return Err(err);
+            },
+        }
+        let process_manager = Arc::new(self.process_manager.to_owned().unwrap());
 
         // executor
         self.executor = Some(Executor::new(secrets.clone(), logger.clone()));
@@ -63,16 +97,16 @@ impl App {
         });
 
         // Channel manager (internally starts its own PluginWatcher over channels_dir)
-        let host_logger = HostLogger::new();
-        let channel_manager = ChannelManager::new(config, secrets.clone(),host_logger).await?;
+        let log_config = LogConfig::new(log_level, log_dir, otel_endpoint);
+        let channel_manager = ChannelManager::new(config, secrets.clone(),store.clone(),log_config).await?;
         self.channel_manager = Some(channel_manager.clone());
-   
+
 
         // flow manager
-        let flow_mgr = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), secrets.clone());
+        let flow_mgr = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), process_manager.clone(), secrets.clone());
         self.flow_manager = Some(flow_mgr.clone());
 
-        // 1) Load all existing flows, then watch for changes:
+        // Load all existing flows, then watch for changes:
         flow_mgr
             .load_all_flows_from_dir(&flows_dir)
             .await
@@ -107,9 +141,8 @@ impl App {
         Ok(())
     }
 
-    pub async fn shutdown(&self){
-        self.channel_manager.clone().unwrap().shutdown_all(true, 2000);
-        self.flow_manager.clone().unwrap().shutdown_all().await;
+    pub async fn shutdown(&self){    
+        
         if let Some(handle) = self.flow_task.as_ref() {
             handle.abort();
         };
@@ -119,6 +152,8 @@ impl App {
         if let Some(handle) = self.channels_task.as_ref() {
             handle.abort();
         }
+        self.channel_manager.clone().unwrap().shutdown_all(true, 2000);
+        self.flow_manager.clone().unwrap().shutdown_all().await;
     }
 }
 /// Called when user runs `greentic init --root <dir>`
@@ -133,7 +168,6 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
         "greentic/plugins/tools",
         "greentic/plugins/channels/running",
         "greentic/plugins/channels/stopped",
-        "greentic/plugins/agents",
         "greentic/plugins/processes",
     ];
     for d in &dirs {

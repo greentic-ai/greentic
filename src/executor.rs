@@ -2,27 +2,29 @@ use std::fs;
 use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use async_trait::async_trait;
-use tokio::task::JoinHandle;
+use channel_plugin::message::LogLevel;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView,};
 use std::time::SystemTime;
 use anyhow::{bail, Context, Error, Result};
 use dashmap::DashMap;
 use exports::wasix::mcp::router::{CallToolResult, Tool, ToolError, Value as McpValue};
 use exports::wasix::mcp::secrets_list::SecretsDescription;
-use serde_json::Value;
+use serde_json::{json, Value};
 use wasi::logging::logging;
-use wasix::mcp::secrets_store::{Host, HostSecret, Secret, SecretValue, SecretsError, add_to_linker};
+use wasix::mcp::secrets_store::{Host, HostSecret, Secret, SecretValue, SecretsError, add_to_linker as secrets_linker};
 use wasmtime::{Engine, Store};
 use wasmtime::component::{Component, Linker, Resource};
 use wasmtime_wasi::{ResourceTable};
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
 use futures_util::FutureExt;
+use crate::executor::exports::wasix::mcp::router::{Annotations, Content, ResourceContents, Role};
+use crate::executor::wasix::mcp::secrets_store;
 use crate::secret::{EmptySecretsManager, SecretsManager};
-use crate::watcher::{watch_dir, WatchedType};
+use crate::watcher::{DirectoryWatcher, WatchedType};
 use std::fmt::Debug;
-use crate::logger::{LogLevel, Logger};
+use crate::logger::Logger;
 
 // Import the configuration type from your config module.
 
@@ -113,43 +115,180 @@ pub struct ToolInstance {
     pub tools_list: Vec<Tool>,
 }
 
+pub trait ToolExecutorTrait: Send + Sync + Debug  {
+    fn tools(&self) -> Arc<DashMap<String, Arc<ToolWrapper>>>;
+    fn secrets_manager(&self) -> SecretsManager;
+    fn logger(&self) -> Logger;
+    fn secrets(&self, name: String) -> Option<Vec<SecretsDescription>>;
+    fn call_tool(&self, name: String, action: String, input: Value) -> Result<CallToolResult, ToolError>;
+    fn clone_box(&self) -> Arc<dyn ToolExecutorTrait>;
+}
+
+
+
 
 /// The Executor loads and instantiates tools from the tools dir.
 #[derive(Clone, Debug)]//, Serialize, Deserialize)]
 pub struct Executor {
     /// Mapping from tool key (as defined in config.tools) to an instantiated ToolInstance.
-    tools: Arc<DashMap<String, Arc<ToolWrapper>>>,
-    secrets_manager: SecretsManager,
-    logger: Logger,
+
+    pub(crate) executor: Arc<dyn ToolExecutorTrait>,
 }
 
 impl Executor {
     pub fn new(secrets_manager: SecretsManager, logger: Logger) -> Arc<Self> {
+        let executor = ToolExecutor::new(secrets_manager,logger);
         Arc::new(Executor {
-            tools: Arc::new(DashMap::new()),
-            secrets_manager,
-            logger,
+            executor,
         })
     }
 
-    pub async fn watch_tool_dir(&self, tool_dir: PathBuf) -> Result<JoinHandle<()>,Error>  {
+    pub async fn watch_tool_dir(&self, tool_dir: PathBuf) -> Result<DirectoryWatcher,Error>  {
         let handler = ToolDirHandler {
-            tools: Arc::clone(&self.tools),
-            secrets: self.secrets_manager.clone(),
-            logging: self.logger.clone(),
+            tools: Arc::clone(&self.executor.tools()),
+            secrets: self.executor.secrets_manager().clone(),
+            logging: self.executor.logger().clone(),
         };
         // watch_dir will do exactly the same setup+loop+pattern-matching you already wrote for channels:
-        watch_dir(tool_dir, Arc::new(handler), &["wasm"], true).await
+        DirectoryWatcher::new(tool_dir, Arc::new(handler), &["wasm"], true).await
     }
 
 
     
     pub fn get_tool(&self, tool_name: String) -> Option<Arc<ToolWrapper>> {
-        self.tools.get(&tool_name).map(|entry| Arc::clone(entry.value()))
+        self.executor.tools().get(&tool_name).map(|entry| Arc::clone(entry.value()))
     }
 
+   
+
+    pub fn list_tool_keys(&self) -> Vec<String> {
+        self.executor.tools().iter().map(|entry| entry.key().clone()).collect()
+    }
+}
+
+/// Converts a CallToolResult in a Value and returns true if it is an error
+pub fn call_result_to_json(call_tool_result: CallToolResult) -> Value {
+    // map each Content into a Value
+    let items: Vec<Value> = call_tool_result.content.iter().map(|c| {
+        match c {
+            Content::Text(text) => {
+                let mut base = json!({ "text": text.text });
+                if let Some(ann) = &text.annotations {
+                    base["annotations"] = annotations_to_json(ann);
+                }
+                json!({ "text": base })
+            }
+            Content::Image(img) => {
+                let mut inner = json!({
+                    "data": img.data,
+                    "mime_type": img.mime_type,
+                });
+                if let Some(ann) = &img.annotations {
+                    inner["annotations"] = annotations_to_json(ann);
+                }
+                json!({ "image": inner })
+            }
+            Content::Embedded(embed) => {
+                // embed.resource_contents is a ResourceContents enum
+                let rc = match &embed.resource_contents {
+                    ResourceContents::Text(tc) => {
+                        let mut t = json!({
+                            "uri": tc.uri,
+                            "text": tc.text,
+                        });
+                        if let Some(m) = &tc.mime_type {
+                            t["mime_type"] = json!(m);
+                        }
+                        json!({ "text": t })
+                    }
+                    ResourceContents::Blob(bc) => {
+                        let mut b = json!({
+                            "uri": bc.uri,
+                            "blob": bc.blob,
+                        });
+                        if let Some(m) = &bc.mime_type {
+                            b["mime_type"] = json!(m);
+                        }
+                        json!({ "blob": b })
+                    }
+                };
+                let mut wrapper = json!({ "resource_contents": rc });
+                if let Some(ann) = &embed.annotations {
+                    wrapper["annotations"] = annotations_to_json(ann);
+                }
+                json!({ "embedded": wrapper })
+            }
+        }
+    }).collect();
+
+    let mut result = if items.len() == 1 {
+        // single item → inline
+        items.into_iter().next().unwrap()
+    } else {
+        // multiple → array
+        Value::Array(items)
+    };
+
+    // attach the error flag if any
+    if let Some(err) = call_tool_result.is_error {
+        let map= result.as_object_mut().unwrap();
+        map.insert("is_error".into(), json!(err));
+    }
+
+    result
+
+}
+
+pub fn role_to_json(r: &Role) -> Value {
+    match r {
+        Role::User => Value::String("user".to_string()),
+        Role::Assistant => Value::String("assistant".to_string()),
+    }
+}
+
+/// Convert an `Annotations` struct into a JSON object
+pub fn annotations_to_json(a: &Annotations) -> Value {
+    let mut m = serde_json::Map::new();
+
+    if let Some(aud) = &a.audience {
+        // turn Vec<Role> → [ "user", "assistant", … ]
+        let arr = aud.iter().map(role_to_json).collect();
+        m.insert("audience".into(), Value::Array(arr));
+    }
+
+    if let Some(p) = a.priority {
+        m.insert("priority".into(), json!(p));
+    }
+
+    if let Some(ts) = &a.timestamp {
+        // RFC3339 is a reasonable wire format for datetime
+         m.insert("timestamp".into(), serde_json::Value::String(ts.clone()));
+    }
+
+    Value::Object(m)
+}
+
+#[derive(Clone, Debug)]
+struct ToolExecutor{
+    tools: Arc<DashMap<String, Arc<ToolWrapper>>>,
+    secrets_manager: SecretsManager,
+    logger: Logger,
+}
+
+impl ToolExecutor {
+    pub fn new(secrets_manager: SecretsManager, logger: Logger) -> Arc<Self> {
+        Arc::new(ToolExecutor {
+            tools: Arc::new(DashMap::new()),
+            secrets_manager,
+            logger,
+        })
+    }
+}
+
+impl ToolExecutorTrait for ToolExecutor {
+
     #[tracing::instrument(name = "call_tool", skip(self))]
-    pub fn call_tool(&self, tool_name: String, tool_action: String, tool_args:  Value) -> Result<CallToolResult, ToolError> {
+    fn call_tool(&self, tool_name: String, tool_action: String, tool_args:  Value) -> Result<CallToolResult, ToolError> {
         let tool_key = format!("{}_{}", tool_name, tool_action);
         debug!("Tools loaded: {}",self.tools.len());
         match self.tools.get(&tool_key) 
@@ -184,7 +323,11 @@ impl Executor {
                         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
                             .context("Failed to add WASI to linker").unwrap();
                         wasmtime_wasi_http::add_only_http_to_linker_sync(&mut linker).expect("Could not add http to linker");
-                        add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
+                        secrets_linker(
+                            &mut linker,
+                            |state: &mut MyState| state,
+                        ).expect("Could not link secrets store");
+                        //add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
                         logging::add_to_linker(&mut linker, |state: &mut MyState| state).expect("Could not link logging");
                         // Instantiate the MCP component.
                         let router = McpSecrets::instantiate(&mut store, &component, &linker)
@@ -204,9 +347,30 @@ impl Executor {
         }
 
     }
-
-    pub fn list_tool_keys(&self) -> Vec<String> {
-        self.tools.iter().map(|entry| entry.key().clone()).collect()
+    
+    fn tools(&self) -> Arc<DashMap<String, Arc<ToolWrapper>>> {
+        self.tools.clone()
+    }
+    
+    fn secrets_manager(&self) -> SecretsManager {
+        self.secrets_manager.clone()
+    }
+    
+    fn logger(&self) -> Logger {
+        self.logger.clone()
+    }
+    
+    fn clone_box(&self) -> Arc<dyn ToolExecutorTrait> {
+        Arc::new(self.clone())
+    }
+    
+    fn secrets(&self, name: String) -> Option<Vec<SecretsDescription>> {
+        if let Some(tool) = self.tools.get(&name) {
+            Some(tool.secrets())
+        } else {
+            None
+        }
+        
     }
 }
 
@@ -223,10 +387,26 @@ impl WatchedType for ToolDirHandler {
     path.extension().and_then(|e| e.to_str()) == Some("wasm")
   }
 
-  async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
-    reload_with_retry(&path.to_path_buf(), Arc::clone(&self.tools), self.secrets.clone(), self.logging.clone()).await;
-    Ok(())
-  }
+    async fn on_create_or_modify(&self, path: &Path) -> Result<()> {
+        let now = std::time::Instant::now();
+        let tool_id = path.file_stem().unwrap().to_str().unwrap().to_string();
+        let instance = instantiate_tool(self.secrets.clone(), self.logging.clone(), &tool_id, path.to_path_buf())?;
+        for tool in &instance.tools_list {
+            let name = format!("{}_{}", instance.tool_id, tool.name);
+            let schema: Value = match serde_json::from_str(&tool.input_schema.json) {
+                Ok(input) => input,
+                Err(_) => {
+                    let error = format!("Please check tool {} inside {:?} because its input schema is not a valid json.",tool.name,path);
+                    error!(error);
+                    json!({})
+                },
+            };
+            let wrapper = ToolWrapper::new(instance.clone(), tool.name.clone(), tool.description.clone(), instance.secrets_list.clone(), schema);
+            self.tools.insert(name, Arc::new(wrapper));
+        }
+        info!("Loaded tools in {:?}",(std::time::Instant::now()-now));
+        Ok(())
+    }
 
   async fn on_remove(&self, path: &Path) -> anyhow::Result<()> {
     if let Some(tool_id) = path.file_stem().and_then(|s| s.to_str()) {
@@ -235,45 +415,6 @@ impl WatchedType for ToolDirHandler {
     Ok(())
   }
 }
-
- #[tracing::instrument(name = "load_tool", skip(tools_map, secrets_manager,logging))]
-async fn reload_tool_from_path(
-    tools_map: &Arc<DashMap<String, Arc<ToolWrapper>>>,
-    secrets_manager: SecretsManager,
-    logging: Logger,
-    path: PathBuf
-) -> Result<()> {
-    wait_until_file_is_stable(&path, Duration::from_millis(300), Duration::from_secs(5)).await?;
-    // Extract tool ID from filename
-    let tool_id = path.file_stem().unwrap().to_str().unwrap().to_string();
-    let instance = instantiate_tool(secrets_manager.clone(), logging.clone(), &tool_id, path.clone())?;
-    for tool in &instance.tools_list {
-        let name = format!("{}_{}", instance.tool_id, tool.name);
-        let params: Value = serde_json::from_str(&tool.input_schema.json)?;
-        let wrapper = ToolWrapper::new(instance.clone(), tool.name.clone(), tool.description.clone(), instance.secrets_list.clone(), params);
-        tools_map.insert(name, Arc::new(wrapper));
-    }
-    Ok(())
-}
-
-async fn reload_with_retry(path: &PathBuf, tools_ref: Arc<DashMap<String, Arc<ToolWrapper>>>, secrets: SecretsManager, logging: Logger) {
-    const MAX_RETRIES: usize = 10;
-
-    for attempt in 0..MAX_RETRIES {
-        match reload_tool_from_path(&tools_ref, secrets.clone(), logging.clone(), path.clone()).await {
-            Ok(_) => return,
-            Err(e) => {
-                if attempt == MAX_RETRIES - 1 {
-                    tracing::error!("Failed to load {:?} after retries: {:?}", path, e);
-                } else {
-                    tracing::warn!("Retrying load for {:?} (attempt {}): {:?}", path, attempt + 1, e);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    }
-}
-
 
 #[derive(Clone, Debug,)]//, Serialize, Deserialize)]
 pub struct ToolWrapper{
@@ -353,7 +494,7 @@ fn instantiate_tool(secrets_manager: SecretsManager, logging: Logger, wasm_file:
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
         .context("Failed to add WASI to linker")?;
     wasmtime_wasi_http::add_only_http_to_linker_sync(&mut linker).expect("Could not add http to linker");
-    add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
+    secrets_store::add_to_linker(&mut linker,  |state: &mut MyState| state).expect("Could not link secrets store");
     logging::add_to_linker(&mut linker, |state: &mut MyState| state).expect("Could not link logging");
 
     // Instantiate the MCP component.
@@ -402,7 +543,9 @@ pub async fn wait_until_file_is_stable(path: &Path, stable_for: Duration, timeou
                     last_mtime = mtime;
                 }
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                return Err(e);
+            },
         }
 
         sleep(interval).await;
@@ -413,16 +556,103 @@ pub async fn wait_until_file_is_stable(path: &Path, stable_for: Duration, timeou
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use tokio::time::timeout;
 
     use super::*;
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
-    use crate::executor::exports::wasix::mcp::router;
+    use crate::executor::exports::wasix::mcp::router::{self, Content, TextContent};
     use crate::logger::OpenTelemetryLogger;
     use crate::secret::{EmptySecretsManager, EnvSecretsManager};
+
+
+    impl Executor {
+        pub fn dummy() -> Arc<Self>{
+            let result = CallToolResult{
+                 content: vec![],
+                 is_error: Some(false),
+            };
+            let executor = MockToolExecutor::new(Ok(result));
+            Arc::new(Self{executor: Arc::new(executor)})
+        }
+        pub fn mock(result: Result<CallToolResult, ToolError>) -> Self {
+            let executor = MockToolExecutor::new(result);
+            Self {
+                executor: Arc::new(executor),
+            }
+        }
+
+        pub fn with_success_json(json: Value) -> Self {
+            let result = CallToolResult {
+                content: vec![Content::Text(TextContent {text:json.to_string(), 
+                    annotations: None })],
+                is_error: Some(false),
+            };
+            Self::mock(Ok(result))
+        }
+
+        pub fn with_error(msg: &str) -> Self {
+            let error = Err(ToolError::ExecutionError(msg.to_string()));
+            Self::mock(error)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockToolExecutor{
+        result: Result<CallToolResult, ToolError>
+    }
+
+    impl MockToolExecutor{
+        pub fn new(result: Result<CallToolResult, ToolError>) -> Self {
+            Self {result}    
+        }
+    }
+
+    impl ToolExecutorTrait for MockToolExecutor {
+
+
+        fn call_tool(&self, _name: String, _action: String, _input: Value) -> Result<CallToolResult, ToolError> {
+            self.result.clone()
+        }
+        
+        fn tools(&self) -> Arc<dashmap::DashMap<String, Arc<crate::executor::ToolWrapper>>> {
+            Arc::new(DashMap::new())
+        }
+        
+        fn secrets_manager(&self) -> SecretsManager {
+            SecretsManager(EmptySecretsManager::new())
+        }
+        
+        fn logger(&self) -> Logger {
+            Logger(Box::new(OpenTelemetryLogger::new()))
+        }
+        
+        fn clone_box(&self) -> Arc<dyn ToolExecutorTrait> {
+            Arc::new(self.clone())
+        }
+        
+        fn secrets(&self, _name: String) -> Option<Vec<SecretsDescription>> {
+            None
+        }
+    }
+
+    async fn wait_for_tool<F>(mut check: F, timeout_ms: u64) -> bool
+    where
+        F: FnMut() -> bool,
+    {
+        let now = std::time::Instant::now();
+        let deadline = now + std::time::Duration::from_millis(timeout_ms);
+        while std::time::Instant::now() < deadline {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_dynamic_tool_watcher_load_and_remove() {
@@ -439,54 +669,55 @@ mod tests {
 
         // Spawn the watcher in the background
         let executor_clone = Arc::clone(&executor);
+        let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move {
             executor_clone.watch_tool_dir(tool_dir.clone()).await.expect("could not start watcher");
+            let _ = ready_tx.send(()).await;
         });
-
-        // Wait briefly to ensure the watcher is running
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Wait until the watcher is confirmed started
+        let _ = ready_rx.recv().await;
 
         // copy the weather wasm
         let weather_wasm = Path::new("./tests/wasm/tools_call/weather_api.wasm");
-        fs::copy(weather_wasm, test_wasm.clone()).expect("could not copy weather wasm");           
+        fs::copy(weather_wasm, test_wasm.clone()).expect("could not copy weather wasm");         
 
         // Wait for the watcher to find the file. Watcher has been configured for 2 seconds
-        tokio::time::sleep(Duration::from_millis(3000)).await;
-
-        // At least one tool should now be loaded
-        let keys = executor.list_tool_keys();
-        for key in keys.clone() {
-            print!("{} ",key);
-        }
-        assert!(keys.iter().any(|k| k.starts_with("weather_api_forecast_weather")), "Expected tool not loaded");
+        let loaded = wait_for_tool(|| {
+            executor.list_tool_keys()
+                    .iter()
+                    .any(|k| k.starts_with("weather_api_forecast_weather"))
+        }, 12000).await;
+        assert!(loaded, "Expected tool not loaded after 12s");
 
         // Remove the file
         try_remove_file_until_gone(&test_wasm, 20);
         assert!(wait_until_removed(&test_wasm, 5000).await, "WASM file was not removed in time");
 
         // needed for the executor to notice the file is gone and to update the tools list
-        tokio::time::sleep(Duration::from_millis(2000)).await;
-
-        let tool_keys = executor.list_tool_keys();
-        assert!(tool_keys.iter().all(|k| !k.starts_with("weather_api_forecast_weather")), "Tool was not removed");
+        let removed = wait_for_tool(|| {
+        !executor.list_tool_keys()
+                 .iter()
+                 .any(|k| k.starts_with("weather_api_forecast_weather"))
+        }, 8000).await;
+        assert!(removed, "Tool was not removed from executor in time");
         
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_call_weather_tool() {
 
-        let test_wasm = Path::new("./tests/wasm/tools_call/weather_api.wasm");
+        let test_wasm = Path::new("./tests/wasm/tools_call");
         assert!(test_wasm.exists(), "WASM file should exist before running this test");
 
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(PathBuf::from("./greentic/secrets"))));
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets_manager, logging);
 
-        reload_tool_from_path(&executor.tools, executor.secrets_manager.clone(), executor.logger.clone(), test_wasm.to_path_buf()).await.expect("should load tool");
-
+        // Start watching the directory
+        let watcher = executor.watch_tool_dir(test_wasm.to_path_buf()).await.expect("watcher should start");
         let input = serde_json::json!({ "q": "London", "days": 1,  });
-       let result = 
-            executor.call_tool("weather_api".into(), "forecast_weather".into(), input);
+        let result = 
+                executor.executor.call_tool("weather_api".into(), "forecast_weather".into(), input);
         match result {
             Ok(CallToolResult { content, is_error }) => {
                 if is_error == Some(true) {
@@ -501,6 +732,7 @@ mod tests {
             },
             Err(e) => panic!("Call failed: {:?}", e),
         }
+        watcher.shutdown();
     }
 
 

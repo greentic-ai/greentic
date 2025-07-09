@@ -1,0 +1,24 @@
+[package]
+name = "channel_tester"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+channel_plugin = { version = "0.2.0", path = "../channel_plugin" }
+anyhow = "1.0.98"
+serde_json = "1.0.140"
+tracing = "0.1.41"
+async-trait = "0.1.88"
+tokio = { version = "1.45.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time", "fs", "io-util"] }
+serde_yaml_bw = "2.0.0"
+notify = "8.0.0"
+serde = "1.0.219"
+chrono = "0.4.41"
+uuid = { version = "1.17.0", features = ["v4"] }
+dashmap = "6.1.0"
+crossbeam = "0.8.4"
+once_cell = "1.21.3"
+futures = "0.3.31"
+
+[dev-dependencies]
+tempfile = "3.20.0"

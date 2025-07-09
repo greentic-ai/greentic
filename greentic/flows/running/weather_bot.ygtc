@@ -1,0 +1,88 @@
+id: telegram.weather_with_ollama
+title: Telegram → Weather (with Ollama extraction)
+description: >
+  A Telegram flow that greets the user, uses Ollama to parse “location”+“days,” 
+  calls weather_api, and replies via a template.
+channels:
+  - telegram
+
+nodes:
+  # 1) Incoming Telegram node: listens for ANY message from Telegram.
+  telegram_in:
+    channel: telegram
+    in: true
+
+  # 2) QA node: ask location & days, fallback to OllamaAgent on parsing errors
+  ask_location_and_days:
+    qa:
+      # No separate welcome—first question is our “greeting + ask location”
+      welcome_template: "Hi there! Let's get your weather forecast."
+      questions:
+        - id: q_location
+          prompt: "👉 What location would you like a forecast for?"
+          answer_type: text
+          state_key: q
+          max_words: 3
+        - id: q_days
+          prompt: "👉 Over how many days? (enter a number)"
+          answer_type: number
+          state_key: days
+          max_words: 2
+          validate:
+            range:
+              min: 0.0
+              max: 7.0
+      fallback_agent:
+        type: ollama
+        model: llama3.2:1b
+        task: | 
+          Extract the location the user wants a weather forecast and if available the days.
+          Return the information in the format {'q': 'location', 'days': 3}. Example answer:
+          {'q': 'Thames Ditton', 'days': 5} 
+          When the user asked: "What is the weather in Thames Ditton for the next 5 days?" 
+          Location (q) is important. Default to 3 days if not specified. 
+          The next step is `forecast_weather` and set `payload` to a JSON object with `q` and `days`.
+      routing:
+        - to: forecast_weather
+
+  # 3) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
+  forecast_weather:
+    tool:
+      name: weather_api
+      action: forecast_weather
+    max_retries: 2
+    retry_delay_secs: 1
+
+  # 5) “weather_out_template”: format the weather API’s JSON into a friendly sentence.
+  weather_out_template:
+    template: |
+      🌤️ Weather forecast for {{payload.location.name}}:
+
+      {{#each payload.forecast.forecastday}}
+      📅 Day {{@indexPlusOne}} ({{this.date}}):
+      • High: {{this.day.maxtemp_c}}°C
+      • Low: {{this.day.mintemp_c}}°C
+      • Condition: {{this.day.condition.text}}
+      • Rain? {{#if (eq this.day.daily_will_it_rain 1)}}Yes{{else}}No{{/if}}
+
+      {{/each}}
+  # 6) “telegram_out”: send any payload back to Telegram.
+  telegram_out:
+    channel: telegram
+    out: true
+
+connections:
+  # Kick off QA on any incoming message
+  telegram_in:
+    - ask_location_and_days
+
+  # Once QA finishes, go call weather_api
+  ask_location_and_days:
+    - forecast_weather
+
+  # Then render & send back
+  forecast_weather:
+    - weather_out_template
+
+  weather_out_template:
+    - telegram_out

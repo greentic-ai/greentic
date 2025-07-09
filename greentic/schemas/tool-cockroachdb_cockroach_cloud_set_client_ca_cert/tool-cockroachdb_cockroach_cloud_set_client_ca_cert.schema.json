@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Set Client CA Cert for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_set_client_ca_cert`]",
+      "properties": {
+        "cluster_id": {
+          "type": "string"
+        },
+        "set_client_ca_cert_request": {
+          "$ref": "#/definitions/SetClientCaCertRequest"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "set_client_ca_cert_request"
+      ],
+      "title": "CockroachCloudSetClientCaCertParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_set_client_ca_cert",
+  "type": "object"
+}

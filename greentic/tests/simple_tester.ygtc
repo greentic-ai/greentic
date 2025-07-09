@@ -1,0 +1,21 @@
+id: simple-pass-through
+title: Simple “hello” pass-through
+description: >
+  Reads an incoming “hello” on the tester channel and immediately
+  emits it back out.
+
+channels:
+  - tester
+
+nodes:
+  tester_in:
+    channel: tester
+    in: true
+
+  tester_out:
+    channel: tester
+    out: true
+
+connections:
+  - from: tester_in
+    to: tester_out

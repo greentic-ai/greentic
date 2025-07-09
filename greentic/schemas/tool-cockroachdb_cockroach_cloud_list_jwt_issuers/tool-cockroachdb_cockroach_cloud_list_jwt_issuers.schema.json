@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "List all JWT Issuers",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_list_jwt_issuers`]",
+      "properties": {
+        "pagination_period_as_of_time": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_limit": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pagination_period_page": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_sort_order": {
+          "description": "- ASC: Sort in ascending order. This is the default unless otherwise specified.  - DESC: Sort in descending order.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "CockroachCloudListJwtIssuersParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_list_jwt_issuers",
+  "type": "object"
+}

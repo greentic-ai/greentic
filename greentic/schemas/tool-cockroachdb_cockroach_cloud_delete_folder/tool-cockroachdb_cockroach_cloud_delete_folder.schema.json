@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Delete a folder",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_delete_folder`]",
+      "properties": {
+        "folder_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "folder_id"
+      ],
+      "title": "CockroachCloudDeleteFolderParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_delete_folder",
+  "type": "object"
+}
