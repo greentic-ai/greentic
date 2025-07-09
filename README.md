@@ -6,7 +6,7 @@ Now with: **intelligent agents** and **processes**!
 
 ---
 
-Greentic.ai is currently at v0.2.0. You will have to create your own flows, plugins, tools,... however a basic store with some free flows, plugins and tools is available. You can use tools that connect to APIs which use no authentication or API keys. oAuth will be supported in v0.3.0. You will have to run Greentic.ai from your local computer. Deploying onto the Cloud is coming in v0.4.0. The [vision for v1.0.0](./docs/VISION.md) however foresee a world where you just ask via WhatsApp, Teams, Slack, Telegram,... for a digital worker to be generated and automatically Greentic.ai will create it for you based on a simple request. Also learn how Greentic.ai is able to generate revenues for partners. 
+Greentic.ai is currently at v0.2.0. You will have to create your own flows, plugins, tools,... however a basic store with some free flows, plugins and tools is available. You can use tools that connect to APIs which use no authentication or API keys. oAuth will be supported in v0.3.0. You will have to run Greentic.ai from your local computer. Deploying onto the Cloud is coming in v0.4.0. The [vision for v1.0.0](./docs/VISION.md) however foresees a world where you just ask via WhatsApp, Teams, Slack, Telegram,... for a digital worker to be generated and automatically Greentic.ai will create it for you based on a simple request. Also learn how Greentic.ai is able to generate revenues for partners. 
 
 ---
 
