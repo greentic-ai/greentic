@@ -4,7 +4,7 @@
 <td><h1>Greentic.AI 🚀</h1><br><strong>Build armies of digital workers:</strong>fast, secure, and extendable. Automate anything using Wasm tools, channels, agents, and flows.</td>
 </tr>
 </table>
-Now with: **intelligent** **agents** and **processes**!
+Now with: <strong>intelligent agents</strong> and <stromg>processes</strong>!
 
 ---
 
