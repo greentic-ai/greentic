@@ -2,7 +2,7 @@
 name = "greentic"
 version = "0.2.0"
 authors = ["maarten <maarten@greentic.com>"]
-description = "The fastest, most secure and extendable agentic platform"
+description = "The fastest, most secure and extendable digital workforce platform"
 license = "MIT"
 repository = "https://github.com/greentic-ai/greentic"
 edition = "2024"
