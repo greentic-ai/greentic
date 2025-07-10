@@ -88,7 +88,10 @@ Flows link these components into one cohesive automation. Your digital workers a
 ### Agents
 
 - **Agents** are LLM-powered nodes capable of autonomous decision-making.
-- Agents understand context, use memory, trigger tools, and follow goals.
+- The first type of agent is oLlama. More types coming soon.
+- Coming Soon: Agents understand context, use memory, trigger tools, and follow goals.
+
+👉 [Learn more about Agents](./docs/AGENTS.md)
 
 ---
 
