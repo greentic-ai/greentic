@@ -37,11 +37,10 @@ nodes:
         model: llama3.2:1b
         task: | 
           Extract the location the user wants a weather forecast and if available the days.
-          Return the information in the format {'q': 'location', 'days': 3}. Example answer:
-          {'q': 'Thames Ditton', 'days': 5} 
+          The location is added to state as 'q' and the days as 'days'. 
           When the user asked: "What is the weather in Thames Ditton for the next 5 days?" 
-          Location (q) is important. Default to 3 days if not specified. 
-          The next step is `forecast_weather` and set `payload` to a JSON object with `q` and `days`.
+          Location ('q') would be 'Thames Ditton' and 'days' would be '5'. 
+          Default to 3 days if not specified. 
       routing:
         - to: forecast_weather
 

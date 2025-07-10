@@ -1,16 +1,16 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
+use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::models::ModelOptions;
 use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
 use ollama_rs::Ollama;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use tracing::{error, info, warn};
 use url::Url;
-
-use crate::executor::call_result_to_json;
 use crate::flow::state::StateValue;
 use crate::node::Routing;
 use crate::{
@@ -29,9 +29,12 @@ use crate::{
 pub struct OllamaAgent {
     pub task: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
-   #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OllamaMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_url: Option<url::Url>,
@@ -39,8 +42,12 @@ pub struct OllamaAgent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_options: Option<ollama_rs::models::ModelOptions>,
 
+    /// If no tools are included then tool calling will not be possible
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_names: Option<Vec<String>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_payload: Option<bool>,
 
     /// Map of `tool.name -> ToolNode` for any external tool calls (`ToolCall` variant).
     /// This field is not serialized in JSON nor included in the schema.
@@ -52,12 +59,42 @@ pub struct OllamaAgent {
 impl PartialEq for OllamaAgent {
     fn eq(&self, other: &Self) -> bool {
         self.task == other.task &&
+        self.system_prompt == other.system_prompt &&
         self.model == other.model &&
         self.mode == other.mode &&
         self.ollama_url == other.ollama_url &&
+        self.use_payload == other.use_payload &&
         self.tool_names == other.tool_names
         // tool_nodes and model_config are intentionally skipped from equality check
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum AgentReply {
+    Success {
+        payload: JsonValue,
+        #[serde(default)]
+        state_add: Option<Vec<StateKeyValue>>,
+        state_update: Option<Vec<StateKeyValue>>,
+        state_delete: Option<Vec<String>>,
+        connections: Vec<String>,
+    },
+    NeedMoreInfo {
+        payload: FollowUpPayload,
+    },
+}
+
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StateKeyValue {
+    pub key: String,
+    pub value: JsonValue,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FollowUpPayload {
+    pub text: String,
 }
 
 #[async_trait]
@@ -92,67 +129,34 @@ impl NodeType for OllamaAgent {
             OllamaMode::Embed => return self.do_embed(client, &input).await,
             OllamaMode::Generate => return self.do_generate(client, &input).await,
             OllamaMode::Chat => {
-                    
-                // 2) prepare the conversation
-                let system_prompt = r#"You are part of an agentic flow.
-                Your job is to complete the given `task` using information from:
-                - `payload`: the latest message or data
-                - `state`: key/value memory of the session
-                - `connections`: valid next nodes
-                - `tools`: tools you can optionally call
-                The task is often to extract information from a user request so a tool can be called,
-                state memory can be updated, a connection can be called,... So being precise and following the rules 
-                is important.
-
-                You must always respond with a **JSON object** using this fixed structure:
-                {
-                "payload": {...},  // Required. If you can solve the task, include the extracted fields as per task (e.g., valid json object: { "q": ..., "days": ...} ). If not, ask follow-up as { "text": "..." }
-                "state": { // Only include if the task wants the state to be added, updated or deleted. Otherwise omit entirely.
-                    "add":    [{ "key": ..., "value": ... }], // only include if a new key and value need to be added
-                    "update": [{ "key": ..., "value": ... }], // only include if an existing key has a new value
-                    "delete": [ "key1", "key2" ] // only include if keys need to be removed
-                },
-                "tool_call": {...} // Only include if the task explicitly requires calling a tool with name + action + optional parameter, othrwise omit entirely. 
-                    "name": "tool_name", // only include if a tool name is specified
-                    "action": "method", // only include if a tool action is specified
-                    "input": {...} // only include if a tool input is requested
-                },
-                "connections": ["node_a", "node_b"], // You will be given a list of valid connections. If the task specifies a specific connection, include that one, otherwise include all. 
-                "reply_to_origin": false          // true only if cannot resolve the task and want the user to clarify and payload has a follow-up question
-                }
-                
-                ### Rules:
-
-                - Only include fields relevant to this step (omit empty ones).
-                - You MUST return a valid Json, otherwise your work is useless.
-                - You MUST include `"payload"`:
-                - If task is **resolved**, use it to pass extracted/derived data forward. Add as valid json.
-                - If task is **not resolved**, ask a follow-up in the form:
-                    ```json
-                    { "text": "clarifying question for the user" }
-                    ```
-                - `"state"` is ommitted unless the task include keys to add/update/delete (if required by the task).
-                - `"tool_call"` is ommitted unless the task needs a tool (as described in the task).
-                - `"connections"` should reflect the logical next step(s) in the flow (may be defined in task) Only use connections that are in the 'connections' list.
-                - `"reply_to_origin"` must be:
-                - `false` if you resolved the task.
-                - `true` if you still need user input.
-
-                Do not include explanations or commentary. Only return a valid JSON object.
-                "#;
 
                 let task       = &self.task;
                 let payload    = input.payload();
                 let state_json = json!(context.get_all_state());
                 let conns      = context.connections().unwrap_or_default();
-                let tools      = self
-                    .tool_names
-                    .clone()
-                    .unwrap_or_default();
+                //let tools      = self
+                //    .tool_names
+                //    .clone()
+                //    .unwrap_or_default();
 
+                let system_prompt = match  &self.system_prompt {
+                    Some(prompt) => prompt,
+                    None => {
+                        &format!(r#"You are an AI agent working inside a structured system.
+
+                        Your task is to extract the variables required by the given `task`, based on the latest `payload`, existing `state`, and available `connections`.
+
+                        Return your result as valid JSON that fits the expected Rust enum type `AgentReply`:
+                        - If the task can be completed with the provided information, fill in the `Success` variant.
+                        - If you cannot complete the task, return the `NeedMoreInfo` variant with a clear question for the user.
+
+                        Do not guess. Only return data you are confident about."#)
+                    },
+                };
+                
                 let user_msg = format!(
-                    "task: {}\npayload: {}\nstate: {}\nconnections: {:?}\ntools: {:?}",
-                    task, payload, state_json, conns, tools
+                    "task: {}\npayload: {}\nstate: {}\nconnections: {:?}\n",//tools: {:?}",
+                    task, payload, state_json, conns, //tools
                 );
 
                 let history = vec![
@@ -162,80 +166,61 @@ impl NodeType for OllamaAgent {
 
                 // 3) call the LLM
                 let model = self.model.clone().unwrap_or("llama3:latest".into());
-                let mut req = ChatMessageRequest::new(model, history);
+                let format = FormatType::StructuredJson(Box::new(JsonStructure::new::<AgentReply>()));
+                let mut req = ChatMessageRequest::new(model, history).format(format);
                 if let Some(opts) = &self.model_options {
                     req = req.options(opts.clone());
                 }
+
+                
 
                 let resp = client.send_chat_messages_with_history(&mut vec![], req).await;
                 if resp.is_err(){
                     error!("LLM gave error: {:?}",resp);
                     return Err(NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {:?}", resp.err()))));
                 }
-                let reply = resp.unwrap().message.content;
-                info!("agent response: {}",reply);
-                // 4) parse JSON
-                let result: JsonValue = serde_json::from_str(&reply)
-                    .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!(
-                        "Invalid JSON from LLM: {}", e
-                    ))))?;
-
-                // Optional state updates
-                if let Some(state_obj) = result.get("state")  {
-                    if let Some(add) = state_obj.get("add").and_then(|v| v.as_array()) {
-                        for item in add {
-                            if let (Some(k), Some(v)) = (item.get("key"), item.get("value")) {
-                                if let Some(k) = k.as_str() {
-                                    match StateValue::try_from(v.clone()){
-                                        Ok(state_val) => context.set_state(k, state_val),
-                                        Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
-                                    }
+                let reply: AgentReply = serde_json::from_str(&resp.unwrap().message.content).expect("ollama should respond with structured reply");
+                info!("agent response: {:?}",reply);
+                match reply {
+                    AgentReply::Success { payload, state_add, state_update, state_delete, connections } =>{
+                        if let Some(states_add) = state_add {
+                            for state in states_add.iter(){
+                                match StateValue::try_from(state.value.clone()){
+                                    Ok(val) => context.set_state(&state.key,val),
+                                    Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
                                 }
                             }
                         }
-                    }
-                    if let Some(update) = state_obj.get("update").and_then(|v| v.as_array()) {
-                        for item in update {
-                            if let (Some(k), Some(v)) = (item.get("key"), item.get("value")) {
-                                if let Some(k) = k.as_str() {
-                                    match StateValue::try_from(v.clone()) {
-                                        Ok(state_val) => context.set_state(k, state_val),
-                                        Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
-                                    }
+                        if let Some(states_update) = state_update {
+                            for state in states_update.iter(){
+                                match StateValue::try_from(state.value.clone()){
+                                    Ok(val) => context.set_state(&state.key,val),
+                                    Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
                                 }
                             }
                         }
-                    }
-                    if let Some(delete) = state_obj.get("delete").and_then(|v| v.as_array()) {
-                        for key in delete {
-                            if let Some(k) = key.as_str() {
-                                context.delete_state(k);
+                        if let Some(states_delete) = state_delete {
+                            for state in states_delete.iter(){
+                                context.delete_state(state);
                             }
                         }
-                    }
+                        let next_conn = match connections.is_empty() {
+                            true => None,
+                            false => Some(connections),
+                        };
+
+                        let main_msg = Message::new(&input.id(), payload.clone(), input.session_id().clone());
+                        return Ok(NodeOut::next(main_msg, next_conn));
+                        
+                    },
+                    AgentReply::NeedMoreInfo { payload } => {
+                        let next_payload = json!({"text":payload.text});
+                        let main_msg = Message::new(&input.id(), next_payload, input.session_id().clone());
+                        return Ok(NodeOut::reply(main_msg));
+                    },
                 }
-
-                let llm_payload = result.get("payload");
-                if result.get("reply_to_origin").and_then(|v| v.as_bool()) == Some(true) && llm_payload.is_some() {
-                    let main_msg = Message::new(&input.id(), llm_payload.unwrap().clone(), input.session_id().clone());
-                    return Ok(NodeOut::reply(main_msg));
-                }
-
-                // Gather inline and deferred tool calls
-                let follow_up: Vec<String> = result
-                    .get("connections")
-                    .and_then(|c| c.as_array())
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-
-                let next_conn = match follow_up.is_empty() {
-                    true => None,
-                    false => Some(follow_up),
-                };
-
+               
+                /* 
 
                 // 1) Process “tool_calls” if present:
                 if let Some(call) = result.get("tool_call") {
@@ -280,10 +265,9 @@ impl NodeType for OllamaAgent {
                     }
 
                 }
+                */
 
-                // 2) No inline/deferred tool_calls left: emit your normal LLM payload + any follow-ups
-                let main_msg = Message::new(&input.id(), payload.clone(), input.session_id().clone());
-                Ok(NodeOut::next(main_msg, next_conn))
+                
             }
         }
     }
@@ -299,20 +283,24 @@ impl OllamaAgent {
     pub fn new(
         mode: Option<OllamaMode>,
         task: String,
+        system_prompt: Option<String>,
         model: Option<String>,
         ollama_url: Option<Url>,
         model_options: Option<ModelOptions>,
         tool_names: Option<Vec<String>>,
         tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
+        use_payload: Option<bool>,
     ) -> Self {
         OllamaAgent {
             mode,
             task,
+            system_prompt,
             model,
             ollama_url,
             model_options,
             tool_names,
             tool_nodes,
+            use_payload,
         }
     }
 
@@ -401,11 +389,13 @@ mod ollama_agent_tests {
         OllamaAgent {
             mode,
             task: "dummy".into(),
+            system_prompt: None,
             model: Some("llama3.2:1b".into()),
             ollama_url: None,
             model_options: None,
             tool_names: None,
             tool_nodes: None,
+            use_payload: None,
         }
     }
 
@@ -414,11 +404,13 @@ mod ollama_agent_tests {
         let agent = OllamaAgent {
             mode: Some(OllamaMode::Generate),
             task: "t".into(),
+            system_prompt: None,
             model: Some("m".into()),
             ollama_url: Some(Url::parse("http://x/").unwrap()),
             model_options: None,
             tool_names: Some(vec!["foo".into()]),
             tool_nodes: None,
+            use_payload: None,
         };
 
         let s = serde_json::to_string(&agent).unwrap();

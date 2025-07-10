@@ -13,9 +13,9 @@ use serde::{
     ser::SerializeMap,
     Deserialize, Deserializer, Serialize, Serializer,
 };
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
+use crate::{agent::{manager::BuiltInAgent, ollama::AgentReply}, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
 /// A QA process allows asking users a series of questions and storing their answers.
 /// It supports different types of questions like text, number, choice, date, and LLM (AI-powered).
 /// Each answer type can define validation rules (like number range or regex), and some types can specify constraints (like `max_words`).
@@ -260,44 +260,60 @@ impl NodeType for QAProcessNode {
                     ctx.set_state(&last_q.state_key, state_val);
                 }
                 Err(e) if e == "fallback_trigger" => {
-                    if let Some(agent) = &self.config.fallback_agent {
+                    if let Some(BuiltInAgent::Ollama(ollama_agent)) = &mut self.config.fallback_agent.clone() {
+                        ollama_agent.system_prompt = Some(system_prompt_for_state_extraction());
+
                         // Prepare new message for the fallback agent
                         let input_msg = Message::new(
                             &msg.id(),
                             msg.payload().clone(), // or wrap it in `{ "input": ... }` if needed
                             msg.session_id(),
                         );
+                        
                         // Call the agent node
-                        let agent_out = agent.process(input_msg, ctx).await.map_err(|e| 
+                        let agent_out = ollama_agent.process(input_msg, ctx).await.map_err(|e| 
                             NodeErr::fail(NodeError::ExecutionFailed(format!("Fallback agent error: {:?}", e)))
                         )?;
 
                         info!("@@@ REMOVE: agent_out: {:?}",agent_out);
 
-                        // ➋ If the agent already chose a route, honour it and bubble it up.
-                        match agent_out.routing() {
-                            Routing::ToNode(target) => {
-                                // optional: copy any answers the agent might have put in its payload
-                                //           into ctx.state here before we forward.
-                                info!("Agent decided to route to {}",target);
-                                ctx.delete_state("qa.current_question");
-                                return Ok(agent_out);              // ← early exit, we’re done
-                            }
-                            _ => {
-                                // Extract payload from NodeOut (expecting single reply)
-                                let interpreted = agent_out.message().payload();
 
-                                // Convert and store
-                                let state_val = StateValue::try_from(interpreted.clone()).map_err(|e| 
-                                    NodeErr::fail(NodeError::ExecutionFailed(
-                                        format!("Fallback value conversion failed: {:?}", e)
-                                    ))
-                                )?;
-                                ctx.set_state(&last_q.state_key, state_val);
-                                let next = (idx + 1) as i64;
-                                ctx.set_state("qa.current_question", StateValue::Integer(next));
-                            }
+                        match try_parse_agent_response(agent_out.message().payload()) {
+                            Ok(AgentReply::Success(r)) => {
+                                if let Some(states) = r.state {
+                                    for state in states.iter() {
+                                        let value = StateValue::try_from(state.value.clone());
+                                        if value.is_ok() {
+                                            ctx.set_state(&state.key,value.unwrap());
+                                        } else {
+                                            warn!("Ignoring setting value: {:?}",value);
+                                        }
+                                        
+                                    }
+                                }
+                                let new_msg = Message::new(&msg.id(), r.payload, msg.session_id());
+                                let agent_out = NodeOut::to_nodes(new_msg, r.connections);
+                                ctx.delete_state("qa.current_question");
+                                return Ok(agent_out);      
+
+                            },
+                            Ok(AgentReply::NeedMoreInfo(m)) =>{
+                                let new_msg = Message::new(&msg.id(), m.payload, msg.session_id());
+                                let go_back = NodeOut::reply(new_msg);
+                                return Ok(go_back);  
+                            },
+                            Err(e) => {
+                                let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
+                                let out = Message::new(
+                                    &msg.id(),
+                                    json!({ "text": format!("I didn’t understand: {}\n{}", e, prompt) }),
+                                    session.to_string(),
+                                );
+                                return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
+                            },
                         }
+
+                        
 
                     } else {
                         let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
@@ -381,6 +397,56 @@ impl NodeType for QAProcessNode {
     fn clone_box(&self) -> Box<dyn NodeType> {
         Box::new(self.clone())
     }
+}
+
+
+/// Generates a system prompt for extracting state variables from a payload
+/// or asking clarifying questions if the data is missing.
+pub fn system_prompt_for_state_extraction() -> String {
+    r#"You are an AI assistant in a structured agentic system.
+
+    Your task is to extract variables from a `payload` based on a `task` description.
+    You must return valid JSON that matches **one and only one** of two possible formats.
+
+    ---
+
+    ### ✅ Variant 1: Success (ResolvedOutput)
+
+    Use this when all required variables (like `q` and `days`) can be extracted from the `payload`:
+    {
+    "payload": { ... },
+    "state": [
+        { "key": "...", "value": ... },
+        { "key": "...", "value": ... }
+    ],
+    "connections": ["..."]
+    }
+    
+    - `"connections"` will be provided. In case of success, include the connections.
+
+
+    ### ❓ Variant 2: NeedMoreInfo (FollowUpRequest)
+
+   Use this only if any required variable is missing or unclear.
+    {
+    "payload": {
+        "text": "a follow-up question for the user"
+    }
+    }
+
+    ---
+
+    ### Rules:
+
+    - Return **only** one of the two json variants above.
+    - Do **not** include any extra text or explanation.
+    - If even one key is missing (e.g. no location), choose NeedMoreInfo.
+    - "state" is optional and only present when new data must be saved."#.to_string()
+}
+   
+
+fn try_parse_agent_response(reply: JsonValue) -> Result<AgentReply, serde_json::Error> {
+    serde_json::from_value::<AgentReply>(reply)
 }
 
 
@@ -1416,7 +1482,7 @@ connections:
                                 },
                             ],
                             fallback_agent: Some(BuiltInAgent::Ollama(OllamaAgent::new(
-                                None, "task".into(), None, None, None, None, None,
+                                None, "task".into(), None, None, None, None, None, None, None,
                             ))),
                             routing: vec![],
                         },
