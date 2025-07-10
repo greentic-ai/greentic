@@ -11,7 +11,7 @@ use anyhow::bail;
 #[command(
     name = "greentic", 
     about = "The Greener Agentic AI", 
-    version = "0.1.0"
+    version = "0.2.0"
 )]
 struct Cli {
     #[command(subcommand)]
