@@ -76,8 +76,14 @@ Flows link these components into one cohesive automation. Your digital workers a
 
 ### Processes
 
-- **Processes** are logic blocks (decisions, branches, loops, retries).
+- **Processes** are a collection of builtIn processes and soon extendable via Wasm.
+- Debug: allows you to easily understand the output of the previous flow nodes.
+- Script: create a script in Rhai to programme logic.
+- Template: a Handlebars-based template processor for rending string output.
+- QA: A dynamic, multi-question form-like process with optional validation, LLM user assistance and routing.   
 - Defined declaratively in YAML.
+
+👉 [Learn more about Processes](./docs/PROCESSES.md)
 
 ### Agents
 
