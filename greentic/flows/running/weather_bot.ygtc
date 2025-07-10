@@ -38,8 +38,6 @@ nodes:
         task: | 
           Extract the location the user wants a weather forecast and if available the days.
           The location is added to state as 'q' and the days as 'days'. 
-          When the user asked: "What is the weather in Thames Ditton for the next 5 days?" 
-          Location ('q') would be 'Thames Ditton' and 'days' would be '5'. 
           Default to 3 days if not specified. 
       routing:
         - to: forecast_weather

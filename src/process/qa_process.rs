@@ -13,9 +13,9 @@ use serde::{
     ser::SerializeMap,
     Deserialize, Deserializer, Serialize, Serializer,
 };
-use tracing::{info, warn};
+use tracing::info;
 
-use crate::{agent::{manager::BuiltInAgent, ollama::AgentReply}, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
+use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
 /// A QA process allows asking users a series of questions and storing their answers.
 /// It supports different types of questions like text, number, choice, date, and LLM (AI-powered).
 /// Each answer type can define validation rules (like number range or regex), and some types can specify constraints (like `max_words`).
@@ -260,70 +260,23 @@ impl NodeType for QAProcessNode {
                     ctx.set_state(&last_q.state_key, state_val);
                 }
                 Err(e) if e == "fallback_trigger" => {
-                    if let Some(BuiltInAgent::Ollama(ollama_agent)) = &mut self.config.fallback_agent.clone() {
-                        ollama_agent.system_prompt = Some(system_prompt_for_state_extraction());
+                    let agent = self.config.fallback_agent.clone().unwrap();
+                    
+                    // Prepare new message for the fallback agent
+                    let input_msg = Message::new(
+                        &msg.id(),
+                        msg.payload().clone(), // or wrap it in `{ "input": ... }` if needed
+                        msg.session_id(),
+                    );
+                    
+                    // Call the agent node
+                    let agent_out = agent.process(input_msg, ctx).await.map_err(|e| 
+                        NodeErr::fail(NodeError::ExecutionFailed(format!("Fallback agent error: {:?}", e)))
+                    )?;
 
-                        // Prepare new message for the fallback agent
-                        let input_msg = Message::new(
-                            &msg.id(),
-                            msg.payload().clone(), // or wrap it in `{ "input": ... }` if needed
-                            msg.session_id(),
-                        );
-                        
-                        // Call the agent node
-                        let agent_out = ollama_agent.process(input_msg, ctx).await.map_err(|e| 
-                            NodeErr::fail(NodeError::ExecutionFailed(format!("Fallback agent error: {:?}", e)))
-                        )?;
+                    info!("@@@ REMOVE: agent_out: {:?}",agent_out);
 
-                        info!("@@@ REMOVE: agent_out: {:?}",agent_out);
-
-
-                        match try_parse_agent_response(agent_out.message().payload()) {
-                            Ok(AgentReply::Success(r)) => {
-                                if let Some(states) = r.state {
-                                    for state in states.iter() {
-                                        let value = StateValue::try_from(state.value.clone());
-                                        if value.is_ok() {
-                                            ctx.set_state(&state.key,value.unwrap());
-                                        } else {
-                                            warn!("Ignoring setting value: {:?}",value);
-                                        }
-                                        
-                                    }
-                                }
-                                let new_msg = Message::new(&msg.id(), r.payload, msg.session_id());
-                                let agent_out = NodeOut::to_nodes(new_msg, r.connections);
-                                ctx.delete_state("qa.current_question");
-                                return Ok(agent_out);      
-
-                            },
-                            Ok(AgentReply::NeedMoreInfo(m)) =>{
-                                let new_msg = Message::new(&msg.id(), m.payload, msg.session_id());
-                                let go_back = NodeOut::reply(new_msg);
-                                return Ok(go_back);  
-                            },
-                            Err(e) => {
-                                let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
-                                let out = Message::new(
-                                    &msg.id(),
-                                    json!({ "text": format!("I didn’t understand: {}\n{}", e, prompt) }),
-                                    session.to_string(),
-                                );
-                                return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
-                            },
-                        }
-
-                        
-
-                    } else {
-                        let prompt = render_handlebars(&last_q.prompt, &ctx.get_all_state());
-                        let out = Message::new(
-                            &msg.id(),
-                            json!({ "text": format!("I couldn’t understand. Please try again.\n{}", prompt) }),
-                            session.to_string(),
-                        );
-                        return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
-                    }
+                    return Ok(agent_out);
                 }
                 Err(err) => {
                     // re‐ask the same question
@@ -398,57 +351,6 @@ impl NodeType for QAProcessNode {
         Box::new(self.clone())
     }
 }
-
-
-/// Generates a system prompt for extracting state variables from a payload
-/// or asking clarifying questions if the data is missing.
-pub fn system_prompt_for_state_extraction() -> String {
-    r#"You are an AI assistant in a structured agentic system.
-
-    Your task is to extract variables from a `payload` based on a `task` description.
-    You must return valid JSON that matches **one and only one** of two possible formats.
-
-    ---
-
-    ### ✅ Variant 1: Success (ResolvedOutput)
-
-    Use this when all required variables (like `q` and `days`) can be extracted from the `payload`:
-    {
-    "payload": { ... },
-    "state": [
-        { "key": "...", "value": ... },
-        { "key": "...", "value": ... }
-    ],
-    "connections": ["..."]
-    }
-    
-    - `"connections"` will be provided. In case of success, include the connections.
-
-
-    ### ❓ Variant 2: NeedMoreInfo (FollowUpRequest)
-
-   Use this only if any required variable is missing or unclear.
-    {
-    "payload": {
-        "text": "a follow-up question for the user"
-    }
-    }
-
-    ---
-
-    ### Rules:
-
-    - Return **only** one of the two json variants above.
-    - Do **not** include any extra text or explanation.
-    - If even one key is missing (e.g. no location), choose NeedMoreInfo.
-    - "state" is optional and only present when new data must be saved."#.to_string()
-}
-   
-
-fn try_parse_agent_response(reply: JsonValue) -> Result<AgentReply, serde_json::Error> {
-    serde_json::from_value::<AgentReply>(reply)
-}
-
 
 fn extract_raw_text(value: &serde_json::Value) -> String {
     // 1. Try to parse as one or more MessageContent

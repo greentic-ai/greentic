@@ -21,10 +21,10 @@ members = [
 
 [dependencies]
 channel_plugin = { version="0.2.0", path = "crates/channel_plugin"}
-schemars = { version = "1.0.3", features = ["chrono04"] }
+schemars = { version = "1.0.4", features = ["chrono04"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-tokio = { version = "1.45.1", features = ["macros", "rt", "sync", "time", "signal"] }
+tokio = { version = "1.46.1", features = ["macros", "rt", "sync", "time", "signal"] }
 typetag = "0.2.20"
 opentelemetry = { version = "0.30.0", features = ["trace"] }
 opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio", "trace", "metrics"] }

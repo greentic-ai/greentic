@@ -6,12 +6,11 @@ use ollama_rs::models::ModelOptions;
 use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
 use ollama_rs::Ollama;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use url::Url;
-use crate::flow::state::StateValue;
+use crate::agent::agent_reply_schema::{parse_state_value, AgentReply};
 use crate::node::Routing;
 use crate::{
     message::Message,
@@ -23,7 +22,7 @@ use crate::{
 // --------------------------------------------------------------------------------
 
 /// `OllamaAgent` invokes a local Ollama server via `ollama_rs`.  
-/// It supports plain generation (`Generate`), embeddings (`Embed`), chat mode (`Chat`), and tool calls (`ToolCall`).
+/// It supports plain generation (`Generate`), embeddings (`Embed`), chat mode (`Chat`) and tool calls (`ToolCall`).
 
 #[derive(Debug, Clone, Serialize, Deserialize,)]
 pub struct OllamaAgent {
@@ -67,34 +66,6 @@ impl PartialEq for OllamaAgent {
         self.tool_names == other.tool_names
         // tool_nodes and model_config are intentionally skipped from equality check
     }
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum AgentReply {
-    Success {
-        payload: JsonValue,
-        #[serde(default)]
-        state_add: Option<Vec<StateKeyValue>>,
-        state_update: Option<Vec<StateKeyValue>>,
-        state_delete: Option<Vec<String>>,
-        connections: Vec<String>,
-    },
-    NeedMoreInfo {
-        payload: FollowUpPayload,
-    },
-}
-
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct StateKeyValue {
-    pub key: String,
-    pub value: JsonValue,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct FollowUpPayload {
-    pub text: String,
 }
 
 #[async_trait]
@@ -166,37 +137,39 @@ impl NodeType for OllamaAgent {
 
                 // 3) call the LLM
                 let model = self.model.clone().unwrap_or("llama3:latest".into());
-                let format = FormatType::StructuredJson(Box::new(JsonStructure::new::<AgentReply>()));
-                let mut req = ChatMessageRequest::new(model, history).format(format);
+                //let format = FormatType::StructuredJson(Box::new(JsonStructure::new::<AgentReply>()));
+                let schema: schemars::Schema = schemars::schema_for!(AgentReply);
+                let format = FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema)));
+                let mut req = ChatMessageRequest::new(model, history).format(format.clone());
                 if let Some(opts) = &self.model_options {
                     req = req.options(opts.clone());
                 }
 
-                
+                println!(
+                    "@@@ REMOVE: {}",
+                    serde_json::to_string_pretty(&schemars::schema_for!(AgentReply)).unwrap()
+                );
 
                 let resp = client.send_chat_messages_with_history(&mut vec![], req).await;
                 if resp.is_err(){
-                    error!("LLM gave error: {:?}",resp);
-                    return Err(NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {:?}", resp.err()))));
+                    let err = resp.err();
+                    println!("@@@ REMOVE: {:?}",err);
+                    error!("LLM gave error: {:?}",err);
+                    return Err(NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {:?}", err))));
                 }
+                info!("agent response: {:?}",resp);
                 let reply: AgentReply = serde_json::from_str(&resp.unwrap().message.content).expect("ollama should respond with structured reply");
-                info!("agent response: {:?}",reply);
+
                 match reply {
                     AgentReply::Success { payload, state_add, state_update, state_delete, connections } =>{
                         if let Some(states_add) = state_add {
                             for state in states_add.iter(){
-                                match StateValue::try_from(state.value.clone()){
-                                    Ok(val) => context.set_state(&state.key,val),
-                                    Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
-                                }
+                                context.set_state(&state.key,parse_state_value(&state.value_type, &state.value).expect("invalid state value"));
                             }
                         }
                         if let Some(states_update) = state_update {
                             for state in states_update.iter(){
-                                match StateValue::try_from(state.value.clone()){
-                                    Ok(val) => context.set_state(&state.key,val),
-                                    Err(e) => warn!("Failed to convert value to StateValue: {:?}", e),
-                                }
+                                context.set_state(&state.key,parse_state_value(&state.value_type, &state.value).expect("invalid state value"));
                             }
                         }
                         if let Some(states_delete) = state_delete {
