@@ -1145,8 +1145,8 @@ questions:
     state_key: "user_age"
     validate:
       range:
-        min: 0
-        max: 120
+        min: 0.0
+        max: 120.0
 
   - id: "name"
     prompt: "👉 What is your name?"
@@ -1157,7 +1157,7 @@ routing:
   - condition:
         less_than:
             question_id: "age"
-            threshold: 18
+            threshold: 18.0
     to: "minor_flow"
 
   - to: "adult_flow"
