@@ -1123,11 +1123,11 @@ mod tests {
 
         // route to "pass" if score >= 50, else to "fail"
         let rule_pass = RoutingRule {
-            condition: Some(Condition::GreaterThan { question_id: "score".into(), threshold: 50. }),
+            condition: Some(Condition::GreaterThan { question_id: "score".into(), threshold: 50.0 }),
             to: "pass".into(),
         };
         let rule_fail = RoutingRule {
-            condition: Some(Condition::LessThan { question_id: "score".into(), threshold: 50. }),
+            condition: Some(Condition::LessThan { question_id: "score".into(), threshold: 50.0 }),
             to: "fail".into(),
         };
         assert!(rule_pass.matches(&answers));
@@ -1145,8 +1145,8 @@ questions:
     state_key: "user_age"
     validate:
       range:
-        min: 0.0
-        max: 120.0
+        min: 0
+        max: 120
 
   - id: "name"
     prompt: "👉 What is your name?"
@@ -1157,7 +1157,7 @@ routing:
   - condition:
         less_than:
             question_id: "age"
-            threshold: 18.0
+            threshold: 18
     to: "minor_flow"
 
   - to: "adult_flow"
