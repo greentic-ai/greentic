@@ -65,7 +65,7 @@ Flows link these components into one cohesive automation. Your digital workers a
 - Each tool can define its own actions, inputs, outputs, and run logic securely.
 - Tools live in `tools/` and are called by the flows.
 
-👉 [Learn how to build MCP Tools (Coming Soon)](./docs/TOOL_PLUGIN.md)
+👉 [Learn how to build MCP Tools](./docs/TOOLS.md)
 
 ### Channels
 
