@@ -103,54 +103,87 @@ If you don’t have Rust yet, the easiest way is via `rustup`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Getting Started: Install Greentic
 
 Install Greentic.AI via:
+
 ```bash
 cargo install greentic
 ```
 
-The first time around initialise everything:
-- creates the greentic configuration directories
-- registration so your user gets a GREENTIC_TOKEN
-- and you can pull flows, channels, tools,... from
-- the greenticstore.com.
+### 🔧 Initialise your environment
+
+The first time you use Greentic, run:
 
 ```bash
 greentic init
 ```
-Pull your first flow, i.e. Telegram Weather Bot:
+
+This will:
+
+- Create the Greentic configuration directories
+- Register your user and generate a `GREENTIC_TOKEN`
+- Allow you to pull flows, channels, tools, etc. from [greenticstore.com](https://greenticstore.com)
+
+---
+
+### 🌦️ Example: Telegram Weather Bot
+
+Pull your first flow:
 
 ```bash
 greentic flow pull weather_bot_telegram.ygtc
 ```
 
-Extra instructions after you pull the flow:
-- you will need to [configure one time a Telegram bot](https://docs.radist.online/docs/our-products/radist-web/connections/telegram-bot/instructions-for-creating-and-configuring-a-bot-in-botfather) and obtain a TELEGRAM_TOKEN. You can add it via 'greentic secret add TELEGRAM_TOKEN <your_token>
-- You also need to [sign up to the WeatherApi](https://www.weatherapi.com/signup.aspx) and generate an API key. 
-- You can add it via 'greentic secret add WEATHERAPI_KEY <your_key>
-- you will now be able to get the weather forecast via your Telegram bot.
-- The Telegram Weather Bot optionally uses AI to help the user, e.g.
-- if you type: "Get me the weather in London for tomorrow" instead of 'London'
-- when asked: 👉 What location would you like a forecast for?
-- For this to work you also need to install [ollama](https://ollama.com/download)
-- and do 'ollama pull gemma:instruct'
+Then:
 
-Start greentic with:
+1. [Create and configure a Telegram bot](https://docs.radist.online/docs/our-products/radist-web/connections/telegram-bot/instructions-for-creating-and-configuring-a-bot-in-botfather), and add your token:
+
+   ```bash
+   greentic secret add TELEGRAM_TOKEN <your_token>
+   ```
+
+2. [Sign up to WeatherAPI](https://www.weatherapi.com/signup.aspx) and add your API key:
+
+   ```bash
+   greentic secret add WEATHERAPI_KEY <your_key>
+   ```
+
+3. (Optional) To enable AI-powered queries like *“What’s the weather in London tomorrow?”*:
+
+   - [Install Ollama](https://ollama.com/download)
+   - Pull the model:
+
+     ```bash
+     ollama pull gemma:instruct
+     ```
+
+---
+
+### ▶️ Run the bot
+
 ```bash
 greentic run
 ```
-You should now have a fully working Telegram Weather Bot.
 
-If you want to create your own flows:
+You should now have a fully working **Telegram Weather Bot**.
+
+---
+
+## 🛠️ Creating Your Own Flows
+
+To deploy your own flows:
+
 ```bash
 greentic flow deploy <file>.ygtc
 ```
 
-When you are ready to start a flow you can call:
+To start a flow:
+
 ```bash
 greentic flow start <flow_id>
 ```
