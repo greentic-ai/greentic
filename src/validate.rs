@@ -25,6 +25,7 @@
 use std::{collections::HashSet, fs, path::{Path, PathBuf}};
 
 use anyhow::{anyhow, Context, Result};
+use reqwest::header::{HeaderValue, AUTHORIZATION};
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -135,6 +136,9 @@ pub async fn validate(
 
     collect_ids(&flow_value, &mut used_tools, &mut used_channels);
 
+    let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
+    let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
+
     let running_path = root_dir.join("plugins").join("channels").join("running");
     let stopped_path = root_dir.join("plugins").join("channels").join("stopped");
     // 3a) missing plugins ---------------------------------------------------
@@ -149,7 +153,7 @@ pub async fn validate(
 
         if !running_channel.exists() && !stopped_channel.exists() {
 
-            match pull_channel(&channel_file, &running_channel).await {
+            match pull_channel(&token,&channel_file, &running_channel).await {
                 Ok(_) => {
                     tracing::info!("✅ Pulled and stored missing channel: {t}");
                 }
@@ -167,7 +171,7 @@ pub async fn validate(
         if let Some(tool) = executor.get_tool(t.clone()) {
             let wasm_path = tools_dir.join(format!("{t}.wasm"));
             if !wasm_path.exists() {
-                match pull_wasm(t, &wasm_path).await {
+                match pull_wasm(&token,t, &wasm_path).await {
                     Ok(_) => {
                         tracing::info!("Pulled missing Wasm for tool: {t}");
                     }
@@ -279,9 +283,14 @@ pub async fn validate(
 
 // Basic pull function to get a tool. In the future we need login and 
 // more advanced version management, ...
-async fn pull_channel(channel_name: &str, destination: &Path) -> anyhow::Result<()> {
+async fn pull_channel(token: &str, channel_name: &str, destination: &Path) -> anyhow::Result<()> {
     let url = format!("https://greenticstore.com/channels/channel_{channel_name}");
-    let response = reqwest::get(&url).await?;
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))?)
+        .send()
+        .await?;
     if !response.status().is_success() {
         anyhow::bail!("Failed to download channel for channel_{channel_name}: HTTP {}", response.status());
     }
@@ -294,9 +303,15 @@ async fn pull_channel(channel_name: &str, destination: &Path) -> anyhow::Result<
 
 // Basic pull function to get a tool. In the future we need login and 
 // more advanced version management, ...
-async fn pull_wasm(tool_name: &str, destination: &Path) -> anyhow::Result<()> {
+async fn pull_wasm(token: &str, tool_name: &str, destination: &Path) -> anyhow::Result<()> {
     let url = format!("https://greenticstore.com/tools/{tool_name}.wasm");
-    let response = reqwest::get(&url).await?;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))?)
+        .send()
+        .await?;
     if !response.status().is_success() {
         anyhow::bail!("Failed to download Wasm for {tool_name}: HTTP {}", response.status());
     }
@@ -336,7 +351,7 @@ fn collect_ids(value: &Value, tools: &mut HashSet<String>, channels: &mut HashSe
 
 #[cfg(test)]
 mod tests {
-    use crate::{config::MapConfigManager, secret::EmptySecretsManager};
+    use crate::{config::MapConfigManager, secret::{EmptySecretsManager, EnvSecretsManager}};
 
     use super::*;
     use serde_json::json;
@@ -457,8 +472,10 @@ connections:
     async fn test_pull_real_channel_ws() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_ws");
-
-        let result = pull_channel("ws", &dest).await;
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
+        let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
+        let result = pull_channel(&token, "ws", &dest).await;
         assert!(result.is_ok(), "expected successful pull: {result:?}");
         assert!(dest.exists(), "destination file not created");
         assert!(fs::metadata(&dest).unwrap().len() > 0, "file is empty");
@@ -469,8 +486,10 @@ connections:
     async fn test_pull_real_tool_weather_api() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("weather_api.wasm");
-
-        let result = pull_wasm("weather_api", &dest).await;
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
+        let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
+        let result = pull_wasm(&token,"weather_api", &dest).await;
         assert!(result.is_ok(), "expected successful pull: {result:?}");
         assert!(dest.exists(), "destination file not created");
         assert!(fs::metadata(&dest).unwrap().len() > 0, "file is empty");
@@ -481,8 +500,10 @@ connections:
     async fn test_pull_missing_tool() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("nonexistent.wasm");
-
-        let result = pull_wasm("nonexistent", &dest).await;
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
+        let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
+        let result = pull_wasm(&token, "nonexistent", &dest).await;
         assert!(result.is_err(), "expected error but got success");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -496,8 +517,10 @@ connections:
     async fn test_pull_missing_channel() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_fake");
-
-        let result = pull_channel("fake", &dest).await;
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
+        let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
+        let result = pull_channel(&token,"fake", &dest).await;
         assert!(result.is_err(), "expected error but got success");
         let err = result.unwrap_err().to_string();
         assert!(

@@ -1,7 +1,7 @@
 use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
-    apps::{cmd_init, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
+    apps::{cmd_init, download, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
 };
 use std::{env, fs, path::PathBuf, process};
 use tracing::{error, info};
@@ -32,6 +32,24 @@ enum Commands {
 
     /// Manage flows
     Flow(FlowArgs),
+
+    /// Handle secrets
+    Secrets(SecretArgs),
+
+    /// Handle secrets
+    Config(ConfigArgs),
+}
+
+#[derive(Args, Debug)]
+struct SecretArgs {
+    #[command(subcommand)]
+    command: SecretCommands,
+}
+
+#[derive(Args, Debug)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: ConfigCommands,
 }
 
 #[derive(Args, Debug)]
@@ -75,8 +93,23 @@ struct SchemaArgs {
 enum FlowCommands {
     Validate { file: PathBuf },
     Deploy { file: PathBuf },
+    Pull { name: String },
     Start { name: String },
     Stop { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum SecretCommands {
+    Add { key: String, secret: String },
+    Update { key: String, secret: String },
+    Delete { key: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCommands {
+    Add { key: String, value: String },
+    Update { key: String, value: String },
+    Delete { key: String },
 }
 
 /// Resolve the greentic root directory from the environment or use default.
@@ -142,6 +175,50 @@ async fn main() -> anyhow::Result<()> {
             println!("Initialized greentic layout at {}", root.display());
             process::exit(0);
         }
+        Commands::Secrets(secret_args) => match secret_args.command {
+            SecretCommands::Add { key, secret } => {
+                match secrets_manager.add_secret(&key, &secret).await {
+                    Ok(_) => println!("✅ Secret added."),
+                    Err(_) => eprintln!("❌ Secret could not be added."),
+                }
+                Ok(())
+            },
+            SecretCommands::Update { key, secret } => {
+                match secrets_manager.update_secret(&key, &secret).await {
+                    Ok(_) => println!("✅ Secret updated."),
+                    Err(_) => eprintln!("❌ Secret could not be updated."),
+                }
+                Ok(())
+            },
+            SecretCommands::Delete { key } => {
+                match secrets_manager.delete_secret(&key).await {
+                    Ok(_) => println!("✅ Secret deleted."),
+                    Err(_) => eprintln!("❌ Secret could not be deleted."),
+                }
+                Ok(())
+            },
+        },
+
+        Commands::Config(config_args) => match config_args.command {
+            ConfigCommands::Add { key, value } => {
+                match config_manager.0.set(&key, &value).await {
+                    Ok(_) => println!("✅ Config added."),
+                    Err(_) => eprintln!("❌ Config could not be added."),
+                }
+                Ok(())
+            },
+            ConfigCommands::Update { key, value } => {
+                match config_manager.0.set(&key, &value).await {
+                    Ok(_) => println!("✅ Config updated."),
+                    Err(_) => eprintln!("❌ Config could not be updated."),
+                }
+                Ok(())
+            },
+            ConfigCommands::Delete { key } => {
+                config_manager.0.del(&key).await;
+                Ok(())
+            },
+        }
         Commands::Flow(flow_args) => match flow_args.command {
             FlowCommands::Validate { file } => {
                 let log_level     = "info".to_string();
@@ -159,6 +236,21 @@ async fn main() -> anyhow::Result<()> {
                     config_manager,
                 ).await?;
                 println!("✅ Flow file is valid.");
+                Ok(())
+            },
+            FlowCommands::Pull { name } => {
+                let token_handle = secrets_manager.0.get("GREENTIC_TOKEN");
+                if token_handle.is_none() {
+                    println!("Please run 'greentic init' one time before calling 'greentic pull ...'");
+                    return Ok(());
+                }
+                let token = secrets_manager.0.reveal(token_handle.unwrap()).await.unwrap().unwrap();
+                let out_dir = root.join("greentic/flows/running");
+                let result = download(&token, "flows", &name, out_dir).await;
+                if result.is_err() {
+                    println!("Sorry we could not download {} because {:?}",name, result.err().unwrap().to_string());
+                }
+                
                 Ok(())
             },
             FlowCommands::Deploy { file } => {

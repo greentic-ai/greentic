@@ -30,6 +30,8 @@ pub trait SecretsManagerType: Send + Sync {
     fn get(&self, key: &str) -> Option<u32>;
     fn keys(&self) -> Vec<String>;
     async fn add_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>;
+    async fn update_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>;
+    async fn delete_secret(&self, key: &str) -> Result<(),SecretsError>;
     async fn reveal(&self, handle: u32) -> Result<Option<String>, SecretsError>;
     fn name(&self) -> &'static str;
     fn clone_box(&self) -> Arc<dyn SecretsManagerType>;
@@ -44,6 +46,14 @@ impl SecretsManager {
 
     pub async fn add_secret(&self, key: &str, value: &str)  -> Result<(),SecretsError> {
         self.0.add_secret(key, value).await
+    }
+
+    pub async fn update_secret(&self, key: &str, value: &str)  -> Result<(),SecretsError> {
+        self.0.update_secret(key, value).await
+    }
+
+    pub async fn delete_secret(&self, key: &str)  -> Result<(),SecretsError> {
+        self.0.delete_secret(key).await
     }
 }
 
@@ -168,6 +178,33 @@ impl EnvSecretsManager {
         keys.insert(key.to_string(), id);
         secrets.insert(id, secret.to_string());
     }
+    /// Synchronous helper for programmatic secrets updates.
+    pub fn update_secret_sync(&self, key: &str, secret: &str) {
+        let mut keys   = self.keys.write().unwrap();
+        let mut secrets= self.secrets.write().unwrap();
+        let handle = match keys.get(key){
+            Some(handle) => *handle,
+            None => {
+                let id = rng().next_u32();
+                keys.insert(key.to_string(), id);
+                id
+            },
+        };
+        secrets.insert(handle, secret.to_string());
+    }
+    /// Synchronous helper for programmatic secrets removal.
+    pub fn delete_secret_sync(&self, key: &str) {
+        let handle_opt = {
+            let keys = self.keys.read().unwrap();
+            keys.get(key).cloned()
+        };
+        if let Some(handle) = handle_opt {
+            let mut keys = self.keys.write().unwrap();
+            let mut secrets = self.secrets.write().unwrap();
+            keys.remove(key);
+            secrets.remove(&handle);
+        }
+    }
     /// Parse _only_ the given `.env` file, overwrite whatever was there.
     fn load_dotenv(&self, path: &Path) {
         match dotenvy::from_path_iter(path) {
@@ -217,6 +254,16 @@ impl SecretsManagerType for EnvSecretsManager {
         Ok(())
     }
 
+    async fn update_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>{
+        self.update_secret_sync(key, secret);
+        Ok(())
+    }
+
+    async fn delete_secret(&self, key: &str) -> Result<(),SecretsError>{
+        self.delete_secret_sync(key);
+        Ok(())
+    }
+
     async fn reveal(&self, handle: u32) -> Result<Option<String>, SecretsError>{
         Ok(self.secrets.read().unwrap().get(&handle).cloned())
     }
@@ -259,6 +306,12 @@ impl SecretsManagerType for EmptySecretsManager{
     async fn add_secret(&self, _key: &str, _secret: &str) -> Result<(),SecretsError>{
        Err(SecretsError::NotFound)
     }
+    async fn update_secret(&self, _key: &str, _secret: &str) -> Result<(),SecretsError>{
+       Err(SecretsError::NotFound)
+    }
+    async fn delete_secret(&self, _key: &str) -> Result<(),SecretsError>{
+       Err(SecretsError::NotFound)
+    }
 
    async fn reveal(&self, _handle: u32) -> Result<Option<String>, SecretsError> {
         Err(SecretsError::NotFound)
@@ -274,5 +327,92 @@ impl SecretsManagerType for EmptySecretsManager{
 
     fn debug_box(&self) -> String {
         "".to_string()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_env_manager() -> Arc<EnvSecretsManager> {
+        EnvSecretsManager::new(None) // Don't load or watch any file
+    }
+
+    #[test]
+    fn test_add_secret_sync() {
+        let mgr = setup_env_manager();
+        mgr.add_secret_sync("API_KEY", "123456");
+        let keys = mgr.keys();
+        assert_eq!(keys, vec!["API_KEY".to_string()]);
+        let handle = mgr.get("API_KEY").unwrap();
+        let read = mgr.secrets.read().unwrap(); 
+        let value = read.get(&handle);
+        assert_eq!(value, Some(&"123456".to_string()));
+    }
+
+    #[test]
+    fn test_update_secret_sync_existing_key() {
+        let mgr = setup_env_manager();
+        mgr.add_secret_sync("TOKEN", "abc");
+        mgr.update_secret_sync("TOKEN", "def");
+
+        let handle = mgr.get("TOKEN").unwrap();
+        let read = mgr.secrets.read().unwrap();
+        let secret = read.get(&handle);
+        assert_eq!(secret, Some(&"def".to_string()));
+    }
+
+    #[test]
+    fn test_update_secret_sync_new_key() {
+        let mgr = setup_env_manager();
+        mgr.update_secret_sync("NEW_TOKEN", "newvalue");
+
+        let handle = mgr.get("NEW_TOKEN").unwrap();
+        let read = mgr.secrets.read().unwrap();
+        let secret = read.get(&handle);
+        assert_eq!(secret, Some(&"newvalue".to_string()));
+    }
+
+    #[test]
+    fn test_delete_secret_sync() {
+        let mgr = setup_env_manager();
+        mgr.add_secret_sync("SECRET", "xyz");
+
+        let handle = mgr.get("SECRET").unwrap();
+        mgr.delete_secret_sync("SECRET");
+
+        assert!(mgr.get("SECRET").is_none());
+        assert!(mgr.secrets.read().unwrap().get(&handle).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reveal_async() {
+        let mgr = setup_env_manager();
+        mgr.add_secret_sync("PASSWORD", "hunter2");
+
+        let handle = mgr.get("PASSWORD").unwrap();
+        let revealed = mgr.reveal(handle).await.unwrap();
+        assert_eq!(revealed, Some("hunter2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_async_traits_end_to_end() {
+        let mgr = setup_env_manager();
+
+        mgr.add_secret("foo", "bar").await.unwrap();
+        let keys = mgr.keys();
+        assert_eq!(keys, vec!["foo".to_string()]);
+
+        let handle = mgr.get("foo").unwrap();
+        let revealed = mgr.reveal(handle).await.unwrap();
+        assert_eq!(revealed, Some("bar".to_string()));
+
+        mgr.update_secret("foo", "baz").await.unwrap();
+        let updated = mgr.reveal(handle).await.unwrap();
+        assert_eq!(updated, Some("baz".to_string()));
+
+        mgr.delete_secret("foo").await.unwrap();
+        assert!(mgr.get("foo").is_none());
     }
 }

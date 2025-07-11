@@ -8,7 +8,7 @@ Now with: <strong>intelligent agents</strong> and <strong>processes</strong>!
 
 ---
 
-Greentic.ai is currently at v0.2.0. You will have to create your own flows, plugins, tools,... however a basic store with some free flows, plugins and tools is available. You can use tools that connect to APIs which use no authentication or API keys. oAuth will be supported in v0.3.0. You will have to run Greentic.ai from your local computer. Deploying onto the Cloud is coming in v0.4.0. The [vision for v1.0.0](./docs/VISION.md) however foresees a world where you just ask via WhatsApp, Teams, Slack, Telegram,... for a digital worker to be generated and automatically Greentic.ai will create it for you based on a simple request. Also learn how Greentic.ai is able to generate revenues for partners. 
+Greentic.ai is currently at v0.2.0. A basic store with some free flows, plugins and tools is available. You can also create your own flows, plugins, tools,... Flows can use tools that connect to APIs with no authentication or API keys. oAuth will be supported in v0.3.0. You will have to run Greentic.ai from your local computer. Deploying onto the Cloud is coming in v0.4.0. The [vision for v1.0.0](./docs/VISION.md) foresees a world where you just ask via WhatsApp, Teams, Slack, Telegram,... for a digital worker to be generated and automatically Greentic.ai will create it for you based on a simple ChatGPT-like request. Also learn how Greentic.ai is able to [generate revenues for partners](./docs/VISION.md). 
 
 ---
 
@@ -95,6 +95,15 @@ Flows link these components into one cohesive automation. Your digital workers a
 
 ---
 
+## 🦀 Prerequisites: Install Rust
+
+To build and run this project, you need to have [Rust](https://www.rust-lang.org/tools/install) installed.
+
+If you don’t have Rust yet, the easiest way is via `rustup`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 ## 🚀 Getting Started
 
 Install Greentic.AI via:
@@ -102,17 +111,37 @@ Install Greentic.AI via:
 cargo install greentic
 ```
 The first time around initialise everything:
+- creates the greentic configuration directories
+- registration so your user gets a GREENTIC_TOKEN
+- and you can pull flows, channels, tools,... from
+- the greenticstore.com.
 ```bash
 greentic init
 ```
-Before running a flow, you can validate that the yaml/json
-format is valid, all channels and tools are present as well 
-as all required config keys and secrets are set up.
-If a channel or tool are not present, they will be pulled automatically. 
-Afterwards you can deploy the flow. You only need to validate/deploy
-one time. Afterwards you can start/stop the flow.
+Pull your first flow, i.e. Telegram Weather Bot:
 ```bash
-greentic flow validate <file>.ygtc
+greentic flow pull weather_bot_telegram.ygtc
+```
+Extra instructions after you pull the flow:
+- you will need to [configure one time a Telegram bot](https://docs.radist.online/docs/our-products/radist-web/connections/telegram-bot/instructions-for-creating-and-configuring-a-bot-in-botfather) and obtain a TELEGRAM_TOKEN. You can add it via 'greentic secret add TELEGRAM_TOKEN <your_token>
+- You also need to [sign up to the WeatherApi](https://www.weatherapi.com/signup.aspx) and generate an API key. 
+- You can add it via 'greentic secret add WEATHERAPI_KEY <your_key>
+- you will now be able to get the weather forecast via your Telegram bot.
+- The Telegram Weather Bot optionally uses AI to help the user, e.g.
+- if you type: "Get me the weather in London for tomorrow" instead of 'London'
+- when asked: 👉 What location would you like a forecast for?
+- For this to work you also need to install [ollama](https://ollama.com/download)
+- and do 'ollama pull gemma:instruct'
+
+Start greentic with:
+```bash
+greentic run
+```
+You should now have a fully working Telegram Weather Bot.
+
+
+If you want to create your own flows:
+```bash
 greentic flow deploy <file>.ygtc
 ```
 
@@ -151,13 +180,12 @@ nodes:
           max_words: 3
       fallback_agent:
         type: ollama
+        model: gemma:instruct
         task: |
-          You are a weather bot and have asked the location for a weather forecast.
-          The user responded in free text.  Extract exactly the location they want the weather for.
-          Return **exactly** a JSON object like:
-          {
-            "q": "<location text>",
-          }
+          The user wants the weather forecast. Find out for which city or location they want the weather and
+          assign this to a state value named `q`. If they mention the days, assign the number to a state value named `days`, 
+          otherwise use `3` for `days`.
+          If you are unsure about the place (`q`), ask the user to clarify where they want the weather forecast for.
       routing:
         - to: forecast_weather
   # 3) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
@@ -203,7 +231,7 @@ connections:
 ## ⚙️ Controlling Flows, Channels & Tools
 
 ```bash
-# Start/Stop flows
+# Validate a flow before deploying. Afterwards you can start/stop the flow
 greentic flow validate <file>.ygtc 
 greentic flow deploy <file>.ygtc
 greentic flow start <flow-id>
