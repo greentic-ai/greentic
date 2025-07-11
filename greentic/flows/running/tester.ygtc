@@ -17,10 +17,12 @@ nodes:
           prompt: "👉 What location would you like a forecast for?"
           answer_type: text
           state_key: q
+          max_words: 3
         - id: q_days
           prompt: "👉 Over how many days? (enter a number)"
           answer_type: number
           state_key: days
+          max_words: 2
           validate:
             range:
               min: 0.0
@@ -30,13 +32,9 @@ nodes:
         model: llama3.2:1b
         # task: you can repeat the same instruction you used before
         task: |
-          The user responded in free text.  Extract exactly two fields from
-          their reply: `"q"` (string location) and `"days"` (integer number of days).
-          Return **exactly** a JSON object like:
-          {
-            "q": "<location text>",
-            "days": <integer>
-          }
+          Extract the location the user wants a weather forecast and if available the days.
+          The location is added to state as 'q' and the days as 'days'. 
+          Default to 3 days if not specified. 
       routing:
         - to: debug_process
   debug_process:

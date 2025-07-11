@@ -34,11 +34,12 @@ nodes:
               max: 7.0
       fallback_agent:
         type: ollama
-        model: llama3.2:1b
+        model: gemma:instruct
         task: | 
-          Extract the location the user wants a weather forecast and if available the days.
-          The location is added to state as 'q' and the days as 'days'. 
-          Default to 3 days if not specified. 
+          The user wants the weather forecast. Find out for which city or location they want the weather and
+          assign this to a state value named `q`. If they mention the days, assign the number to a state value named `days`, 
+          otherwise use `3` for `days`.
+          If you are unsure about the place (`q`), ask the user to clarify where they want the weather forecast for.
       routing:
         - to: forecast_weather
 

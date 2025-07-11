@@ -113,15 +113,39 @@ impl NodeType for OllamaAgent {
                 let system_prompt = match  &self.system_prompt {
                     Some(prompt) => prompt,
                     None => {
-                        &format!(r#"You are an AI agent working inside a structured system.
+                        &format!(r#"You are a structured AI agent inside an automation platform.
 
-                        Your task is to extract the variables required by the given `task`, based on the latest `payload`, existing `state`, and available `connections`.
+You are given:
+- A free-text `task` written by a non-technical user.
+- A `payload` representing the latest user message.
+- An existing `state` of previously known variables.
+- A list of allowed `connections` (APIs or services you can call).
 
-                        Return your result as valid JSON that fits the expected Rust enum type `AgentReply`:
-                        - If the task can be completed with the provided information, fill in the `Success` variant.
-                        - If you cannot complete the task, return the `NeedMoreInfo` variant with a clear question for the user.
+Your job is to extract the **structured values** needed to complete the task and return an `AgentReply` in valid JSON.
 
-                        Do not guess. Only return data you are confident about."#)
+### Instructions
+
+1. **If the task can be completed confidently:**
+   - Use the `Success` variant.
+   - Fill `state_add` with new values you extract from the payload.
+     - Each entry must include: `key`, `value`, and `value_type` (`string`, `integer`, `number`, `boolean`, `array`).
+   - Use `state_update` if you're changing a known value.
+   - Use `state_delete` if a previously stored key is no longer needed.
+   - Copy the `connections` list **exactly as provided**, unless the task clearly says to filter or choose among them.
+
+2. **If the task is missing required info:**
+   - Use the `NeedMoreInfo` variant.
+   - Ask a clear, concise question to get the missing input.
+   - If any required value is uncertain or ambiguous, do not insert a placeholder (e.g., "value": "What days?").
+   - Instead, return the NeedMoreInfo variant and ask for the specific missing input clearly.
+
+### Output Format
+Return JSON that matches the Rust enum `AgentReply`, either:
+- `Success`: with `payload`, optional state changes, and the copied `connections`.
+- `NeedMoreInfo`: with a question in the `payload.text` field.
+
+⚠️ Never guess or hallucinate values. Only extract what you're confident about.
+"#)
                     },
                 };
                 
@@ -137,23 +161,16 @@ impl NodeType for OllamaAgent {
 
                 // 3) call the LLM
                 let model = self.model.clone().unwrap_or("llama3:latest".into());
-                //let format = FormatType::StructuredJson(Box::new(JsonStructure::new::<AgentReply>()));
                 let schema: schemars::Schema = schemars::schema_for!(AgentReply);
-                let format = FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema)));
+                let format = FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema.clone())));
                 let mut req = ChatMessageRequest::new(model, history).format(format.clone());
                 if let Some(opts) = &self.model_options {
                     req = req.options(opts.clone());
-                }
-
-                println!(
-                    "@@@ REMOVE: {}",
-                    serde_json::to_string_pretty(&schemars::schema_for!(AgentReply)).unwrap()
-                );
+                }              
 
                 let resp = client.send_chat_messages_with_history(&mut vec![], req).await;
                 if resp.is_err(){
                     let err = resp.err();
-                    println!("@@@ REMOVE: {:?}",err);
                     error!("LLM gave error: {:?}",err);
                     return Err(NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {:?}", err))));
                 }
@@ -177,12 +194,17 @@ impl NodeType for OllamaAgent {
                                 context.delete_state(state);
                             }
                         }
+                        
                         let next_conn = match connections.is_empty() {
                             true => None,
                             false => Some(connections),
                         };
 
-                        let main_msg = Message::new(&input.id(), payload.clone(), input.session_id().clone());
+                        let payload_json: JsonValue = match serde_json::from_str(&payload){
+                            Ok(json) => json,
+                            Err(_) => json!({"text":payload.clone()}),
+                        };
+                        let main_msg = Message::new(&input.id(), payload_json, input.session_id().clone());
                         return Ok(NodeOut::next(main_msg, next_conn));
                         
                     },

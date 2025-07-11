@@ -1,14 +1,14 @@
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
+
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 
 use crate::flow::state::StateValue;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+//#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentReply {
     Success {
-        payload: serde_json::Value,
+        payload: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state_add: Option<Vec<StateKeyValue>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -20,100 +20,18 @@ pub enum AgentReply {
     NeedMoreInfo {
         payload: FollowUpPayload,
     },
-}
-
-impl JsonSchema for AgentReply {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("AgentReply")
-    }
-
-    fn schema_id() -> Cow<'static, str> {
-        Cow::Owned(format!("{}::AgentReply", module_path!()))
-    }
-
-    fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "title": "AgentReply",
-            "oneOf": [
-                {
-                    "type": "object",
-                    "properties": {
-                        "type": { "const": "success" },
-                        "payload": {},
-                        "state_add": {
-                            "type": ["array", "null"],
-                            "items": { "$ref": "#/$defs/StateKeyValue" }
-                        },
-                        "state_update": {
-                            "type": ["array", "null"],
-                            "items": { "$ref": "#/$defs/StateKeyValue" }
-                        },
-                        "state_delete": {
-                            "type": ["array", "null"],
-                            "items": { "type": "string" }
-                        },
-                        "connections": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        }
-                    },
-                    "required": ["type", "payload", "connections"]
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "type": { "const": "need_more_info" },
-                        "payload": { "$ref": "#/$defs/FollowUpPayload" }
-                    },
-                    "required": ["type", "payload"]
-                }
-            ]
-        })
-    }
-
-    fn inline_schema() -> bool {
-        false
-    }
-}
-
+} 
 // ---------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StateKeyValue {
     pub key: String,
     pub value: String,
     pub value_type: ValueType,
 }
 
-impl JsonSchema for StateKeyValue {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("StateKeyValue")
-    }
-
-    fn schema_id() -> Cow<'static, str> {
-        Cow::Owned(format!("{}::StateKeyValue", module_path!()))
-    }
-
-    fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "object",
-            "properties": {
-                "key": { "type": "string" },
-                "value": { "type": "string" },
-                "value_type": { "$ref": "#/$defs/ValueType" }
-            },
-            "required": ["key", "value", "value_type"]
-        })
-    }
-
-    fn inline_schema() -> bool {
-        false
-    }
-}
-
 // ---------------------------------------------------
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ValueType {
     String,
@@ -123,58 +41,12 @@ pub enum ValueType {
     Array,
 }
 
-impl JsonSchema for ValueType {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("ValueType")
-    }
-
-    fn schema_id() -> Cow<'static, str> {
-        Cow::Owned(format!("{}::ValueType", module_path!()))
-    }
-
-    fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "enum": ["string", "integer", "number", "boolean", "array"]
-        })
-    }
-
-    fn inline_schema() -> bool {
-        true
-    }
-}
-
 // ---------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FollowUpPayload {
     pub text: String,
 }
-
-impl JsonSchema for FollowUpPayload {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("FollowUpPayload")
-    }
-
-    fn schema_id() -> Cow<'static, str> {
-        Cow::Owned(format!("{}::FollowUpPayload", module_path!()))
-    }
-
-    fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "object",
-            "properties": {
-                "text": { "type": "string" }
-            },
-            "required": ["text"]
-        })
-    }
-
-    fn inline_schema() -> bool {
-        false
-    }
-}
-
 
 pub fn parse_state_value(value_type: &ValueType, raw: &str) -> Result<StateValue, String> {
     match value_type {
@@ -207,3 +79,17 @@ pub fn parse_state_value(value_type: &ValueType, raw: &str) -> Result<StateValue
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    #[test]
+    fn generates_schema() {
+        let schema = schemars::schema_for!(AgentReply);
+         println!(
+                    "@@@ REMOVE 123: {}",
+                    serde_json::to_string_pretty(&schema).unwrap()
+         );
+    }
+}
