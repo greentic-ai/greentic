@@ -138,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
             process::exit(0);
         }
         Commands::Init => {
-            cmd_init(root.clone()).await?;
+            cmd_init(root.clone(),secrets_manager).await?;
             println!("Initialized greentic layout at {}", root.display());
             process::exit(0);
         }

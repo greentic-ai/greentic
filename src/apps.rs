@@ -1,11 +1,13 @@
 // src/app.rs
-use std::{fs, io::Write, path::PathBuf, sync::Arc};
-use anyhow::{Context, Error};
+use std::{fs::{self, File}, io::{stdin, stdout, Write}, path::PathBuf, sync::Arc};
+use anyhow::{bail, Context, Error};
 
 use channel_plugin::message::LogLevel;
+use reqwest::{header::{HeaderValue, AUTHORIZATION}, Client};
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tracing::error;
-
+use anyhow::{anyhow, Result};
 use crate::{
     channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
 };
@@ -157,7 +159,7 @@ impl App {
     }
 }
 /// Called when user runs `greentic init --root <dir>`
-pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
+pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<(),Error> {
     // 1) create all the directories we need
     let dirs = [
         "greentic/config",
@@ -187,52 +189,183 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
         println!("Skipping {}, already exists", conf_path.display());
     }
 
-    // 3) write a sample flow stub in flows/
-    let sample = root.join("greentic/flows/running/sample.greentic");
-    if !sample.exists() {
-        let template = r#"
+    // 3) registration
+    println!("Greentic registration so you can download flows, channels, tools,...");
+    println!("📄 Please review our Terms & Conditions:");
+    println!("   👉 https://greentic.ai/assets/tandcs.html");
 
-{
-    "id": "sample.greentic",
-    "title": "Mock Flow",
-    "description": "A sample flow",
-        "channels": [
-        "mock_inout",
-        "mock_middle" 
-    ],
-    "nodes": {
-        "mock_in": {
-            "channel": "mock_inout",
-            "in": true
-        },
-        "mock_middle": {
-            "channel": "mock_middle",
-            "in": true,
-            "out": true
-        },
-        "mock_out": {
-            "channel": "mock_inout",
-            "out": true
+    loop {
+        print!("Do you accept the Terms & Conditions? [Y,n]: ");
+        stdout().flush().unwrap();
+
+        let mut response = String::new();
+        stdin().read_line(&mut response).unwrap();
+        let response = response.trim().to_lowercase();
+
+        match response.as_str() {
+            "" | "y" | "yes" => {
+                println!("✅ Thank you for accepting the Terms & Conditions.");
+                break;
+            }
+            "n" | "no" => {
+                println!("❌ You must accept the Terms & Conditions to continue.");
+                std::process::exit(1); // exit the program
+            }
+            _ => {
+                println!("⚠️  Invalid input. Please type 'y' or 'n'.");
+            }
         }
-    },
-    "connections": {
-        "mock_in": [
-            "mock_middle"
-        ],
-        "mock_middle": [
-            "mock_out"
-        ]
     }
-}
-        "#;
-        let mut f = fs::File::create(&sample)
-            .with_context(|| format!("failed to create {}", sample.display()))?;
-        f.write_all(template.as_bytes())?;
-        println!("Created sample flow {}", sample.display());
-    } else {
-        println!("Skipping {}, already exists", sample.display());
+    
+    print!("Please provide your email:");
+    stdout().flush().unwrap(); // ensure prompt shows before user types
+
+    let mut email = String::new();
+    stdin().read_line(&mut email).unwrap();
+    let email = email.trim(); // remove newline
+
+    let mut marketing_consent = false;
+    loop {
+        print!("Are you ok to be contacted by email about new features and other Greentic services? [Y,n]: ");
+        stdout().flush().unwrap();
+
+        let mut response = String::new();
+        stdin().read_line(&mut response).unwrap();
+        let response = response.trim().to_lowercase();
+
+        match response.as_str() {
+            "" | "y" | "yes" => {
+                println!("✅ Thank you.");
+                marketing_consent = true;
+                break;
+            }
+            "n" | "no" => {
+                println!("❌ Thank you, we will not store your email.");
+                break;
+            }
+            _ => {
+                println!("⚠️  Invalid input. Please type 'y' or 'n'.");
+            }
+        }
     }
+
+    let client = Client::new();
+    let res = client
+        .post("https://greenticstore.com/register")
+        .json(&RegisterRequest { email })
+        .send()
+        .await?;
+
+    let _ = match res.json::<Verifying>().await{
+        Ok(verifying) => verifying,
+        Err(err) => {
+            error!("Error veryifying: {:?}",err);
+            bail!("Could not continue verification because {:?}",err.to_string());
+        },
+    };
+    println!("A verifying code was send to your email. Please reproduce it here.");
+    print!("Code: ");
+    stdout().flush().unwrap();
+
+    let mut code = String::new();
+    stdin().read_line(&mut code).unwrap();
+    let code = code.trim(); // remove newline
+
+    let body = VerifyRequest {
+        email,
+        code,
+        marketing_consent,
+    };
+
+    let client = Client::new();
+    let res = client
+        .post("https://greenticstore.com/verify")
+        .json(&body)
+        .send()
+        .await?;
+
+    let verified = match res.json::<Verified>().await {
+        Ok(response) => response,
+        Err(err) => {
+            error!("Error verifying: {:?}", err);
+            bail!("Could not continue verification because {:?}", err.to_string());
+        }
+    };
+
+    let token = &verified.user_token;
+
+    let result = secrets_manager.add_secret("GREENTIC_TOKEN", token).await;
+
+    if result.is_err() {
+        bail!("Could not add the GREENTIC_TOKEN={} to the secrets. Please add the token manually. Not doing so will not enable you to download from the Greentic store.",token);
+    }
+
+    let out_channels_dir = root.join("greentic/plugins/channels/running");
+    let out_tools_dir = root.join("greentic/plugins/tools");
+    let out_flows_dir = root.join("greentic/flows/running");
+    let _ = download(token, "channels", "channel_telegram", out_channels_dir.clone()).await;
+    let _ = download(token, "channels", "channel_ws", out_channels_dir.clone()).await;
+    let _ = download(token, "tools", "weather_api.wasm", out_tools_dir.clone()).await;
+    let _ = download(token, "flows", "weather_bot_telegram.ygtc", out_flows_dir.clone()).await;
+    let _ = download(token, "flows", "weather_bot_ws.ygtc", out_flows_dir.clone()).await;
 
     println!("Greentic directory initialized at {}", root.display());
     Ok(())
+}
+
+pub async fn download(
+    token: &String,
+    download_type: &str,
+    download_file: &str,
+    out_dir: PathBuf,
+) -> Result<()> {
+    let url = format!("https://greenticstore.com/{}/{}", download_type, download_file);
+    let output_path = out_dir.join(&download_file);
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))?)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "❌ Failed to download '{}'. Status: {}",
+            download_file,
+            response.status()
+        ));
+    }
+
+    let bytes = response.bytes().await?;
+
+    let mut file = File::create(&output_path)?;
+    file.write_all(&bytes)?;
+
+    println!("✅ Downloaded to {:?}", output_path);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct RegisterRequest<'a> {
+    email: &'a str,
+}
+
+#[derive(Deserialize, Debug)]
+struct Verifying {
+    _status: String,
+}
+
+
+#[derive(Serialize)]
+struct VerifyRequest<'a> {
+    email: &'a str,
+    code: &'a str,
+    marketing_consent: bool,
+}
+
+#[derive(Deserialize, Debug)]
+struct Verified {
+    _status: String,
+    user_token: String,
 }

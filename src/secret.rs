@@ -29,7 +29,7 @@ pub trait SecretsManagerType: Send + Sync {
     }
     fn get(&self, key: &str) -> Option<u32>;
     fn keys(&self) -> Vec<String>;
-    async fn add_secret(&mut self, key: &str, secret: &str) -> Result<(),SecretsError>;
+    async fn add_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>;
     async fn reveal(&self, handle: u32) -> Result<Option<String>, SecretsError>;
     fn name(&self) -> &'static str;
     fn clone_box(&self) -> Arc<dyn SecretsManagerType>;
@@ -40,6 +40,10 @@ pub struct SecretsManager(pub Arc<dyn SecretsManagerType + Send + Sync>);
 impl SecretsManager {
     pub fn into_inner(self) -> Arc<dyn SecretsManagerType> {
         self.0
+    }
+
+    pub async fn add_secret(&self, key: &str, value: &str)  -> Result<(),SecretsError> {
+        self.0.add_secret(key, value).await
     }
 }
 
@@ -208,7 +212,7 @@ impl SecretsManagerType for EnvSecretsManager {
         let keys_read = self.keys.read().unwrap();
         keys_read.keys().cloned().collect()
     }
-    async fn add_secret(&mut self, key: &str, secret: &str) -> Result<(),SecretsError>{
+    async fn add_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>{
         self.add_secret_sync(key, secret);
         Ok(())
     }
@@ -252,7 +256,7 @@ impl SecretsManagerType for EmptySecretsManager{
     fn keys(&self) -> Vec<String>  {
         vec![]
     }
-    async fn add_secret(&mut self, _key: &str, _secret: &str) -> Result<(),SecretsError>{
+    async fn add_secret(&self, _key: &str, _secret: &str) -> Result<(),SecretsError>{
        Err(SecretsError::NotFound)
     }
 

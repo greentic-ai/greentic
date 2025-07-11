@@ -5,6 +5,4 @@ pub mod plugin_helpers;
 pub mod plugin_actor;
 pub mod channel_client;
 pub mod control_client;
-
-#[cfg(feature = "test-utils")]
 pub mod plugin_test_util;

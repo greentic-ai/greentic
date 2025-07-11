@@ -1,4 +1,4 @@
-use std::{thread, time::Duration};
+use std::{sync::{Arc, Mutex}, thread, time::Duration};
 use async_trait::async_trait;
 // my_plugin/src/lib.rs
 use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, StopResult}, plugin_runtime::{run, HasStore, PluginHandler}};
@@ -8,7 +8,7 @@ use tracing::info;
 // Your real plugin type:
 #[derive(Default, Clone)]
 pub struct MockPlugin {
-    state: ChannelState,
+    state: Arc<Mutex<ChannelState>>,
     config: DashMap<String,String>,
     secrets: DashMap<String,String>,
 }
@@ -22,7 +22,7 @@ impl HasStore for MockPlugin {
 impl PluginHandler for MockPlugin {
     async fn init(&mut self, _params: InitParams) -> InitResult{
         info!("[mock] started");
-        self.state = ChannelState::RUNNING;
+        *self.state.lock().unwrap() = ChannelState::RUNNING;
         InitResult{ success: true, error: None }
     }
     fn name(&self) -> NameResult {
@@ -43,9 +43,9 @@ impl PluginHandler for MockPlugin {
         }}
     }
 
-    async fn state(&self) -> StateResult { StateResult{state:self.state.clone()} }
-    async fn drain(&mut self) -> DrainResult { info!("[mock] drain"); self.state = ChannelState::DRAINING; DrainResult{ success: true, error: None }}
-    async fn stop(&mut self) -> StopResult { info!("[mock] stop"); self.state = ChannelState::STOPPED; StopResult{ success: true, error: None } }
+    async fn state(&self) -> StateResult { StateResult{state:self.state.lock().unwrap().clone()} }
+    async fn drain(&mut self) -> DrainResult { info!("[mock] drain"); *self.state.lock().unwrap() = ChannelState::DRAINING; DrainResult{ success: true, error: None }}
+    async fn stop(&mut self) -> StopResult { info!("[mock] stop"); *self.state.lock().unwrap() = ChannelState::STOPPED; StopResult{ success: true, error: None } }
     
     fn list_config_keys(&self) -> ListKeysResult{
         ListKeysResult{ required_keys: vec![], optional_keys: vec![] }

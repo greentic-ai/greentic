@@ -27,10 +27,3 @@ strum_macros = "0.27.1"
 
 [lib]
 crate-type = ["rlib"]
-
-#[dev-dependencies]
-#channel_plugin = { path = ".", version="0.2.0", features = ["test-utils"] }
-
-[features]
-default = []
-test-utils = []

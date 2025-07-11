@@ -3,17 +3,14 @@ use std::path::Path;
 use std::sync::Arc;
 use anyhow::Result;
 use dashmap::DashMap;
-#[cfg(feature = "test-utils")]
 use serde_json::json;
 use strum_macros::{Display, EnumString};
 use tokio::sync::{mpsc, oneshot};
 use crate::channel_client::{ChannelClient, ChannelClientType, RpcChannelClient};
 use crate::control_client::{ControlClient, ControlClientType, RpcControlClient};
 use crate::jsonrpc::{Message, Request, Response};
-#[cfg(feature = "test-utils")]
 use crate::jsonrpc::Id;
 use crate::message::*;
-#[cfg(feature = "test-utils")]
 use crate::plugin_runtime::{HasStore, PluginHandler};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -184,7 +181,6 @@ impl PluginHandle
      /* ────────────────────────────────────────────────────────────────────────
      * 1)  In-process actor
      * ──────────────────────────────────────────────────────────────────────── */
-    #[cfg(feature = "test-utils")]
     pub async fn in_process<P>(
         plugin: P,
     ) -> anyhow::Result<(PluginHandle,
@@ -318,7 +314,6 @@ where
 // -----------------------------------------------------------------------------
 // Launch plugin actor and return channels
 // -----------------------------------------------------------------------------
-#[cfg(feature = "test-utils")]
 pub async fn run_plugin_instance<P>(plugin: Arc<P>) -> PluginHandle
 where
     Arc<P>: PluginHandler
@@ -380,7 +375,6 @@ where
 /// what to do with it (e.g. forward to stdout or a channel).
 /// Dispatch a JSON-RPC request directly against an *in-process* plugin
 /// (any value that implements `PluginHandler`).
-#[cfg(feature = "test-utils")]
 pub async fn handle_internal_request<P>(plugin: &mut P, req: Request) -> Response
 where
     P: PluginHandler + Send + Sync,
