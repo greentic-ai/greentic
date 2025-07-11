@@ -104,24 +104,30 @@ If you don’t have Rust yet, the easiest way is via `rustup`:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
+---
+
 ## 🚀 Getting Started
 
 Install Greentic.AI via:
 ```bash
 cargo install greentic
 ```
+
 The first time around initialise everything:
 - creates the greentic configuration directories
 - registration so your user gets a GREENTIC_TOKEN
 - and you can pull flows, channels, tools,... from
 - the greenticstore.com.
+
 ```bash
 greentic init
 ```
 Pull your first flow, i.e. Telegram Weather Bot:
+
 ```bash
 greentic flow pull weather_bot_telegram.ygtc
 ```
+
 Extra instructions after you pull the flow:
 - you will need to [configure one time a Telegram bot](https://docs.radist.online/docs/our-products/radist-web/connections/telegram-bot/instructions-for-creating-and-configuring-a-bot-in-botfather) and obtain a TELEGRAM_TOKEN. You can add it via 'greentic secret add TELEGRAM_TOKEN <your_token>
 - You also need to [sign up to the WeatherApi](https://www.weatherapi.com/signup.aspx) and generate an API key. 
@@ -138,7 +144,6 @@ Start greentic with:
 greentic run
 ```
 You should now have a fully working Telegram Weather Bot.
-
 
 If you want to create your own flows:
 ```bash
