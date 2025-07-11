@@ -24,24 +24,22 @@ nodes:
           state_key: q
           max_words: 3
         - id: q_days
-          prompt: "👉 Over how many days? (enter a number)"
+          prompt: "👉 Over how many days? (enter a number with 3 being the maximum)"
           answer_type: number
           state_key: days
           max_words: 2
           validate:
             range:
               min: 0.0
-              max: 7.0
+              max: 3.0
       fallback_agent:
         type: ollama
-        model: llama3.2:1b
+        model: gemma:instruct
         task: | 
-          Extract the location the user wants a weather forecast and if available the days.
-          Return the information in the format {'q': 'location', 'days': 3}. Example answer:
-          {'q': 'Thames Ditton', 'days': 5} 
-          When the user asked: "What is the weather in Thames Ditton for the next 5 days?" 
-          Location (q) is important. Default to 3 days if not specified. 
-          The next step is `forecast_weather` and set `payload` to a JSON object with `q` and `days`.
+          The user wants the weather forecast. Find out for which city or location they want the weather and
+          assign this to a state value named `q`. If they mention the days, assign the number to a state value named `days`, 
+          otherwise use `3` for `days`.
+          If you are unsure about the place (`q`), ask the user to clarify where they want the weather forecast for.
       routing:
         - to: forecast_weather
 

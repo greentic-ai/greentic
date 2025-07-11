@@ -2,6 +2,10 @@
 name = "channel_plugin"
 version = "0.2.0"
 edition = "2024"
+authors = ["maarten <maarten@greentic.com>"]
+description = "The fastest, most secure and extendable digital workforce platform"
+license = "MIT"
+repository = "https://github.com/greentic-ai/greentic"
 
 [dependencies]
 dashmap = "6.1.0"
@@ -24,8 +28,8 @@ strum_macros = "0.27.1"
 [lib]
 crate-type = ["rlib"]
 
-[dev-dependencies]
-channel_plugin = { path = ".", version="0.2.0", features = ["test-utils"] }
+#[dev-dependencies]
+#channel_plugin = { path = ".", version="0.2.0", features = ["test-utils"] }
 
 [features]
 default = []
