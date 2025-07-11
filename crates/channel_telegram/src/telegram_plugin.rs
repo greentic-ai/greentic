@@ -4,7 +4,7 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use channel_plugin::{message::{make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, StopResult, TextMessage}, plugin_helpers::{build_user_joined_event, get_user_joined_left_events,}, plugin_runtime::{ HasStore, PluginHandler}};
 use tokio::{runtime::Builder, sync::Notify};
 use tracing::{error, info};
-use std::{convert::Infallible, sync::Arc, thread};
+use std::{convert::Infallible, sync::{Arc, Mutex}, thread};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use chrono::Utc;
@@ -166,7 +166,7 @@ pub struct TelegramPlugin {
     /// Incoming queue for async receive_message
     incoming_tx: Sender<ChannelMessage>,
     inbound_rx: Receiver<ChannelMessage>,
-    state:   ChannelState,
+    state:   Arc<Mutex<ChannelState>>,
     bot:     Option<Bot>,
     cfg: DashMap<String, String>,
     secrets: DashMap<String, String>,
@@ -179,7 +179,7 @@ impl Default for TelegramPlugin {
         TelegramPlugin { 
             incoming_tx: tx,
             inbound_rx: rx,
-            state: ChannelState::STOPPED, 
+            state: Arc::new(Mutex::new(ChannelState::STOPPED)), 
             bot:None, 
             cfg: DashMap::new(),
             secrets: DashMap::new(),
@@ -392,13 +392,13 @@ impl PluginHandler for TelegramPlugin {
         HealthResult { healthy: true, reason: None }
     }
     async fn state(&self) -> StateResult{
-        StateResult{ state: self.state }
+        StateResult{ state: self.state.lock().unwrap().clone() }
     }
 
      async fn init(&mut self, _p: channel_plugin::message::InitParams) -> InitResult {
         info!("[telegram] init");
         self.init_dispatcher().await;
-        self.state = ChannelState::RUNNING;
+        *self.state.lock().unwrap() = ChannelState::RUNNING;
         InitResult { success: true, error: None }
     }
 
@@ -411,7 +411,7 @@ impl PluginHandler for TelegramPlugin {
         // Since we use an unbounded channel for incoming messages, and
         // our send_message never blocks, there's nothing to wait for on drain.
         // If you had an outbound queue, you'd await that here.
-        self.state = ChannelState::STOPPED;
+        *self.state.lock().unwrap() = ChannelState::STOPPED;
         DrainResult{ success: true, error: None }
     }
 
@@ -421,7 +421,7 @@ impl PluginHandler for TelegramPlugin {
         if let Some(notify) = &self.shutdown {
             notify.notify_one();
         }
-        self.state = ChannelState::STOPPED;
+        *self.state.lock().unwrap() = ChannelState::STOPPED;
         StopResult{ success: true, error: None }
 
     }

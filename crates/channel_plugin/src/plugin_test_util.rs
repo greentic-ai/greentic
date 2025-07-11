@@ -204,7 +204,7 @@ pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
 }
 
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test))]
 mod tests {
     #[cfg(test)]
     use chrono::Utc;

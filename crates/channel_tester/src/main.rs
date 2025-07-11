@@ -17,6 +17,7 @@ use serde_yaml_bw;
 use tokio::{fs, sync::{mpsc, Mutex, Notify}, task, time};
 use tracing::{error, info};
 use uuid::Uuid;
+use std::sync::Mutex as SMutex;
 
 use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult}, plugin_runtime::{run, HasStore, PluginHandler}};
 
@@ -36,7 +37,7 @@ struct SingleTest {
 
 #[derive(Debug)]
 pub struct TesterPlugin {
-    state: ChannelState,
+    state: Arc<SMutex<ChannelState>>,
     config: DashMap<String, String>,
     secrets: DashMap<String, String>,
     incoming_tx: mpsc::UnboundedSender<ChannelMessage>,
@@ -50,7 +51,7 @@ pub struct TesterPlugin {
 impl Clone for TesterPlugin {
     fn clone(&self) -> Self {
         TesterPlugin {
-            state: self.state,
+            state: Arc::new(SMutex::new(self.state.lock().unwrap().clone())),
             config: self.config.clone(),
             secrets: self.secrets.clone(),
             incoming_tx: self.incoming_tx.clone(),
@@ -68,7 +69,7 @@ impl Default for TesterPlugin {
         let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
         let (reply_tx, reply_rx) = mpsc::unbounded_channel();
         TesterPlugin {
-            state: ChannelState::STOPPED,
+            state: Arc::new(SMutex::new(ChannelState::STOPPED)),
             config: DashMap::new(),
             secrets: DashMap::new(),
             incoming_tx,
@@ -115,7 +116,7 @@ impl PluginHandler for TesterPlugin {
     fn list_secret_keys(&self) -> ListKeysResult {
         ListKeysResult{ required_keys: vec![], optional_keys: vec![] }
     }
-    async fn state(&self) -> StateResult { StateResult{state:self.state.clone()} }
+    async fn state(&self) -> StateResult { StateResult{state:self.state.lock().unwrap().clone()} }
 
     async fn init(&mut self, _params: InitParams) -> InitResult {
         let shutdown = Arc::new(Notify::new());
@@ -155,7 +156,7 @@ impl PluginHandler for TesterPlugin {
         watcher.watch(&tests_dir, RecursiveMode::NonRecursive).expect("failed to watch ./greentic/tests");
         self.watcher = Some(watcher);
 
-        self.state = ChannelState::RUNNING;
+        *self.state.lock().unwrap() = ChannelState::RUNNING;
         let plugin = Arc::new(self.clone());
 
         let shutdown_clone = shutdown.clone();
@@ -224,7 +225,7 @@ impl PluginHandler for TesterPlugin {
         if let Some(shutdown) = self.shutdown.take() {
             shutdown.notify_waiters();
         }
-        self.state = ChannelState::STOPPED;
+        *self.state.lock().unwrap() = ChannelState::STOPPED;
         DrainResult{ success: true, error: None }
 
     }
@@ -236,7 +237,7 @@ impl PluginHandler for TesterPlugin {
         if let Some(shutdown) = self.shutdown.take() {
             shutdown.notify_waiters();
         }
-        self.state = ChannelState::STOPPED;
+        *self.state.lock().unwrap() = ChannelState::STOPPED;
         StopResult{ success: true, error: None }
     }
 

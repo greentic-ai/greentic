@@ -25,7 +25,7 @@ use std::{panic, time::{Instant}};
 use async_trait::async_trait;
 use anyhow::Result;
 use dashmap::DashMap;
-use tracing::{dispatcher, error, level_filters::LevelFilter, Dispatch};
+use tracing::{dispatcher, error, info, level_filters::LevelFilter, Dispatch};
 use tracing_appender::rolling::daily;
 use tracing_subscriber::{fmt, Registry};
 use crate::{jsonrpc::{Id, Message, Request, Response}, plugin_actor::Method};
@@ -252,11 +252,13 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
     });
 
     // ── 2. spawn poller that turns `receive_message()` into `messageIn` notif
+    info!("@@@ REMOVE state: {:?}",plugin.state().await);
     let mut plugin_clone = plugin.clone();
-
+    info!("@@@ REMOVE clone state: {:?}",plugin_clone.state().await);
     tokio::spawn(async move {
         loop {
-            //if plugin_clone.state().await.state == ChannelState::RUNNING {
+             info!("@@@ REMOVE loop state: {:?}",plugin_clone.state().await);
+            if plugin_clone.state().await.state == ChannelState::RUNNING {
                 let result = plugin_clone.receive_message().await;
                 match serde_json::to_value(&result) {
                     Ok(v) => {
@@ -275,9 +277,9 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
                         break;
                     }
                 }
-           // } else {
-           //     tokio::time::sleep(Duration::from_millis(1000)).await;
-           // }
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            }
         }
     });
     // ── 3. read stdin, dispatch requests, send responses via the same tx ─────

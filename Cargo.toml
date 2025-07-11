@@ -62,10 +62,10 @@ regex = "1.11.1"
 tokio-util = "0.7.15"
 moka = { version = "0.12.10", features = ["future"] }
 chrono-english = "0.1.7"
-reqwest = "0.12.22"
+reqwest = { version="0.12.22", features = ["json"] }
 async-trait = "0.1.88"
 
 [dev-dependencies]
 url = "2.5.4"
-channel_plugin = { version="0.2.0", path = "crates/channel_plugin" , features = ["test-utils"]}
+channel_plugin = { version="0.2.0", path = "crates/channel_plugin"}
 

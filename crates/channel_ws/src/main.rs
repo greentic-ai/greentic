@@ -1,5 +1,5 @@
 // crates/ws_plugin/src/main.rs
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::{Arc, Mutex as SMutex}, time::Duration};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
@@ -29,7 +29,7 @@ pub struct WsPlugin {
     addr:      String,
     conn_handle:    Option<Arc<JoinHandle<()>>>,
     manager_handle:    Option<Arc<JoinHandle<()>>>,
-    state:     ChannelState,
+    state:     Arc<SMutex<ChannelState>>,
     cmd_tx:    Option<UnboundedSender<Command>>,
     inbound_tx:UnboundedSender<ChannelMessage>, // to Greentic
     inbound_rx: Arc<Mutex<UnboundedReceiver<ChannelMessage>>>,
@@ -43,7 +43,7 @@ impl Default for WsPlugin {
         let (inbound_tx, inbound_rx) = unbounded_channel::<ChannelMessage>();
         Self {
             addr: "0.0.0.0:8888".into(),
-            state: ChannelState::STOPPED,
+            state: Arc::new(SMutex::new(ChannelState::STOPPED)),
             cmd_tx: None,
             inbound_tx,
             inbound_rx: Arc::new(Mutex::new(inbound_rx)),
@@ -196,7 +196,7 @@ impl PluginHandler for WsPlugin {
          });
 
         self.conn_handle = Some(Arc::new(handle));
-        self.state = ChannelState::RUNNING;
+        *self.state.lock().unwrap() = ChannelState::RUNNING;
 
         InitResult { success: true, error: None }
     }
@@ -249,7 +249,7 @@ impl PluginHandler for WsPlugin {
     /// Drain the plugin
     async fn drain(&mut self) -> DrainResult {
         info!("[ws] draining");
-        self.state= ChannelState::DRAINING;
+        *self.state.lock().unwrap() = ChannelState::DRAINING;
         if let Some(shutdown) = &self.shutdown_tx {
             debug!("[ws] shutdown");
             let _ = shutdown.send(()); // notify all listeners
@@ -266,7 +266,7 @@ impl PluginHandler for WsPlugin {
         }
 
 
-        self.state = ChannelState::STOPPED;
+        *self.state.lock().unwrap() = ChannelState::STOPPED;
         DrainResult{ success: true, error: None }
     }
     /// Stop the plugin
@@ -282,7 +282,7 @@ impl PluginHandler for WsPlugin {
     }
     /// Request the current status
     async fn state(&self) -> StateResult{
-        StateResult{ state: self.state }
+        StateResult{ state: self.state.lock().unwrap().clone() }
     }
    
     /// Returns the plugin name, e.g., "telegram", "ws", etc.
