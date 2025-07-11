@@ -1,22 +1,18 @@
-id: telegram.weather_with_ollama
-title: Telegram → Weather (with Ollama extraction)
+id: ws_weather
+title: Websocket → Weather (with Ollama extraction)
 description: >
-  A Telegram flow that greets the user, uses Ollama to parse “location”+“days,” 
+  A WS flow that greets the user, asks questions or uses Ollama to parse “location”+“days,” 
   calls weather_api, and replies via a template.
 channels:
-  - telegram
-
+  - ws
 nodes:
-  # 1) Incoming Telegram node: listens for ANY message from Telegram.
-  telegram_in:
-    channel: telegram
+  ws_in:
+    channel: ws
     in: true
-
-  # 2) QA node: ask location & days, fallback to OllamaAgent on parsing errors
   ask_location_and_days:
     qa:
       # No separate welcome—first question is our “greeting + ask location”
-      welcome_template: "Hi there! Let's get your weather forecast."
+      welcome_template: "Hi there, I am the weather bot. Let's get your weather forecast."
       questions:
         - id: q_location
           prompt: "👉 What location would you like a forecast for?"
@@ -24,26 +20,24 @@ nodes:
           state_key: q
           max_words: 3
         - id: q_days
-          prompt: "👉 Over how many days? (enter a number with 3 being the maximum)"
+          prompt: "👉 Over how many days? (enter a number)"
           answer_type: number
           state_key: days
           max_words: 2
           validate:
             range:
-              min: 0.0
-              max: 3.0
+              min: 0
+              max: 3
       fallback_agent:
         type: ollama
-        model: gemma:instruct
-        task: | 
-          The user wants the weather forecast. Find out for which city or location they want the weather and
-          assign this to a state value named `q`. If they mention the days, assign the number to a state value named `days`, 
-          otherwise use `3` for `days`.
-          If you are unsure about the place (`q`), ask the user to clarify where they want the weather forecast for.
+        model: llama3.2:1b
+        # task: you can repeat the same instruction you used before
+        task: |
+          Extract the location the user wants a weather forecast and if available the days.
+          The location is added to state as 'q' and the days as 'days'. 
+          Default to 3 days if not specified. 
       routing:
         - to: forecast_weather
-
-  # 3) “forecast_weather”: the Weather API tool, using the JSON from parse_request.
   forecast_weather:
     tool:
       name: weather_api
@@ -64,23 +58,16 @@ nodes:
       • Rain? {{#if (eq this.day.daily_will_it_rain 1)}}Yes{{else}}No{{/if}}
 
       {{/each}}
-  # 6) “telegram_out”: send any payload back to Telegram.
-  telegram_out:
-    channel: telegram
+  ws_out:
+    channel: ws
     out: true
-
 connections:
-  # Kick off QA on any incoming message
-  telegram_in:
+  ws_in:
     - ask_location_and_days
-
-  # Once QA finishes, go call weather_api
   ask_location_and_days:
     - forecast_weather
-
-  # Then render & send back
   forecast_weather:
     - weather_out_template
-
   weather_out_template:
-    - telegram_out
+   - ws_out
+    
