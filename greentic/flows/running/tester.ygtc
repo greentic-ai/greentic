@@ -25,8 +25,8 @@ nodes:
           max_words: 2
           validate:
             range:
-              min: 0.0
-              max: 7.0
+              min: 0
+              max: 3
       fallback_agent:
         type: ollama
         model: llama3.2:1b

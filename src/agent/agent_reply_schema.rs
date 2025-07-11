@@ -78,18 +78,57 @@ pub fn parse_state_value(value_type: &ValueType, raw: &str) -> Result<StateValue
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::flow::state::StateValue;
 
     #[test]
-    fn generates_schema() {
-        let schema = schemars::schema_for!(AgentReply);
-         println!(
-                    "@@@ REMOVE 123: {}",
-                    serde_json::to_string_pretty(&schema).unwrap()
-         );
+    fn test_parse_string() {
+        let result = parse_state_value(&ValueType::String, "hello").unwrap();
+        assert_eq!(result, StateValue::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_parse_integer() {
+        let result = parse_state_value(&ValueType::Integer, "42").unwrap();
+        assert_eq!(result, StateValue::Integer(42));
+    }
+
+    #[test]
+    fn test_parse_number() {
+        let result = parse_state_value(&ValueType::Number, "3.14").unwrap();
+        assert_eq!(result, StateValue::Float(3.14));
+    }
+
+    #[test]
+    fn test_parse_boolean_true() {
+        let result = parse_state_value(&ValueType::Boolean, "true").unwrap();
+        assert_eq!(result, StateValue::Boolean(true));
+    }
+
+    #[test]
+    fn test_parse_boolean_false() {
+        let result = parse_state_value(&ValueType::Boolean, "false").unwrap();
+        assert_eq!(result, StateValue::Boolean(false));
+    }
+
+    #[test]
+    fn test_parse_boolean_invalid() {
+        let result = parse_state_value(&ValueType::Boolean, "yes");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_array() {
+        let result = parse_state_value(&ValueType::Array, "a,b,c").unwrap();
+        assert_eq!(
+            result,
+            StateValue::List(vec![
+                StateValue::String("a".to_string()),
+                StateValue::String("b".to_string()),
+                StateValue::String("c".to_string())
+            ])
+        );
     }
 }

@@ -13,7 +13,6 @@ use serde::{
     ser::SerializeMap,
     Deserialize, Deserializer, Serialize, Serializer,
 };
-use tracing::info;
 
 use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
 /// A QA process allows asking users a series of questions and storing their answers.
@@ -274,9 +273,13 @@ impl NodeType for QAProcessNode {
                         NodeErr::fail(NodeError::ExecutionFailed(format!("Fallback agent error: {:?}", e)))
                     )?;
 
-                    info!("@@@ REMOVE: agent_out: {:?}",agent_out);
-
-                    return Ok(agent_out);
+                    match agent_out.routing() {
+                        Routing::ReplyToOrigin => {
+                            // need more information
+                            return Ok(agent_out);
+                        },
+                        _ => return run_routing_rules_against_state(ctx, &msg.id(), msg.session_id(), self.config.routing.clone()),
+                    }
                 }
                 Err(err) => {
                     // re‐ask the same question
@@ -292,9 +295,7 @@ impl NodeType for QAProcessNode {
             }
         }
 
-
         // 🔁 Ask next question (if any)
-        
         if idx < self.config.questions.len() {
             // prompt
             
@@ -318,38 +319,43 @@ impl NodeType for QAProcessNode {
 
 
         // 4) All done! run routing rules against ctx.state
-        let answers = ctx.get_all_state();
-
-        let mut json_answers = serde_json::Map::new();
-        for (k, v) in &answers {
-            json_answers.insert(k.clone(), v.to_json());
-        }
-
-        for rule in &self.config.routing {
-            if rule.matches(&json_answers) {
-                let payload = JsonValue::Object(json_answers.clone());
-
-                let out_msg = Message::new(
-                    &msg.id(),
-                    payload,
-                    msg.session_id(),
-                );
-                // reset
-                ctx.delete_state("qa.current_question");
-
-                return Ok(NodeOut::with_routing(out_msg, Routing::ToNode(rule.to.clone())));
-            }
-        }
-
-        // reset
-        ctx.delete_state("qa.current_question");
-        Err(NodeErr::fail(NodeError::ExecutionFailed(
-            "no routing rule matched".into())))
+        return run_routing_rules_against_state(ctx, &msg.id(), msg.session_id(), self.config.routing.clone());
+        
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {
         Box::new(self.clone())
     }
+}
+
+fn run_routing_rules_against_state(ctx: &mut NodeContext, msg_id: &str, session_id: String, routing: Vec<RoutingRule> ) -> Result<NodeOut, NodeErr> {
+    let answers = ctx.get_all_state();
+
+    let mut json_answers = serde_json::Map::new();
+    for (k, v) in &answers {
+        json_answers.insert(k.clone(), v.to_json());
+    }
+
+    for rule in routing {
+        if rule.matches(&json_answers) {
+            let payload = JsonValue::Object(json_answers.clone());
+
+            let out_msg = Message::new(
+                msg_id,
+                payload,
+                session_id,
+            );
+            // reset
+            ctx.delete_state("qa.current_question");
+
+            return Ok(NodeOut::with_routing(out_msg, Routing::ToNode(rule.to.clone())));
+        }
+    }
+
+    // reset
+    ctx.delete_state("qa.current_question");
+    Err(NodeErr::fail(NodeError::ExecutionFailed(
+        "no routing rule matched".into())))
 }
 
 fn extract_raw_text(value: &serde_json::Value) -> String {

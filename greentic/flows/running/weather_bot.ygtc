@@ -24,14 +24,14 @@ nodes:
           state_key: q
           max_words: 3
         - id: q_days
-          prompt: "👉 Over how many days? (enter a number)"
+          prompt: "👉 Over how many days? (enter a number with 3 being the maximum)"
           answer_type: number
           state_key: days
           max_words: 2
           validate:
             range:
               min: 0.0
-              max: 7.0
+              max: 3.0
       fallback_agent:
         type: ollama
         model: gemma:instruct
