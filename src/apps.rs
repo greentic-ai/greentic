@@ -6,7 +6,7 @@ use channel_plugin::message::LogLevel;
 use reqwest::{header::{HeaderValue, AUTHORIZATION}, Client};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
-use tracing::error;
+use tracing::{error, info};
 use anyhow::{anyhow, Result};
 use crate::{
     channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
@@ -257,7 +257,10 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
         .await?;
 
     let _ = match res.json::<Verifying>().await{
-        Ok(verifying) => verifying,
+        Ok(verifying) => {
+            info!("Verifying status: {}",verifying.status);
+            verifying
+        },
         Err(err) => {
             error!("Error veryifying: {:?}",err);
             bail!("Could not continue verification because {:?}",err.to_string());
@@ -285,7 +288,10 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
         .await?;
 
     let verified = match res.json::<Verified>().await {
-        Ok(response) => response,
+        Ok(response) => {
+            info!("Verified status: {}",response.status);
+            response
+        },
         Err(err) => {
             error!("Error verifying: {:?}", err);
             bail!("Could not continue verification because {:?}", err.to_string());
@@ -353,7 +359,7 @@ struct RegisterRequest<'a> {
 
 #[derive(Deserialize, Debug)]
 struct Verifying {
-    _status: String,
+    status: String,
 }
 
 
@@ -366,6 +372,6 @@ struct VerifyRequest<'a> {
 
 #[derive(Deserialize, Debug)]
 struct Verified {
-    _status: String,
+    status: String,
     user_token: String,
 }

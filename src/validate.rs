@@ -472,7 +472,7 @@ connections:
     async fn test_pull_real_channel_ws() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_ws");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
         let result = pull_channel(&token, "ws", &dest).await;
@@ -486,7 +486,7 @@ connections:
     async fn test_pull_real_tool_weather_api() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("weather_api.wasm");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
         let result = pull_wasm(&token,"weather_api", &dest).await;
@@ -500,7 +500,7 @@ connections:
     async fn test_pull_missing_tool() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("nonexistent.wasm");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
         let result = pull_wasm(&token, "nonexistent", &dest).await;
@@ -517,7 +517,7 @@ connections:
     async fn test_pull_missing_channel() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_fake");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/.env").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
         let result = pull_channel(&token,"fake", &dest).await;
