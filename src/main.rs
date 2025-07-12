@@ -117,7 +117,7 @@ pub fn resolve_root_dir() -> PathBuf {
     if let Ok(path) = env::var("GREENTIC_ROOT") {
         PathBuf::from(path)
     } else {
-        PathBuf::from("./greentic")
+        PathBuf::from("./")
     }
 }
 
