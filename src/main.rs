@@ -10,8 +10,8 @@ use anyhow::bail;
 #[derive(Parser, Debug)]
 #[command(
     name = "greentic", 
-    about = "The Greener Agentic AI", 
-    version = "0.2.0"
+    about = "The Greener Digital Workers Platform", 
+    version = "0.2.0-rc3"
 )]
 struct Cli {
     #[command(subcommand)]
