@@ -10,8 +10,8 @@ use anyhow::bail;
 #[derive(Parser, Debug)]
 #[command(
     name = "greentic", 
-    about = "The Greener Agentic AI", 
-    version = "0.2.0"
+    about = "The Greener Digital Workers Platform", 
+    version = "0.2.0-rc4"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -172,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Init => {
             cmd_init(root.clone(),secrets_manager).await?;
-            println!("Initialized greentic layout at {}", root.display());
+            println!("Greentic has been initialised. You can start it with 'greentic run'");
             process::exit(0);
         }
         Commands::Secrets(secret_args) => match secret_args.command {
@@ -296,14 +296,14 @@ async fn run(root: PathBuf,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
 ) -> anyhow::Result<()> {
-
-    let flows_dir    = root.join("flows/running");
-    let log_file      = "logs/greentic_logs.log".to_string();
-    let log_dir= Some(root.join("logs").to_string_lossy().to_string());
-    let event_file    = "logs/greentic_events.log".to_string();
-    let tools_dir    = root.join("plugins").join("tools");
-    let processes_dir= root.join("plugins").join("processes");
-    let channels_dir = root.join("plugins").join("channels/running");       
+    let gtc          = root.join("greentic");
+    let flows_dir    = gtc.join("flows/running");
+    let log_file      = "greentic/logs/greentic_logs.log".to_string();
+    let log_dir= Some(gtc.join("logs").to_string_lossy().to_string());
+    let event_file    = "greentic/logs/greentic_events.log".to_string();
+    let tools_dir    = gtc.join("plugins").join("tools");
+    let processes_dir= gtc.join("plugins").join("processes");
+    let channels_dir = gtc.join("plugins").join("channels/running");       
     // tracing / logger
     let logger = init_tracing(
         root.clone(),

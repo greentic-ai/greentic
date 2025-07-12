@@ -133,13 +133,21 @@ impl WatchedType for DotenvHandler {
 pub struct EnvSecretsManager {
     keys: Arc<RwLock<HashMap<String, u32>>>,
     secrets: Arc<RwLock<HashMap<u32, String>>>,
+    env_path: Option<PathBuf>,
 }
 
 impl EnvSecretsManager {
     pub fn new(dotenv_path: Option<PathBuf>) -> Arc<Self> {
+        let env_path = match dotenv_path.clone() {
+            Some(path) => {
+                Some(path.join(".env"))
+            },
+            None => None,
+        };
         let mgr = Arc::new(Self {
             keys: Arc::new(RwLock::new(HashMap::new())),
             secrets: Arc::new(RwLock::new(HashMap::new())),
+            env_path,
         });
 
         if let Some(path) = dotenv_path {
@@ -172,38 +180,47 @@ impl EnvSecretsManager {
 
     /// Synchronous helper for programmatic secrets insertion.
     pub fn add_secret_sync(&self, key: &str, secret: &str) {
-        let mut keys   = self.keys.write().unwrap();
-        let mut secrets= self.secrets.write().unwrap();
-        let id = rng().next_u32();
-        keys.insert(key.to_string(), id);
-        secrets.insert(id, secret.to_string());
+        {
+            let mut keys   = self.keys.write().unwrap();
+            let mut secrets= self.secrets.write().unwrap();
+            let id = rng().next_u32();
+            keys.insert(key.to_string(), id);
+            secrets.insert(id, secret.to_string());
+        }
+        self.write_dotenv();
     }
     /// Synchronous helper for programmatic secrets updates.
     pub fn update_secret_sync(&self, key: &str, secret: &str) {
-        let mut keys   = self.keys.write().unwrap();
-        let mut secrets= self.secrets.write().unwrap();
-        let handle = match keys.get(key){
-            Some(handle) => *handle,
-            None => {
-                let id = rng().next_u32();
-                keys.insert(key.to_string(), id);
-                id
-            },
-        };
-        secrets.insert(handle, secret.to_string());
+        {
+            let mut keys   = self.keys.write().unwrap();
+            let mut secrets= self.secrets.write().unwrap();
+            let handle = match keys.get(key){
+                Some(handle) => *handle,
+                None => {
+                    let id = rng().next_u32();
+                    keys.insert(key.to_string(), id);
+                    id
+                },
+            };
+            secrets.insert(handle, secret.to_string());
+        }
+        self.write_dotenv();
     }
     /// Synchronous helper for programmatic secrets removal.
     pub fn delete_secret_sync(&self, key: &str) {
-        let handle_opt = {
-            let keys = self.keys.read().unwrap();
-            keys.get(key).cloned()
-        };
-        if let Some(handle) = handle_opt {
-            let mut keys = self.keys.write().unwrap();
-            let mut secrets = self.secrets.write().unwrap();
-            keys.remove(key);
-            secrets.remove(&handle);
+        {
+            let handle_opt = {
+                let keys = self.keys.read().unwrap();
+                keys.get(key).cloned()
+            };
+            if let Some(handle) = handle_opt {
+                let mut keys = self.keys.write().unwrap();
+                let mut secrets = self.secrets.write().unwrap();
+                keys.remove(key);
+                secrets.remove(&handle);
+            }
         }
+        self.write_dotenv();
     }
     /// Parse _only_ the given `.env` file, overwrite whatever was there.
     fn load_dotenv(&self, path: &Path) {
@@ -236,6 +253,27 @@ impl EnvSecretsManager {
             Err(e) => {
                 error!("Failed to read {}: {}", path.display(), e);
             }
+        }
+    }
+
+    fn write_dotenv(&self) {
+        let Some(path) = &self.env_path else { return };
+
+        let keys = self.keys.read().unwrap();
+        let secrets = self.secrets.read().unwrap();
+
+        let mut out = String::new();
+        for (key, handle) in keys.iter() {
+            if let Some(value) = secrets.get(handle) {
+                let escaped_value = value.replace('\n', "\\n");
+                out.push_str(&format!("{}={}\n", key, escaped_value));
+            }
+        }
+
+        if let Err(e) = std::fs::write(path, out) {
+            error!("Failed to write to .env file {}: {}", path.display(), e);
+        } else {
+            info!(".env file updated at {}", path.display());
         }
     }
 }
@@ -414,5 +452,28 @@ mod tests {
 
         mgr.delete_secret("foo").await.unwrap();
         assert!(mgr.get("foo").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dotenv_write_on_add_update_delete() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let mgr = EnvSecretsManager::new(Some(dir.path().to_path_buf()));
+
+        mgr.add_secret("X", "1").await.unwrap();
+        let env_path = dir.path().join(".env");
+        let content = fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains("X=1"));
+
+        mgr.update_secret("X", "2").await.unwrap();
+        let content = fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains("X=2"));
+        assert!(!content.contains("X=1"));
+
+        mgr.delete_secret("X").await.unwrap();
+        let content = fs::read_to_string(&env_path).unwrap();
+        assert!(!content.contains("X="));
     }
 }

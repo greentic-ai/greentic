@@ -1,8 +1,8 @@
 [package]
 name = "greentic"
-version = "0.2.0-rc3"
+version = "0.2.0-rc4"
 authors = ["maarten <maarten@greentic.com>"]
-description = "The fastest, most secure and extendable digital workforce platform"
+description = "The fastest, most secure and extendable digital workers platform"
 license = "MIT"
 repository = "https://github.com/greentic-ai/greentic"
 edition = "2024"
