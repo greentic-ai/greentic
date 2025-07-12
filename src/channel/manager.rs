@@ -178,7 +178,7 @@ impl ChannelManager {
         match watcher.watch().await{
             Ok(handle) => Ok(handle),
             Err(err) => {
-                let error = format!("Could not watch the channel plugsin at {}",plugins_dir.to_string_lossy());
+                let error = format!("Could not watch the channel plugins at {}",plugins_dir.to_string_lossy());
                 error!(error);
                 Err(err)
             },
