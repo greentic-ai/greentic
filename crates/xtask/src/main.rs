@@ -38,7 +38,7 @@ const TARGETS: &[Target] = &[
     },
 ];
 
-fn detect_host_target() -> &'static str {
+pub fn detect_host_target() -> &'static str {
     if cfg!(target_os = "windows") {
         "windows"
     } else if cfg!(target_os = "macos") {

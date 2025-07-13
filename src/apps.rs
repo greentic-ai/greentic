@@ -329,14 +329,30 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
     let out_channels_dir = root.join("greentic/plugins/channels/running");
     let out_tools_dir = root.join("greentic/plugins/tools");
     let out_flows_dir = root.join("greentic/flows/running");
-    let _ = download(token, "channels", "channel_telegram", out_channels_dir.clone()).await;
-    let _ = download(token, "channels", "channel_ws", out_channels_dir.clone()).await;
+    let platform = detect_host_target();
+    let channels = format!("channels/{}",platform);
+    let _ = download(token, &channels, "channel_telegram", out_channels_dir.clone()).await;
+    let _ = download(token, &channels, "channel_ws", out_channels_dir.clone()).await;
     let _ = download(token, "tools", "weather_api.wasm", out_tools_dir.clone()).await;
     let _ = download(token, "flows", "weather_bot_telegram.ygtc", out_flows_dir.clone()).await;
     let _ = download(token, "flows", "weather_bot_ws.ygtc", out_flows_dir.clone()).await;
 
     println!("Greentic directory initialized at {}", root.display());
     Ok(())
+}
+
+pub fn detect_host_target() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "x86_64") {
+            "macos_intel"
+        } else {
+            "macos_arm"
+        }
+    } else {
+        "linux"
+    }
 }
 
 pub async fn download(
