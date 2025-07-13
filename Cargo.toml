@@ -17,21 +17,20 @@ members = [
     "crates/channel_ws",
     "crates/xtask", "tests/wasm/mock_tool",
 ]
-
 exclude = [
-    "/target/*",
-    "**/*.wasm",
-    "**/*.exe",
-    "/assets/*",
-    "/channels/*",
-    "/docs/*",
-    "/tests/*",
-    ".github/*",
-    "/crates/channel_mock_inout/*",
-    "/crates/channel_mock_middle/*",
-    "/crates/channel_telegram/*",
-    "/crates/channel_tester/*",
-    "/crates/channel_ws/*",
+  "target/*",
+  "**/*.wasm",
+  "**/*.exe",
+  "assets/*",
+  "channels/*",
+  "docs/*",
+  "tests/*",
+  ".github/*",
+  "crates/channel_mock_inout/*",
+  "crates/channel_mock_middle/*",
+  "crates/channel_telegram/*",
+  "crates/channel_tester/*",
+  "crates/channel_ws/*"
 ]
 
 [dependencies]
