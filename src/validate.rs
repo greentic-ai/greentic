@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_yaml_bw as serde_yaml;
 use crate::{
-    channel::manager::ChannelManager, config::ConfigManager, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger}, secret::SecretsManager
+    apps::detect_host_target, channel::manager::ChannelManager, config::ConfigManager, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger}, secret::SecretsManager
 };
 
 /// Diagnostic result – collects *all* warnings & errors instead of failing fast.
@@ -153,7 +153,7 @@ pub async fn validate(
 
         if !running_channel.exists() && !stopped_channel.exists() {
 
-            match pull_channel(&token,&channel_file, &running_channel).await {
+            match pull_channel(&token,&channel_file, detect_host_target(),&running_channel).await {
                 Ok(_) => {
                     tracing::info!("✅ Pulled and stored missing channel: {t}");
                 }
@@ -283,8 +283,8 @@ pub async fn validate(
 
 // Basic pull function to get a tool. In the future we need login and 
 // more advanced version management, ...
-async fn pull_channel(token: &str, channel_name: &str, destination: &Path) -> anyhow::Result<()> {
-    let url = format!("https://greenticstore.com/channels/channel_{channel_name}");
+async fn pull_channel(token: &str, channel_name: &str, platform: &str, destination: &Path) -> anyhow::Result<()> {
+    let url = format!("https://greenticstore.com/channels/{platform}/channel_{channel_name}");
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
@@ -475,7 +475,7 @@ connections:
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
-        let result = pull_channel(&token, "ws", &dest).await;
+        let result = pull_channel(&token, "ws",detect_host_target(), &dest).await;
         assert!(result.is_ok(), "expected successful pull: {result:?}");
         assert!(dest.exists(), "destination file not created");
         assert!(fs::metadata(&dest).unwrap().len() > 0, "file is empty");
@@ -520,7 +520,7 @@ connections:
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
-        let result = pull_channel(&token,"fake", &dest).await;
+        let result = pull_channel(&token,"fake", detect_host_target(),&dest).await;
         assert!(result.is_err(), "expected error but got success");
         let err = result.unwrap_err().to_string();
         assert!(
