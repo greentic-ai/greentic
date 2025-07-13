@@ -1,2 +1,8 @@
 [alias]
 build-channels = "run -p xtask"
+
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"          # or path to your musl linker
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"  # Make sure mingw-w64 is installed

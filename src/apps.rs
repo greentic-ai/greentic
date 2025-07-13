@@ -1,5 +1,5 @@
 // src/app.rs
-use std::{fs::{self, File}, io::{stdin, stdout, Write}, path::PathBuf, sync::Arc};
+use std::{fs::{self, File}, io::{stdin, stdout, Write}, path::{Path, PathBuf}, sync::Arc};
 use anyhow::{bail, Context, Error};
 
 use channel_plugin::message::LogLevel;
@@ -11,7 +11,27 @@ use anyhow::{anyhow, Result};
 use crate::{
     channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
 };
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
+/// Makes a file executable on Unix. On Windows, this is a no-op.
+pub fn make_executable<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let metadata = fs::metadata(&path)?;
+        let mut permissions = metadata.permissions();
+        // Add execute bit for owner/group/others
+        permissions.set_mode(permissions.mode() | 0o111);
+        fs::set_permissions(&path, permissions)?;
+    }
+
+    #[cfg(windows)]
+    {
+        // No-op: Windows uses extensions like `.exe` to determine executability
+    }
+
+    Ok(())
+}
 pub struct App
 {
     watcher: Option<DirectoryWatcher>,
@@ -347,6 +367,9 @@ pub async fn download(
 
     let mut file = File::create(&output_path)?;
     file.write_all(&bytes)?;
+    if download_type == "channels" {
+        make_executable(&output_path)?;
+    }
 
     println!("✅ Downloaded to {:?}", output_path);
     Ok(())
