@@ -7,6 +7,29 @@ license = "MIT"
 repository = "https://github.com/greentic-ai/greentic"
 edition = "2024"
 
+
+exclude = [
+  "target/*",
+  ".DS_Store",
+  ".env*",
+  ".cargo/*",
+  "_config.yml",
+  "*.wasm",
+  "**/*.wasm",
+  "**/*.exe",
+  "assets/*",
+  "channels/*",
+  "docs/*",
+  "greentic/*",
+  "tests/**",
+  ".github/*",
+  "crates/channel_mock_inout/*",
+  "crates/channel_mock_middle/*",
+  "crates/channel_telegram/*",
+  "crates/channel_tester/*",
+  "crates/channel_ws/*"
+]
+
 [workspace]
 members = [
     "crates/channel_plugin", 
@@ -16,25 +39,6 @@ members = [
     "crates/channel_tester", 
     "crates/channel_ws",
     "crates/xtask", "tests/wasm/mock_tool",
-]
-exclude = [
-  "target/*",
-  ".DS_Store",
-  ".env*",
-  "*.wasm",
-  "**/*.wasm",
-  "**/*.exe",
-  "assets/*",
-  "channels/*",
-  "docs/*",
-  "/greentic/**",
-  "tests/**",
-  ".github/*",
-  "crates/channel_mock_inout/*",
-  "crates/channel_mock_middle/*",
-  "crates/channel_telegram/*",
-  "crates/channel_tester/*",
-  "crates/channel_ws/*"
 ]
 
 [dependencies]
