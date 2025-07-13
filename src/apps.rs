@@ -272,7 +272,7 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
     let client = Client::new();
     let res = client
         .post("https://greenticstore.com/register")
-        .json(&RegisterRequest { email })
+        .json(&RegisterRequest { email: &email })
         .send()
         .await?;
 
@@ -295,7 +295,7 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
     let code = code.trim(); // remove newline
 
     let body = VerifyRequest {
-        email,
+        email: &email,
         code,
         marketing_consent,
     };
