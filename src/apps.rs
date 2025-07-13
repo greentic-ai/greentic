@@ -242,7 +242,7 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
 
     let mut email = String::new();
     stdin().read_line(&mut email).unwrap();
-    let email = email.trim(); // remove newline
+    let email = email.trim().to_string();
 
     let mut marketing_consent = false;
     loop {
@@ -300,7 +300,6 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
         marketing_consent,
     };
 
-    let client = Client::new();
     let res = client
         .post("https://greenticstore.com/verify")
         .json(&body)
