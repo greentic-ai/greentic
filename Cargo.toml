@@ -24,6 +24,7 @@ exclude = [
   "assets/*",
   "channels/*",
   "docs/*",
+  "greentic/*",
   "tests/*",
   ".github/*",
   "crates/channel_mock_inout/*",
