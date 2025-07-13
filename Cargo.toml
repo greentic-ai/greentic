@@ -19,12 +19,15 @@ members = [
 ]
 exclude = [
   "target/*",
+  ".DS_Store",
+  ".env*",
+  "*.wasm",
   "**/*.wasm",
   "**/*.exe",
   "assets/*",
   "channels/*",
   "docs/*",
-  "greentic/*",
+  "greentic/**",
   "tests/*",
   ".github/*",
   "crates/channel_mock_inout/*",
