@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info};
 use anyhow::{anyhow, Result};
 use crate::{
-    channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::SecretsManager, watcher::DirectoryWatcher
+    channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::{EnvSecretsManager, SecretsManager}, watcher::DirectoryWatcher
 };
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -179,7 +179,7 @@ impl App {
     }
 }
 /// Called when user runs `greentic init --root <dir>`
-pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<(),Error> {
+pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
     // 1) create all the directories we need
     let dirs = [
         "greentic/config",
@@ -319,6 +319,7 @@ pub async fn cmd_init(root: PathBuf, secrets_manager: SecretsManager) -> Result<
 
     let token = &verified.user_token;
 
+    let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("greentic/secrets").to_path_buf())));
     let result = secrets_manager.add_secret("GREENTIC_TOKEN", token).await;
 
     if result.is_err() {
