@@ -18,6 +18,21 @@ members = [
     "crates/xtask", "tests/wasm/mock_tool",
 ]
 
+exclude = [
+    "/target/*",
+    "**/*.wasm",
+    "**/*.exe",
+    "assets/*",
+    "channels/*",
+    "docs/*",
+    "tests/test_data/*",
+    ".github/*",
+    "crates/channel_mock_inout/*",
+    "crates/channel_mock_middle/*",
+    "crates/channel_telegram/*",
+    "crates/channel_tester/*",
+    "crates/channel_ws/*",
+]
 
 [dependencies]
 channel_plugin = { version="0.2.0", path = "crates/channel_plugin"}
