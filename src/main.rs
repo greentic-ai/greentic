@@ -171,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
             process::exit(0);
         }
         Commands::Init => {
-            cmd_init(root.clone(),secrets_manager).await?;
+            cmd_init(root.clone()).await?;
             println!("Greentic has been initialised. You can start it with 'greentic run'");
             process::exit(0);
         }

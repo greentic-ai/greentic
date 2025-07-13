@@ -112,7 +112,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Install Greentic.AI via:
 
 ```bash
-cargo install greentic --version 0.2.0-rc5
+cargo install greentic --version 0.2.0-rc6
 ```
 --version is needed until 0.2.0 is released
 
