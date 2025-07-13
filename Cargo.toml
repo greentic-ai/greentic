@@ -54,7 +54,7 @@ petgraph = { version = "0.8.1", features = ["serde"] }
 crossbeam-utils = "0.8.21"
 opentelemetry-appender-tracing = "0.30.0"
 thiserror = "2.0.12"
-ollama-rs = "0.3.2"
+ollama-rs = { version="0.3.2", default-features = false }
 url = { version="2.5.4", features = ["serde"] }
 serde_yaml_bw = "2.0.1"
 rhai = { version="1.22.2", features = ["serde"] }
@@ -62,7 +62,7 @@ regex = "1.11.1"
 tokio-util = "0.7.15"
 moka = { version = "0.12.10", features = ["future"] }
 chrono-english = "0.1.7"
-reqwest = { version="0.12.22", features = ["json"] }
+reqwest = {version="0.12.22",default-features = false,features=["rustls-tls","json"]}
 async-trait = "0.1.88"
 
 [dev-dependencies]
