@@ -10,7 +10,11 @@ Now with: <strong>intelligent agents</strong> and <strong>processes</strong>!
 
 ![Telegram Weather Bot](https://greentic.ai/assets/telegram-weather-bot.gif)
 
-Greentic.ai is currently at v0.2.0. A basic store with some free flows, plugins and tools is available. You can also create your own flows, plugins, tools,... Flows can use tools that connect to APIs with no authentication or API keys. oAuth will be supported in v0.3.0. You will have to run Greentic.ai from your local computer. Deploying onto the Cloud is coming in v0.4.0. The [vision for v1.0.0](./docs/VISION.md) foresees a world where you just ask via WhatsApp, Teams, Slack, Telegram,... for a digital worker to be generated and automatically Greentic.ai will create it for you based on a simple ChatGPT-like request. Also learn how Greentic.ai is able to [generate revenues for partners](./docs/VISION.md). 
+Greentic.ai is now at version 0.2.0, offering a growing store with free flows, plugins, and tools to get you started. You can easily build your own flows, tools, and plugins, including those that connect to APIs without requiring authentication or API keys. Support for OAuth integrations is coming in v0.3.0, and full Cloud deployment will be available in v0.4.0.
+
+Looking ahead, the [vision for v1.0.0](./docs/VISION.md) is ambitious: imagine simply messaging via WhatsApp, Teams, Slack, or Telegram to request a digital worker—Greentic.ai will create it automatically based on your request, just like ChatGPT.
+
+Discover how [Greentic.ai enables revenue oppotunities for partners](./docs/VISION.md) and be part of the future of intelligent automation.
 
 ---
 
