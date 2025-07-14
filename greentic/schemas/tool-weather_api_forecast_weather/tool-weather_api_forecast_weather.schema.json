@@ -1,9 +1,17 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "weather_api_forecast_weather",
   "description": "Forecast API",
+  "type": "object",
   "properties": {
     "parameters": {
+      "title": "ForecastWeatherParams",
       "description": "struct for passing parameters to the method [`forecast_weather`]",
+      "type": "object",
+      "required": [
+        "days",
+        "q"
+      ],
       "properties": {
         "alerts": {
           "description": "Enable/Disable alerts in forecast API output. Example, alerts=yes or alerts=no.",
@@ -21,8 +29,8 @@
         },
         "days": {
           "description": "Number of days of weather forecast. Value ranges from 1 to 14",
-          "format": "int32",
-          "type": "integer"
+          "type": "integer",
+          "format": "int32"
         },
         "dt": {
           "description": "Date should be between today and next 14 day in yyyy-MM-dd format. e.g. '2015-01-01'",
@@ -33,11 +41,11 @@
         },
         "hour": {
           "description": "Must be in 24 hour. For example 5 pm should be hour=17, 6 am as hour=6",
-          "format": "int32",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "format": "int32"
         },
         "lang": {
           "description": "Returns 'condition:text' field in API in the desired language.<br /> Visit [request parameter section](https://www.weatherapi.com/docs/#intro-request) to check 'lang-code'.",
@@ -52,45 +60,37 @@
         },
         "tp": {
           "description": "Get 15 min interval or 24 hour average data for Forecast and History API. Available for Enterprise clients only. E.g:- tp=15",
-          "format": "int32",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "format": "int32"
         },
         "unixdt": {
           "description": "Please either pass 'dt' or 'unixdt' and not both in same request. unixdt should be between today and next 14 day in Unix format. e.g. 1490227200",
-          "format": "int32",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "format": "int32"
         }
-      },
-      "required": [
-        "days",
-        "q"
-      ],
-      "title": "ForecastWeatherParams",
-      "type": "object"
+      }
     },
     "secrets": {
+      "type": "object",
       "properties": {
         "WEATHERAPI_KEY": {
-          "description": "API key (query parameter)",
-          "type": "string"
+          "type": "string",
+          "description": "API key (query parameter)"
         }
       },
       "required": [
         "WEATHERAPI_KEY"
-      ],
-      "type": "object"
+      ]
     }
   },
   "required": [
     "WEATHERAPI_KEY",
     "secrets"
-  ],
-  "title": "weather_api_forecast_weather",
-  "type": "object"
+  ]
 }

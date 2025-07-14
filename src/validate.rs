@@ -25,6 +25,7 @@
 use std::{collections::HashSet, fs, path::{Path, PathBuf}};
 
 use anyhow::{anyhow, Context, Result};
+use channel_plugin::message::LogLevel;
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
@@ -121,12 +122,12 @@ pub async fn validate(
     // 2) Spin up Executor + ChannelManager just like schema.rs  -------------
     // ---------------------------------------------------------------------
     let _ = FileTelemetry::init_files(&log_level, root_dir.join(&log_file), root_dir.join(&event_file));
-
+    let log_config = LogConfig::new(LogLevel::Info, Some(root_dir.join("logs").to_string_lossy().to_string()), None);
     let logger  = Logger(Box::new(OpenTelemetryLogger::new()));
     let executor = Executor::new(secrets_manager.clone(), logger.clone());
     let tool_watcher = executor.watch_tool_dir(tools_dir.clone()).await?;
     let sessions = InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new(config_manager.clone(), secrets_manager.clone(), sessions, LogConfig::default()).await?;
+    let channel_mgr = ChannelManager::new(config_manager.clone(), secrets_manager.clone(), sessions, log_config).await?;
 
     // ---------------------------------------------------------------------
     // 3) Inspect flow JSON to collect all tool & channel IDs ---------------

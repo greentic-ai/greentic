@@ -124,7 +124,7 @@ pub fn resolve_root_dir() -> PathBuf {
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // config & secrets
-    let root = resolve_root_dir();
+    let root = resolve_root_dir().join("greentic");
     let config_dir   = root.join("config");
     let secrets_dir  = root.join("secrets");   
     let env_file = config_dir.join(".env");
@@ -155,13 +155,14 @@ async fn main() -> anyhow::Result<()> {
             let log_file      = "logs/greentic-schema.log".to_string();
             let event_file      = "logs/greentic-schema.json".to_string();
             let tools_dir    = root.join("plugins").join("tools");
+            let channels_dir           = root.join("plugins").join("channels").join("running");
             let _processes_dir= root.join("plugins").join("processes");
-            
             fs::create_dir_all(&out_dir)?;
             write_schema(
                 out_dir.clone(),
                 root.clone(),
                 tools_dir.clone(),
+                channels_dir.clone(),
                 log_level,
                 log_file.clone(),
                 event_file.clone(),
@@ -245,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
                 let token = secrets_manager.0.reveal(token_handle.unwrap()).await.unwrap().unwrap();
-                let out_dir = root.join("greentic/flows/running");
+                let out_dir = root.join("flows/running");
                 let result = download(&token, "flows", &name, out_dir).await;
                 if result.is_err() {
                     println!("Sorry we could not download {} because {:?}",name, result.err().unwrap().to_string());
@@ -296,14 +297,13 @@ async fn run(root: PathBuf,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
 ) -> anyhow::Result<()> {
-    let gtc          = root.join("greentic");
-    let flows_dir    = gtc.join("flows/running");
-    let log_file      = "greentic/logs/greentic_logs.log".to_string();
-    let log_dir= Some(gtc.join("logs").to_string_lossy().to_string());
-    let event_file    = "greentic/logs/greentic_events.log".to_string();
-    let tools_dir    = gtc.join("plugins").join("tools");
-    let processes_dir= gtc.join("plugins").join("processes");
-    let channels_dir = gtc.join("plugins").join("channels/running");       
+    let flows_dir    = root.join("flows/running");
+    let log_file      = "logs/greentic_logs.log".to_string();
+    let log_dir= Some(root.join("logs").to_string_lossy().to_string());
+    let event_file    = "logs/greentic_events.log".to_string();
+    let tools_dir    = root.join("plugins").join("tools");
+    let processes_dir= root.join("plugins").join("processes");
+    let channels_dir = root.join("plugins").join("channels/running");       
     // tracing / logger
     let logger = init_tracing(
         root.clone(),
@@ -353,41 +353,30 @@ async fn run(root: PathBuf,
 
     println!(
 r#"
-                        @@@%@@@         @@@@@              @@@@@@@@@@@@@            
-                        @@*=+@@@@@@@@ @@%+=*@@        @@@@@%#****+**%@@@            
-                        @@@@@#*+===++#@@%=%+=@@     @@@@#*+++++++++#@@@              
-                        @@%*--===========++#=+%@@   @@@#*++**++++++++@@                
-            @@@@@      @%=================*@@@   @@%#++#%*+++++++++*@@                
-        @@@#*+*%@@@@@@@*#@+=====%%+=======#@@  @@#++%%*+++++++++++*@@                
-        @@*=*======+*+**##%#====#**#========%@ @@*+*%%*#####****++++%@@               
-        @@+=%**========*#====+*===============@@@@@#+%@%***++**##%%%%#@@               
-    @@*============*=#%====================%@  @@#*@%@#+++++++++*%@@@@@             
-    @@+=========================%#@@%======#@@  @%*@*+*@#++++++%@@                  
-    @@+==========================#%========#@@  @%*@*+++*@*+++%@@                   
-    @@*=========================%@*========#@@@@@*%%++++++*%+*@@                    
-        @@%+=====================#@@+=========%%+%@**@*++++++++%%@@                    
-        @@@@@@@@@@%#+=======+#%@@#==========*@*##+*%*+++#%@@@@@@@@                    
-            @@#=#@@@@%%@@@@@%%@@%=====*=====*@+====#*++%@@@      @@    @               
-            @@#==*@%#*++++*#@%*=====*%=====*+========+%*+%@@         @@@@              
-            @@%+===+*####*+=====+#@*=====================#@@     @@@%+%@              
-            @@@#++========+*%@%*========================+@@  @@%*===#@@             
-                @@@%@@@@@@@@%%+=============================@@  @@@+==#@@             
-                @@%+++++++++================================*@@@@%+=*@@@              
-                @@#===============================#+=========#@@*===@@@               
-                @@#=============================*%===========+@+==+@@                 
-                @%=========================%==*%============+@+=#@@                  
-                @%===*=====================%+=%#============+@%@@@                   
-                @@====%#======++==========+@++%*============#@@@                     
-                @@+====+%%#+==*#==========*@**%#============@@                       
-                @@*=====+*#@@@@%==========#@*+#@#==========#@@                       
-                @@*=====+++@@@@@==========@@@@@@@@%+=======%@                        
-                @@*======++#@@ @%=========*@@@  @@+========+@@                        
-                @@%+%+%#*=++%@ @@%##=#%+===%@@@ @@%##=%%+===%@                         
-            @@@@@%%%@#*%#%@@@@@%==%@+=#==*@@@@@@@#*%@**%**%@@@@@                      
-                @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                           
-                        G R E E N T I C   A I 🦕
+                                            
+             @%@@     @@@@         @@@@@@@  
+            @%*#%##%@@%++%@   @@%##*+++*%@@ 
+           @#========+++#@  @@#***++++*%@   
+  @%%%%@@@@#*+===+=====#@ @%#*#*++++++*%    
+ @***===++++**+=++*=====#@@#*@%######**%@   
+@#=======++%============*@@@#%%#+++++*#%@@  
+%*================+#+===+@ @###+##*+*@@     
+@#===============*%=====+%%%*%*+++**%@      
+ @@@@@@#+=====+#@#======#*#*#*+*#%@@@@      
+   @%+#@#***#%%#===+===*+===+*%%@      @@@  
+    @#==++*++===+%+=============#@  @@%*%@  
+      @@%%###%%#+================+%@@%*=#@  
+      @@++++================+=====*@@*+%@@  
+      @@+=================+*======+#==#@    
+       @+==============++=%=======+##@@     
+       @*==#*===*======+#*%=======+%@       
+       @*===*#@@#======*#*%*======#@        
+      @@+===+#@@#======%@@@%*====+%@        
+     @@+*#*+*%@@##+#*=+@@@%**#*+=#@         
+    @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                             
+        G R E E N T I C   A I 🦕
 
-                        Fast | Secure | Extendable
+       Fast | Secure | Extendable
 "#
     );
 
