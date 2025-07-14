@@ -62,7 +62,7 @@ Replace the example with your actual token.
 Your Telegram bot is now connected to Greentic. You can use flows like:
 
 ```bash
-greentic run weather_bot_telegram.ygtc
+greentic run
 ```
 
 ---
