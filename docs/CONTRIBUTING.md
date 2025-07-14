@@ -33,7 +33,7 @@ Please read our [Code of Conduct](./CODE_OF_CONDUCT.md) before contributing.
 
 By contributing to the Greentic project, you agree that:
 
-* All code, documentation, and other contributions will be released under the [MIT License](./LICENSE).
+* All code, documentation, and other contributions will be released under the [MIT License](../LICENSE).
 * Any intellectual property (IP) rights in your contributions will transfer to the Greentic project upon merge.
 * You assert that you have the legal right to contribute the code and that it does not infringe on any third-party IP.
 
