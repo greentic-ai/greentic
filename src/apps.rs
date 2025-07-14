@@ -182,15 +182,15 @@ impl App {
 pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
     // 1) create all the directories we need
     let dirs = [
-        "greentic/config",
-        "greentic/secrets",
-        "greentic/logs",
-        "greentic/flows/running",
-        "greentic/flows/stopped",
-        "greentic/plugins/tools",
-        "greentic/plugins/channels/running",
-        "greentic/plugins/channels/stopped",
-        "greentic/plugins/processes",
+        "config",
+        "secrets",
+        "logs",
+        "flows/running",
+        "flows/stopped",
+        "plugins/tools",
+        "plugins/channels/running",
+        "plugins/channels/stopped",
+        "plugins/processes",
     ];
     for d in &dirs {
         let path = root.join(d);
