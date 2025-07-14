@@ -1,6 +1,6 @@
 [package]
 name = "greentic"
-version = "0.2.0-rc10"
+version = "0.2.0"
 authors = ["maarten <maarten@greentic.com>"]
 description = "The fastest, most secure and extendable digital workers platform"
 license = "MIT"
