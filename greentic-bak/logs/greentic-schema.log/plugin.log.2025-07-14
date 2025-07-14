@@ -1,8 +1,0 @@
-2025-07-14T15:27:22.857647Z  INFO [ws] listening on 0.0.0.0:8888
-2025-07-14T15:27:22.948981Z  INFO [telegram] stop called
-2025-07-14T15:27:22.949925Z  INFO [telegram] stop called
-2025-07-14T15:27:22.996102Z  INFO [ws] Stop called
-2025-07-14T15:27:22.996315Z  INFO [ws] draining
-2025-07-14T15:27:23.098761Z  INFO [ws] Stop called
-2025-07-14T15:27:23.098778Z  INFO [ws] draining
-2025-07-14T15:27:23.208426Z  INFO [ws] listening on 0.0.0.0:8888
