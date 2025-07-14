@@ -1,9 +1,16 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "weather_api_realtime_weather",
   "description": "Realtime API",
+  "type": "object",
   "properties": {
     "parameters": {
+      "title": "RealtimeWeatherParams",
       "description": "struct for passing parameters to the method [`realtime_weather`]",
+      "type": "object",
+      "required": [
+        "q"
+      ],
       "properties": {
         "lang": {
           "description": "Returns 'condition:text' field in API in the desired language.<br /> Visit [request parameter section](https://www.weatherapi.com/docs/#intro-request) to check 'lang-code'.",
@@ -16,30 +23,23 @@
           "description": "Pass US Zipcode, UK Postcode, Canada Postalcode, IP address, Latitude/Longitude (decimal degree) or city name. Visit [request parameter section](https://www.weatherapi.com/docs/#intro-request) to learn more.",
           "type": "string"
         }
-      },
-      "required": [
-        "q"
-      ],
-      "title": "RealtimeWeatherParams",
-      "type": "object"
+      }
     },
     "secrets": {
+      "type": "object",
       "properties": {
         "WEATHERAPI_KEY": {
-          "description": "API key (query parameter)",
-          "type": "string"
+          "type": "string",
+          "description": "API key (query parameter)"
         }
       },
       "required": [
         "WEATHERAPI_KEY"
-      ],
-      "type": "object"
+      ]
     }
   },
   "required": [
     "WEATHERAPI_KEY",
     "secrets"
-  ],
-  "title": "weather_api_realtime_weather",
-  "type": "object"
+  ]
 }

@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 use channel_plugin::{channel_client::{ChannelClient, ChannelClientType}, control_client::{ControlClient, ControlClientType}, message::{ChannelCapabilities, ChannelMessage, ChannelState, InitParams, ListKeysResult,}, plugin_actor::PluginHandle, plugin_helpers::PluginError, plugin_runtime::VERSION};
 use crossbeam_utils::atomic::AtomicCell;
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::SchemaGenerator;
 use serde_json::json;
 use tracing::error;
 use crate::{flow::session::SessionStore, logger::LogConfig}; 
@@ -76,8 +76,9 @@ impl PluginWrapper {
 
     pub async fn schema_json(&self) -> anyhow::Result<(String, String)> {
         // 1) Manually generate the schema
-        let mut generate = SchemaGenerator::default();
-        let schema: Schema = <ChannelCapabilities>::json_schema(&mut generate);
+        let generate = SchemaGenerator::default();
+        let schema = generate.into_root_schema_for::<ChannelCapabilities>();
+        //let schema: Schema = <ChannelCapabilities>::json_schema(&mut generate);
 
         // 2) Fetch the real capabilities
         let name = self.name();

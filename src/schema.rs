@@ -3,6 +3,7 @@
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::Error;
+use channel_plugin::message::LogLevel;
 use schemars::schema_for;
 use serde_json::{json, Value};
 
@@ -15,6 +16,7 @@ pub async fn write_schema(
     out_dir: PathBuf,
     root_dir: PathBuf,
     tools_dir: PathBuf,
+    channels_dir: PathBuf,
     log_level: String,
     log_dir: String,
     event_dir: String,
@@ -32,7 +34,7 @@ pub async fn write_schema(
         root_dir.join(log_dir),
         root_dir.join(event_dir),
     );
-
+    let log_config = LogConfig::new(LogLevel::Info, Some(root_dir.join("logs").to_string_lossy().to_string()), None);
     let logger = Logger(Box::new(OpenTelemetryLogger::new()));
     let secrets = SecretsManager(EmptySecretsManager::new());
     let executor = Executor::new(secrets.clone(), logger);
@@ -46,15 +48,18 @@ pub async fn write_schema(
     let config = ConfigManager(MapConfigManager::new());
     
     let store =InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new( config, secrets, store.clone(), LogConfig::default())
+    let channel_mgr = ChannelManager::new( config, secrets, store.clone(), log_config)
         .await
         .expect("Could not start channels");
+    let _ = channel_mgr.clone().start_all(channels_dir).await;
     
     for wrapper in channel_mgr.channels().iter() {
         let (name, schema) = wrapper.wrapper().schema_json().await.expect("Could not get schema_json from wrapper");
         let filename = format!("channel-{}.schema.json", name.to_lowercase());
         fs::write(out_dir.join(filename), schema)?;
     }
+
+    channel_mgr.shutdown_all(false, 0);
 
     Ok(())
 }

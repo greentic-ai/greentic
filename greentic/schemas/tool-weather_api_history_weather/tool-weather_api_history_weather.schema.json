@@ -1,9 +1,17 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "weather_api_history_weather",
   "description": "History API",
+  "type": "object",
   "properties": {
     "parameters": {
+      "title": "HistoryWeatherParams",
       "description": "struct for passing parameters to the method [`history_weather`]",
+      "type": "object",
+      "required": [
+        "dt",
+        "q"
+      ],
       "properties": {
         "dt": {
           "description": "Date on or after 1st Jan, 2015 in yyyy-MM-dd format",
@@ -18,11 +26,11 @@
         },
         "hour": {
           "description": "Must be in 24 hour. For example 5 pm should be hour=17, 6 am as hour=6",
-          "format": "int32",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "format": "int32"
         },
         "lang": {
           "description": "Returns 'condition:text' field in API in the desired language.<br /> Visit [request parameter section](https://www.weatherapi.com/docs/#intro-request) to check 'lang-code'.",
@@ -37,45 +45,37 @@
         },
         "unixdt": {
           "description": "Please either pass 'dt' or 'unixdt' and not both in same request.<br />unixdt should be on or after 1st Jan, 2015 in Unix format",
-          "format": "int32",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "format": "int32"
         },
         "unixend_dt": {
           "description": "Date on or after 1st Jan, 2015 in Unix Timestamp format<br />unixend_dt has same restriction as 'end_dt' parameter. Please either pass 'end_dt' or 'unixend_dt' and not both in same request. e.g. unixend_dt=1490227200",
-          "format": "int32",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "format": "int32"
         }
-      },
-      "required": [
-        "dt",
-        "q"
-      ],
-      "title": "HistoryWeatherParams",
-      "type": "object"
+      }
     },
     "secrets": {
+      "type": "object",
       "properties": {
         "WEATHERAPI_KEY": {
-          "description": "API key (query parameter)",
-          "type": "string"
+          "type": "string",
+          "description": "API key (query parameter)"
         }
       },
       "required": [
         "WEATHERAPI_KEY"
-      ],
-      "type": "object"
+      ]
     }
   },
   "required": [
     "WEATHERAPI_KEY",
     "secrets"
-  ],
-  "title": "weather_api_history_weather",
-  "type": "object"
+  ]
 }
