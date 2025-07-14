@@ -242,12 +242,16 @@ nodes:
   # 4) “weather_template”: format the weather API’s JSON into a friendly sentence.
   weather_out_template:
     template: |
-        Here’s your forecast for {{ location.name }}:
+      🌤️ Weather forecast for {{payload.location.name}}:
 
-        • High: {{ forecast.forecastday.[0].day.maxtemp_c }}°C
-        • Low: {{ forecast.forecastday.[0].day.mintemp_c }}°C
-        • Condition: {{ forecast.forecastday.[0].day.condition.text }}
-        • Rain Today? {{#if (eq (forecast.forecastday.[0].day.daily_will_it_rain) 1)}}Yes{{else}}No{{/if}}
+      {{#each payload.forecast.forecastday}}
+      📅 Day {{@indexPlusOne}} ({{this.date}}):
+      • High: {{this.day.maxtemp_c}}°C
+      • Low: {{this.day.mintemp_c}}°C
+      • Condition: {{this.day.condition.text}}
+      • Rain? {{#if (eq this.day.daily_will_it_rain 1)}}Yes{{else}}No{{/if}}
+
+      {{/each}}
 
   # 5) “telegram_out”: send the forecast back to Telegram.
   telegram_out:
