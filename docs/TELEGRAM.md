@@ -13,7 +13,7 @@ On your phone or desktop, click or go to:
 
 You'll see this screen:
 
-![BotFather Home](https://greentic.ai/assets/botfather.png)
+![BotFather Home](https://github.com/greentic-ai/greentic/blob/dev/assets/botfather.png)
 
 ---
 
@@ -28,7 +28,7 @@ BotFather will ask you to give your bot a **name** and a **username**. The name 
 
 You'll receive a response like:
 
-![New Bot Created](https://greentic.ai/assets/newbot.png)
+![New Bot Created](https://github.com/greentic-ai/greentic/blob/dev/assets/newbot.png)
 
 ---
 
