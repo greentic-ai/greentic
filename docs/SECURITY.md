@@ -1,42 +1,28 @@
-Security Policy
+# Security Policy
 
-Reporting a Vulnerability
+## Reporting a Vulnerability
 
-If you discover a security vulnerability within Greentic, we strongly encourage you to disclose it to us responsibly.
+If you believe you have found a security vulnerability in Greentic.ai, please report it privately.
 
-Please do not create a public GitHub issue or discuss it in public forums. Instead, contact us privately:
+- **Do not open a GitHub issue.**
+- Instead, email us at **security@greentic.ai** with the details of the vulnerability.
 
-Email: security@greentic.ai
+Please include:
+- A description of the vulnerability and its impact.
+- Steps to reproduce the issue.
+- Any suggestions for how the vulnerability could be mitigated.
 
-We will investigate and respond as quickly as possible. If necessary, we will coordinate a patch and release.
+We will respond to your report as soon as possible and work with you to resolve the issue quickly.
 
-Supported Versions
+## Supported Versions
 
-We generally maintain security updates for the latest minor release of Greentic. Older versions may receive critical fixes depending on severity and available resources.
+Security updates will be provided for the latest released version and the most recent previous minor version if applicable.
 
-Version
+## Responsible Disclosure
 
-Supported
+We ask that all reporters:
+- Avoid making details of the issue public before a fix is released.
+- Give us a reasonable amount of time to address the issue.
+- Act in good faith to avoid data loss, privacy violations, or disruption to our users.
 
-0.2.x
-
-✅ Yes
-
-< 0.2
-
-❌ No
-
-Responsible Disclosure Timeline
-
-We will acknowledge your report within 72 hours.
-
-We will begin investigating the issue and may request additional information.
-
-We aim to release a fix within 7–30 days depending on the severity.
-
-You will be credited for the discovery in release notes unless you prefer anonymity.
-
-Thank you
-
-Thank you for helping make Greentic secure for everyone.
-
+Thank you for helping to keep Greentic.ai safe and secure!
