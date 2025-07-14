@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Get a user by ID",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_user`]",
+      "properties": {
+        "attributes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "excluded_attributes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "CockroachCloudGetUserParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_user",
+  "type": "object"
+}

@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChannelCapabilities",
+  "default": {
+    "name": "mock",
+    "supported_events": [],
+    "supports_buttons": false,
+    "supports_call": false,
+    "supports_custom_payloads": false,
+    "supports_events": false,
+    "supports_files": false,
+    "supports_links": false,
+    "supports_media": false,
+    "supports_reactions": false,
+    "supports_text": true,
+    "supports_threading": false,
+    "supports_typing": false
+  },
+  "type": "object",
+  "required": [
+    "name",
+    "supported_events",
+    "supports_buttons",
+    "supports_call",
+    "supports_custom_payloads",
+    "supports_events",
+    "supports_files",
+    "supports_links",
+    "supports_media",
+    "supports_reactions",
+    "supports_text",
+    "supports_threading",
+    "supports_typing"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "supported_events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/EventType"
+      }
+    },
+    "supports_buttons": {
+      "type": "boolean"
+    },
+    "supports_call": {
+      "type": "boolean"
+    },
+    "supports_custom_payloads": {
+      "type": "boolean"
+    },
+    "supports_events": {
+      "type": "boolean"
+    },
+    "supports_files": {
+      "type": "boolean"
+    },
+    "supports_links": {
+      "type": "boolean"
+    },
+    "supports_media": {
+      "type": "boolean"
+    },
+    "supports_reactions": {
+      "type": "boolean"
+    },
+    "supports_text": {
+      "type": "boolean"
+    },
+    "supports_threading": {
+      "type": "boolean"
+    },
+    "supports_typing": {
+      "type": "boolean"
+    }
+  },
+  "definitions": {
+    "EventType": {
+      "type": "object",
+      "required": [
+        "description",
+        "event_type"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "payload_schema": true
+      }
+    }
+  }
+}

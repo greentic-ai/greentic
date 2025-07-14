@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Delete the Datadog Metric Export configuration for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_delete_datadog_metric_export`]",
+      "properties": {
+        "cluster_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cluster_id"
+      ],
+      "title": "CockroachCloudDeleteDatadogMetricExportParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_delete_datadog_metric_export",
+  "type": "object"
+}

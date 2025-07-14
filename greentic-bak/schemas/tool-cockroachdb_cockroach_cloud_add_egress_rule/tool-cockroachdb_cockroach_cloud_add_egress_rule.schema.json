@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Add an egress rule",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_add_egress_rule`]",
+      "properties": {
+        "add_egress_rule_request": {
+          "$ref": "#/definitions/AddEgressRuleRequest"
+        },
+        "cluster_id": {
+          "description": "cluster_id identifies the cluster to which this egress rule applies.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "add_egress_rule_request",
+        "cluster_id"
+      ],
+      "title": "CockroachCloudAddEgressRuleParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_add_egress_rule",
+  "type": "object"
+}

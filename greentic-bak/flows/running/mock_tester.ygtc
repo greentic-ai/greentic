@@ -1,0 +1,17 @@
+id: testing_flow
+title: test different aspects
+description: >
+  This flow tests different aspects
+channels:
+  - mock_inout
+nodes:
+  mock_in:
+    channel: mock_inout
+    in: true
+  debug_process:
+    debug:
+        print: true
+connections:
+  mock_in:
+    - debug_process
+    

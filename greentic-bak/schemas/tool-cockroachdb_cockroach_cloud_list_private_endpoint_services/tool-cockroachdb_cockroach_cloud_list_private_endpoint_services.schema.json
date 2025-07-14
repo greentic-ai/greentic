@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "List all PrivateEndpointServices for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_list_private_endpoint_services`]",
+      "properties": {
+        "cluster_id": {
+          "description": "cluster_id is the ID for the cluster.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cluster_id"
+      ],
+      "title": "CockroachCloudListPrivateEndpointServicesParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_list_private_endpoint_services",
+  "type": "object"
+}

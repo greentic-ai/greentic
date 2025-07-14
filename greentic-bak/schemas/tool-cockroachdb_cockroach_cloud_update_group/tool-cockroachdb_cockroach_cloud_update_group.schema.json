@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Update a group by supplying all values of the user object",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_update_group`]",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "update_group_request": {
+          "$ref": "#/definitions/UpdateGroupRequest"
+        }
+      },
+      "required": [
+        "id",
+        "update_group_request"
+      ],
+      "title": "CockroachCloudUpdateGroupParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_update_group",
+  "type": "object"
+}

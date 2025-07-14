@@ -1,7 +1,0 @@
-ygtc: "./greentic/tests/simple_tester.ygtc"
-
-tests:
-  - name: "hello → hello"
-    send: "hello"
-    expect: "hello"
-    timeout: 200

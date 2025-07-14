@@ -1,0 +1,73 @@
+id: ws_weather
+title: Websocket → Weather (with Ollama extraction)
+description: >
+  A WS flow that greets the user, asks questions or uses Ollama to parse “location”+“days,” 
+  calls weather_api, and replies via a template.
+channels:
+  - ws
+nodes:
+  ws_in:
+    channel: ws
+    in: true
+  ask_location_and_days:
+    qa:
+      # No separate welcome—first question is our “greeting + ask location”
+      welcome_template: "Hi there, I am the weather bot. Let's get your weather forecast."
+      questions:
+        - id: q_location
+          prompt: "👉 What location would you like a forecast for?"
+          answer_type: text
+          state_key: q
+          max_words: 3
+        - id: q_days
+          prompt: "👉 Over how many days? (enter a number)"
+          answer_type: number
+          state_key: days
+          max_words: 2
+          validate:
+            range:
+              min: 0
+              max: 3
+      fallback_agent:
+        type: ollama
+        model: llama3.2:1b
+        # task: you can repeat the same instruction you used before
+        task: |
+          Extract the location the user wants a weather forecast and if available the days.
+          The location is added to state as 'q' and the days as 'days'. 
+          Default to 3 days if not specified. 
+      routing:
+        - to: forecast_weather
+  forecast_weather:
+    tool:
+      name: weather_api
+      action: forecast_weather
+    max_retries: 2
+    retry_delay_secs: 1
+
+  # 5) “weather_out_template”: format the weather API’s JSON into a friendly sentence.
+  weather_out_template:
+    template: |
+      🌤️ Weather forecast for {{payload.location.name}}:
+
+      {{#each payload.forecast.forecastday}}
+      📅 Day {{@indexPlusOne}} ({{this.date}}):
+      • High: {{this.day.maxtemp_c}}°C
+      • Low: {{this.day.mintemp_c}}°C
+      • Condition: {{this.day.condition.text}}
+      • Rain? {{#if (eq this.day.daily_will_it_rain 1)}}Yes{{else}}No{{/if}}
+
+      {{/each}}
+  ws_out:
+    channel: ws
+    out: true
+connections:
+  ws_in:
+    - ask_location_and_days
+  ask_location_and_days:
+    - forecast_weather
+  forecast_weather:
+    - weather_out_template
+  weather_out_template:
+   - ws_out
+    

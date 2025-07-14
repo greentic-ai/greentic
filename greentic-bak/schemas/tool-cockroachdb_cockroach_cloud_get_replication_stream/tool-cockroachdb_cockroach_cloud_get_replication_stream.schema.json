@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Get a replication stream",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_replication_stream`]",
+      "properties": {
+        "id": {
+          "description": "id is the ID of the replication stream to get.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "CockroachCloudGetReplicationStreamParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_replication_stream",
+  "type": "object"
+}

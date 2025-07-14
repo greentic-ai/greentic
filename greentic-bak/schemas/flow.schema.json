@@ -1,0 +1,1064 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Flow",
+  "description": "A declarative flow: id/title/description, map of node-configs, and connections",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "nodes": {
+      "description": "node_id → node configuration",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/NodeConfig"
+      }
+    },
+    "connections": {
+      "description": "adjacency: from node_id → list of to node_ids",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "description",
+    "nodes",
+    "connections"
+  ],
+  "$defs": {
+    "NodeConfig": {
+      "description": "A single node’s config in the flow",
+      "type": "object",
+      "properties": {
+        "config": true,
+        "max_retries": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": 3
+        },
+        "retry_delay_secs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": 1
+        }
+      },
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "description": "The channel’s canonical name",
+              "type": "string"
+            },
+            "in": {
+              "description": "Whether this node should receive (i.e. subscribe to) this channel",
+              "type": "boolean"
+            },
+            "out": {
+              "description": "Whether this node should send (i.e. publish to) this channel",
+              "type": "boolean"
+            },
+            "from": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ValueOrTemplate"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "to": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/ValueOrTemplate"
+              }
+            },
+            "content": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ValueOrTemplate2"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "thread_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ValueOrTemplate3"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reply_to_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ValueOrTemplate3"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "channel"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "tool": {
+              "$ref": "#/$defs/ToolNodeConfig"
+            }
+          },
+          "required": [
+            "tool"
+          ]
+        },
+        {
+          "description": "Every built‐in agent must implement the existing `AgentNode`‐like behavior.\nInstead of “trait objects,” we enumerate them here.",
+          "type": "object",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OllamaAgent"
+            }
+          ]
+        },
+        {
+          "description": "An enum of all built-in variants plus a “Plugin” marker for any external WASM on disk.\n\nWhen you load a `.wasm` plugin from `/plugins/foo.wasm`, you will spawn a\n`BuiltInProcess::Plugin { name: \"foo\".into(), path: \"/plugins/foo.wasm\".into() }`.",
+          "type": "object",
+          "oneOf": [
+            {
+              "description": "A baked-in “debug” process",
+              "type": "object",
+              "properties": {
+                "debug": {
+                  "$ref": "#/$defs/debug"
+                }
+              },
+              "required": [
+                "debug"
+              ]
+            },
+            {
+              "description": "A baked-in script process (for example, a Rhia script)",
+              "type": "object",
+              "properties": {
+                "script": {
+                  "$ref": "#/$defs/script2"
+                }
+              },
+              "required": [
+                "script"
+              ]
+            },
+            {
+              "description": "A baked-in Handlebars template process",
+              "type": "object",
+              "properties": {
+                "template": {
+                  "$ref": "#/$defs/TemplateProcessNode"
+                }
+              },
+              "required": [
+                "template"
+              ]
+            },
+            {
+              "description": "A Question & Answer process with optional agent support",
+              "type": "object",
+              "properties": {
+                "qa": {
+                  "$ref": "#/$defs/QAProcessNode"
+                }
+              },
+              "required": [
+                "qa"
+              ]
+            },
+            {
+              "description": "A disk-loaded plugin (e.g. `/plugins/foo.wasm` → name = \"foo\").",
+              "type": "object",
+              "properties": {
+                "plugin": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "description": "Unique name of the plugin (used as registry key)",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ]
+                }
+              },
+              "required": [
+                "plugin"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "ValueOrTemplate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Participant"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Participant": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channel_specific_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "ValueOrTemplate2": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MessageContent"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "MessageContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileMetadata"
+            },
+            "kind": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "required": [
+            "kind",
+            "file"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "media": {
+              "$ref": "#/$defs/MediaMetadata"
+            },
+            "kind": {
+              "type": "string",
+              "const": "media"
+            }
+          },
+          "required": [
+            "kind",
+            "media"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event": {
+              "$ref": "#/$defs/Event"
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "required": [
+            "kind",
+            "event"
+          ]
+        }
+      ]
+    },
+    "FileMetadata": {
+      "type": "object",
+      "properties": {
+        "file_name": {
+          "type": "string"
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file_name",
+        "mime_type",
+        "url"
+      ]
+    },
+    "MediaMetadata": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/MediaType"
+        },
+        "file": {
+          "$ref": "#/$defs/FileMetadata"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ]
+    },
+    "MediaType": {
+      "type": "string",
+      "enum": [
+        "I_M_A_G_E",
+        "V_I_D_E_O",
+        "A_U_D_I_O",
+        "B_I_N_A_R_Y"
+      ]
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "type": "string"
+        },
+        "event_payload": true
+      },
+      "required": [
+        "event_type"
+      ]
+    },
+    "ValueOrTemplate3": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "ToolNodeConfig": {
+      "description": "A ToolNodeConfig allows to call a tool either by name, action\nand the payload will be passed to the action.\nor dynamically by passing through the payload:\n\"tool_call\": {\n    \"name\": \"<name of the tool to call>\",\n    \"action\": \"<tool action to call>\",\n    \"input\": \"<input parameters to pass to the tool>\"\n}\nYou can use an optional Mapper for transforming input (in_map), \noutput (out_map) and error (err_map).\nIf you want a specific set of connections to be called when the\ncall is successful, then set the names in the on_ok list.\nIf you want other connections to be called on error, set their names\nin the on_err list.\nIf no on_ok or on_err are specified then all connections will be called \nwith the result.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "in_map": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/map"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "out_map": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/map"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "err_map": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/map"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_ok": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "on_err": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "action"
+      ]
+    },
+    "map": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "copy"
+            }
+          },
+          "$ref": "#/$defs/copy",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "rename"
+            }
+          },
+          "$ref": "#/$defs/rename",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "script"
+            }
+          },
+          "$ref": "#/$defs/script",
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "CopyKey": {
+      "description": "Describes a key to copy from a source, with an optional default if missing.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true
+        }
+      ]
+    },
+    "copy": {
+      "description": "A mapper that copies selected fields from payload, config, and state,\nwith an optional default value in case the field is not found.\n\nConfig and state only accept strings as keys. Payload also accepts\nJSON pointers so you can look up a value inside the payload, e.g.\n/parameters/days\n\n# Example\n```json\n{\n  \"type\": \"copy\",\n  \"payload\": [\"a\", \"b\", { \"c\": 4 }],\n  \"config\": [\"env\", { \"region\": \"eu-west-1\" }],\n  \"state\": [\"done\", { \"tries\": 0 }]\n}\n```",
+      "type": "object",
+      "properties": {
+        "payload": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/CopyKey"
+          }
+        },
+        "config": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/CopyKey"
+          }
+        },
+        "state": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/CopyKey"
+          }
+        }
+      }
+    },
+    "StateValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StateValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/StateValue"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rename": {
+      "description": "A mapper that renames fields and optionally provides defaults.\n\n# Example\n```json\n{\n  \"type\": \"rename\",\n  \"x\": { \"from\": \"payload\", \"key\": \"user_id\" },\n  \"y\": { \"from\": \"config\", \"key\": \"region\", \"default\": \"us-west\" },\n  \"z\": { \"from\": \"state\", \"key\": \"stage\", \"default\": \"init\" }\n}\n```",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/StateValue"
+      }
+    },
+    "script": {
+      "description": "A mapper using Handlebars templating to build structured outputs.\n\n# Example\n```json\n{\n  \"type\": \"script\",\n  \"template\": \"{ \\\"payload\\\": { \\\"temperature\\\": \\\"{{weather.temp_c}}\\\" } }\"\n}\n```\nVariables from `payload`, `config`, and `state` are flattened and available\nto the template context.\n\nIf the payload variable is an array coming from a tool, then automatically it will\nbe converted into an object with key root: { ... the array ... }.\nYou can then get information out in the following way:\n```json\n{\"payload\": { \"temperature\": {{root.[0].current.temp_c}} }}\n```",
+      "type": "object",
+      "properties": {
+        "template": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "template"
+      ]
+    },
+    "OllamaAgent": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "embed",
+            "chat",
+            "generate",
+            null
+          ]
+        },
+        "ollama_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_options": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "tool_names": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "task"
+      ]
+    },
+    "debug": {
+      "description": "A simple debug node for testing that just echoes its input.",
+      "type": "object",
+      "properties": {
+        "print": {
+          "type": "boolean"
+        }
+      }
+    },
+    "script2": {
+      "description": "A Rhai script process node\n\nThis node executes a [Rhai](https://rhai.rs) script to transform message input, payload, and state.\nIt allows complex scripting logic with access to the following variables:\n\n- `msg`: the entire message object (including id, payload, session_id, etc.)\n- `payload`: the JSON value of the message payload (auto-parsed if it’s a string)\n- `state`: the internal node state as a key-value map\n- Each `state` key is also available as a top-level variable if it's a simple value\n\nThe script must return a value. This will be serialized and wrapped in `{\"output\": ...}` in the output message.\n\n---\n\n# 🔧 Example 1: Simple arithmetic\n\n```rhai\nlet temp = payload[\"weather\"][\"temp\"];\nlet feels_like = temp - 2;\nfeels_like\n```\n\nOutput:\n```json\n{ \"output\": 21 }\n```\n\n---\n\n# 📦 Example 2: Returning a structured object\n\n```rhai\nlet name = state[\"user\"][\"name\"];\nlet id = msg.id;\n#{ greeting: \"Hi \" + name, id: id }\n```\n\nOutput:\n```json\n{ \"output\": { \"greeting\": \"Hi Alice\", \"id\": \"abc123\" } }\n```\n\n---\n\n# 🔁 Example 3: Using conditionals and loops\n\n```rhai\nlet sum = 0;\nfor x in payload[\"values\"] {\n    if x > 0 {\n        sum += x;\n    }\n}\nsum\n```\n\nOutput:\n```json\n{ \"output\": 42 }\n```\n\n---\n\n# ✅ Example 4: Working with session ID and setting logic\n\n```rhai\nif msg.session_id == \"sess42\" {\n    \"Session is active\"\n} else {\n    \"Unknown session\"\n}\n```\n\nOutput:\n```json\n{ \"output\": \"Session is active\" }\n```\n\n/// ---\n\n# ⚙️ Advanced Usage: Structured Flow Control via `__greentic`\n\nIn addition to returning a simple value, you can return a structured object under the special `__greentic` key:\n\n- `payload`: What to send in the output message\n- `out`: List of next node IDs to call on success\n- `err`: List of next node IDs to call on error\n\n## 🔄 Example 5: Structured Output with Routing\n\n```rhai\nreturn #{ \n    __greentic: {\n        payload: #{ confirmed: true, name: state[\"name\"] },\n        out: [\"next_node\"]\n    } \n};\n```\n\nOutput:\n```json\n{ \"confirmed\": true, \"name\": \"Alice\" }\n```\n\nRouting: → `next_node`\n\n---\n\n## ⚠️ Example 6: Structured Error Routing\n\n```rhai\nif payload[\"age\"] < 18 {\n    return #{ \n        __greentic: {\n            payload: #{ error: \"User must be over 18\" },\n            err: [\"error_node\"]\n        }\n    };\n}\n```\n\nThis will **trigger a failure** and route to `error_node`.\n\n---\n\n## 🔁 Example 7: Fallback Without `__greentic`\n\nIf you return a basic value:\n\n```rhai\n\"Hi there!\"\n```\n\nIt will be wrapped like this:\n```json\n{ \"output\": \"Hi there!\" }\n```\n\n---\n\n## 🧠 State Writes Even on Error\n\nEven when the script fails, updates to `state` will be committed:\n\n```rhai\nstate[\"attempts\"] = 3;\nthrow(\"something broke\");\n```\n\n`\"attempts\"` will be stored in state even though the node returns an error.\n\n---\n\n# 📚 Notes:\n\n- You can use any function or feature supported by Rhai.\n- Script errors are caught and returned as `NodeError::InvalidInput`.\n- All state values are converted to `Dynamic` if possible for easier access.\n- Avoid mutating external context; the script is intended to be pure and side-effect free.\n\n---\n\nFor full language documentation, see: https://rhai.rs/book/",
+      "type": "object",
+      "properties": {
+        "script": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "script"
+      ]
+    },
+    "TemplateProcessNode": {
+      "description": "A Handlebars template process node.\n\nThis node renders a string template using Handlebars syntax with access to:\n- `msg`: the entire incoming message (e.g., `{{msg.id}}`, `{{msg.session_id}}`, `{{msg.payload.text}}`)\n- `payload`: the message payload, automatically parsed into JSON (e.g., `{{payload.weather.temp}}`)\n- `state`: the node state context (e.g., `{{state.age}}`, `{{state.user.name}}`)\n\n### Basic Examples\n\n#### Static template\n```handlebars\nHello world!\n```\n\n#### Message metadata\n```handlebars\nHello {{msg.id}}, your session is {{msg.session_id}}.\n```\n\n#### Payload values\n```handlebars\nWeather today is {{payload.weather.temp}}°C.\n```\n\n#### State values\n```handlebars\nUser: {{state.user.name}}, Age: {{state.age}}.\n```\n\n### Conditional Logic\n\n#### Basic `if` / `else`\n```handlebars\n{{#if state.is_admin}}\nWelcome, administrator!\n{{else}}\nWelcome, user!\n{{/if}}\n```\n\n#### Check existence\n```handlebars\n{{#if payload.alert}}\n⚠️ Alert: {{payload.alert.message}}\n{{/if}}\n```\n\n### Iteration\n\n#### Loop over an array in the payload\n```handlebars\nYour items:\n{{#each payload.cart}}\n- {{this.name}} ({{this.qty}} pcs)\n{{/each}}\n```\n\n### Nested values\n```handlebars\n{{state.profile.address.city}}, {{state.profile.address.country}}\n```\n\n### Escaping and raw output\n- To escape output: `{{msg.id}}` (HTML-escaped)\n- To output raw (unescaped): `{{{msg.payload.html}}}`\n\n### Notes\n- Missing fields render as empty strings.\n- Complex conditionals (e.g., `==`, `>`, `&&`) require custom helpers (not supported by default).\n\nFor advanced usage and custom helpers, refer to the [Handlebars Rust docs](https://docs.rs/handlebars).",
+      "type": "string"
+    },
+    "QAProcessNode": {
+      "description": "A QA process allows asking users a series of questions and storing their answers.\nIt supports different types of questions like text, number, choice, date, and LLM (AI-powered).\nEach answer type can define validation rules (like number range or regex), and some types can specify constraints (like `max_words`).\nIf an answer is missing or doesn’t match the expectations, the fallback mechanism can route the input to an LLM to interpret or correct it.\nBased on the collected answers, different follow-up paths (routing) can be taken.\n\n### Example: Ask a user's name and age\n```yaml\nwelcome_template: \"Hi! Let's get started.\"\nquestions:\n  - id: \"name\"\n    prompt: \"What's your name?\"\n    answer_type: text\n    state_key: \"user_name\"\n\n  - id: \"age\"\n    prompt: \"How old are you?\"\n    answer_type: number\n    state_key: \"user_age\"\n    validate:\n      range:\n        min: 0\n        max: 120\n\nrouting:\n  - condition:\n      less_than:\n        question_id: \"age\"\n        threshold: 18\n    to: \"minor_flow\"\n  - to: \"adult_flow\"\n```\n\n### Answer types:\n\n**Text:** Free-form input like a name, place, or sentence.\n```yaml\nanswer_type: text\n```\nOptional constraints:\n```yaml\nanswer_type:\n  text:\n    max_words: 3       # If longer, LLM fallback is used\n    regex: \"^[A-Za-z]+$\"  # If fails, LLM fallback is used\n```\n**Fallback for text:** `max_words` or `regex` don't reject the answer outright. Instead, if they don't match, the fallback LLM can attempt to extract or clean the correct response.\n\n**Number:** Numerical input like age, count, or temperature.\n```yaml\nanswer_type: number\n```\nOptional validation:\n```yaml\nvalidate:\n  range:\n    min: 0\n    max: 100\n```\n**Fallback for number:** If not a valid number, or out of the `range`, fallback LLM is triggered to correct or interpret it.\n\n**Choice:** User must select from a predefined list.\n```yaml\nanswer_type:\n  choice:\n    options: [\"Yes\", \"No\", \"Maybe\"]\n    max_words: 1\n```\n- Matching is case-insensitive.\n- If the answer doesn’t match any option or exceeds `max_words`, fallback LLM is used.\n\n**Date:** Natural date input like \"next Friday\" or \"1st June\".\n```yaml\nanswer_type:\n  date:\n    dialect: uk  # or \"us\" for MM/DD/YYYY format\n    max_words: 5\n```\n- If parsing fails or `max_words` is exceeded, fallback LLM is used to extract a valid date.\n\n**LLM:** Always sends the answer directly to the LLM.\nUseful for open-ended questions or when user intent needs interpretation.\n```yaml\nanswer_type: llm\n```\nExample with LLM task:\n```yaml\nprompt: \"What do you want to achieve this week?\"\nanswer_type: llm\nstate_key: \"user_goal\"\nfallback_agent:\n  task: \"Extract the user's main goal from their message.\"\n```\nThe `task` should be written in natural language to instruct the LLM clearly.\n\n### Fallback mechanism\nFor **text**, **number**, **choice**, and **date**, the fallback is triggered *only* when validation or constraints fail (like regex mismatch, out-of-range number, unmatched choice, etc.).\n\nThe fallback agent does **not** reject the answer. Instead, it attempts to:\n- Clean or extract the intended meaning\n- Reformat the user’s response to match expected format\n- Or prompt the user to clarify\n\nExample fallback:\n```yaml\nfallback_agent:\n  task: \"Please rephrase the user's answer so it matches the expected format.\"\n```\n\nFor **LLM** type questions, the answer *always* goes to the fallback agent (LLM), regardless of constraints.\n\n### Routing:\nUse previous answers to decide what comes next.\n```yaml\nrouting:\n  - condition:\n      less_than:\n        question_id: \"age\"\n        threshold: 18\n    to: \"minor_flow\"\n\n  - to: \"adult_flow\"\n```\n\nThis makes it easy to guide users through different paths based on their responses.\n\n### Summary:\n- `answer_type` defines the kind of expected input.\n- Constraints like `max_words` or `regex` don’t reject answers—they trigger the fallback LLM to help.\n- `validate` rules apply additional checks (especially for numbers).\n- Fallback agents enhance robustness by letting the LLM assist when user input is unclear.\n- Routing makes flows dynamic and context-aware.\n\n## Example YAML Usage\n\n```yaml\nnodes:\n  ask_user:\n    qa:\n      welcome_template: >\n        Welcome! Let's gather a few details first.\n      questions:\n        - id:       \"name\"\n          prompt:   \"👉 What is your full name?\"\n          answer_type: text\n          state_key: \"user_name\"\n\n        - id:       \"age\"\n          prompt:   \"👉 How old are you?\"\n          answer_type: number\n          state_key: \"user_age\"\n          validate:\n            range:\n              min: 0\n              max: 120\n\n        - id:       \"birthdate\"\n          prompt:   \"👉 When is your birthday? (YYYY-MM-DD)\"\n          answer_type: date\n          state_key: \"user_birthdate\"\n          validate:\n            regex: \"^\\\\d{4}-\\\\d{2}-\\\\d{2}$\"\n\n        - id:       \"color\"\n          prompt:   \"👉 Pick a color: red, green or blue.\"\n          answer_type:\n            choice:\n              options: [\"red\",\"green\",\"blue\"]\n          state_key: \"favorite_color\"\n\n      # if they are under 18, send to \"underage\" flow; else to \"main_process\"\n      routing:\n        - condition:\n            less_than:\n              question_id: \"age\"\n              threshold: 18\n          to: \"underage\"\n\n        - to: \"main_process\"\n```\n\nIn the above:\n1. **First** the user receives the `welcome_template`.  \n2. **Then** each `prompt` is sent in order, and their reply is parsed/validated.  \n3. **Finally**, all answers are in `ctx.state` under `\"user_name\"`, `\"user_age\"`, etc., and\n   the node emits a single `NodeOut::one(...)` carrying the full answers object to the\n   connection named by the matching `RoutingRule`.\n\n> **Tip:** Use Handlebars in your prompts or `welcome_template` to show previously‐collected\n> values:  \n> ```yaml\n> prompt: \"Nice to meet you, {{state.user_name}}! What’s your favorite number?\"\n> ```  \n\nThis makes `QAProcessNode` a powerful way to build multi‐step, stateful forms or wizards\nentirely in your flow YAML, without writing any extra Rust!",
+      "type": "object",
+      "properties": {
+        "welcome_template": {
+          "description": "A one‐time “welcome” message (Handlebars template) when a new user/session arrives.",
+          "type": "string"
+        },
+        "questions": {
+          "description": "The list of questions to ask, in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QuestionConfig"
+          }
+        },
+        "fallback_agent": {
+          "description": "If the user’s free‐text reply doesn’t parse as any of our expected answer types,\nyou can optionally hand them off to an LLM agent to try to interpret.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuiltInAgent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "routing": {
+          "description": "Once all questions are answered, pick the outgoing connection by matching one of these.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoutingRule"
+          }
+        }
+      },
+      "required": [
+        "welcome_template",
+        "questions",
+        "routing"
+      ]
+    },
+    "QuestionConfig": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Unique ID for this question (used in state and in routing conditions).",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "What to send to the user.  Can interpolate `{{state.foo}}`.",
+          "type": "string"
+        },
+        "state_key": {
+          "description": "Where in `NodeContext.state` to store the parsed value.",
+          "type": "string"
+        },
+        "validate": {
+          "description": "Optional regexp or range check to validate their answer.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ValidationRule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "prompt",
+        "state_key"
+      ],
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "max_words": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "regex": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "answer_type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "answer_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "max_words": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "answer_type": {
+              "type": "string",
+              "const": "number"
+            }
+          },
+          "required": [
+            "answer_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "max_words": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "dialect": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dialect"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "answer_type": {
+              "type": "string",
+              "const": "date"
+            }
+          },
+          "required": [
+            "answer_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "max_words": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "answer_type": {
+              "type": "string",
+              "const": "choice"
+            }
+          },
+          "required": [
+            "answer_type",
+            "options"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "answer_type": {
+              "type": "string",
+              "const": "llm"
+            }
+          },
+          "required": [
+            "answer_type"
+          ]
+        }
+      ]
+    },
+    "Dialect": {
+      "type": "string",
+      "enum": [
+        "Uk",
+        "Us"
+      ]
+    },
+    "ValidationRule": {
+      "anyOf": [
+        {
+          "description": "foo              → free‐form string",
+          "type": "string"
+        },
+        {
+          "description": "range: { min:…, max:… }",
+          "type": "object",
+          "properties": {
+            "range": {
+              "$ref": "#/$defs/RangeParams"
+            }
+          },
+          "required": [
+            "range"
+          ]
+        }
+      ]
+    },
+    "RangeParams": {
+      "description": "helper for your `range:` mapping",
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "number",
+          "format": "double"
+        },
+        "max": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ]
+    },
+    "BuiltInAgent": {
+      "description": "Every built‐in agent must implement the existing `AgentNode`‐like behavior.\nInstead of “trait objects,” we enumerate them here.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OllamaAgent"
+        }
+      ]
+    },
+    "RoutingRule": {
+      "type": "object",
+      "properties": {
+        "condition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Condition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "to"
+      ]
+    },
+    "Condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "equals": {
+              "type": "object",
+              "properties": {
+                "question_id": {
+                  "type": "string"
+                },
+                "value": true
+              },
+              "required": [
+                "question_id",
+                "value"
+              ]
+            }
+          },
+          "required": [
+            "equals"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "custom": {
+              "type": "object",
+              "properties": {
+                "expr": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expr"
+              ]
+            }
+          },
+          "required": [
+            "custom"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "greater_than": {
+              "type": "object",
+              "properties": {
+                "question_id": {
+                  "type": "string"
+                },
+                "threshold": {
+                  "type": "number",
+                  "format": "double"
+                }
+              },
+              "required": [
+                "question_id",
+                "threshold"
+              ]
+            }
+          },
+          "required": [
+            "greater_than"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "less_than": {
+              "type": "object",
+              "properties": {
+                "question_id": {
+                  "type": "string"
+                },
+                "threshold": {
+                  "type": "number",
+                  "format": "double"
+                }
+              },
+              "required": [
+                "question_id",
+                "threshold"
+              ]
+            }
+          },
+          "required": [
+            "less_than"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

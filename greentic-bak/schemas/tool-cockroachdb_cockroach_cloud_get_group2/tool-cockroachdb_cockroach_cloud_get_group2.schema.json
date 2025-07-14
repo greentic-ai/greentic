@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Search a group by ID (Deprecated)",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_group2`]",
+      "properties": {
+        "get_group_request": {
+          "$ref": "#/definitions/GetGroupRequest"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "get_group_request",
+        "id"
+      ],
+      "title": "CockroachCloudGetGroup2Params",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_group2",
+  "type": "object"
+}

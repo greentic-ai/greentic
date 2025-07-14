@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Search person users by email address",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_person_users_by_email`]",
+      "properties": {
+        "email": {
+          "description": "an email address is required.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "title": "CockroachCloudGetPersonUsersByEmailParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_person_users_by_email",
+  "type": "object"
+}

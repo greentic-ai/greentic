@@ -1,0 +1,35 @@
+
+
+{
+    "id": "sample.greentic",
+    "title": "Mock Flow",
+    "description": "A sample flow",
+        "channels": [
+        "mock_inout",
+        "mock_middle" 
+    ],
+    "nodes": {
+        "mock_in": {
+            "channel": "mock_inout",
+            "in": true
+        },
+        "mock_middle": {
+            "channel": "mock_middle",
+            "in": true,
+            "out": true
+        },
+        "mock_out": {
+            "channel": "mock_inout",
+            "out": true
+        }
+    },
+    "connections": {
+        "mock_in": [
+            "mock_middle"
+        ],
+        "mock_middle": [
+            "mock_out"
+        ]
+    }
+}
+        

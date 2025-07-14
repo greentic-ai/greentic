@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Update disruption specifications for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_update_cluster_disruption`]",
+      "properties": {
+        "cluster_id": {
+          "description": "cluster_id specifies the cluster for this request.",
+          "type": "string"
+        },
+        "cockroach_cloud_update_cluster_disruption_request": {
+          "$ref": "#/definitions/CockroachCloudUpdateClusterDisruptionRequest"
+        }
+      },
+      "required": [
+        "cluster_id",
+        "cockroach_cloud_update_cluster_disruption_request"
+      ],
+      "title": "CockroachCloudUpdateClusterDisruptionParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_update_cluster_disruption",
+  "type": "object"
+}

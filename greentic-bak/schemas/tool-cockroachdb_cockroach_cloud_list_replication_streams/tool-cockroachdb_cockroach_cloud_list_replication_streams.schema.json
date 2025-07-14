@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "List replication streams",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_list_replication_streams`]",
+      "properties": {
+        "cluster_id": {
+          "description": "cluster_id, if set, will cause replication streams with this cluster as the source or the target to be returned.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_as_of_time": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_limit": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pagination_period_page": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_sort_order": {
+          "description": "- ASC: Sort in ascending order. This is the default unless otherwise specified.  - DESC: Sort in descending order.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "show_completed": {
+          "description": "show_completed specifies whether or not replication streams in the completed state are shown.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source_cluster_id": {
+          "description": "source_cluster_id, if set, will cause only replication streams with this cluster as the source to be returned.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_cluster_id": {
+          "description": "target_cluster_id, if set, will cause only replication streams with this cluster as the target to be returned.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "CockroachCloudListReplicationStreamsParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_list_replication_streams",
+  "type": "object"
+}

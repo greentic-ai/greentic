@@ -142,8 +142,8 @@ pub async fn validate(
     // 3a) missing plugins ---------------------------------------------------
     for t in &used_channels {
          let channel_file = match cfg!(target_os = "windows") {
-                true => format!("{t}.exe"),
-                false => format!("{t}"),
+                true => format!("channel_{t}.exe"),
+                false => format!("channel_{t}"),
             };
 
         let running_channel = running_path.join(channel_file.clone());
@@ -275,7 +275,7 @@ pub async fn validate(
 // Basic pull function to get a tool. In the future we need login and 
 // more advanced version management, ...
 async fn pull_channel(token: &str, channel_name: &str, platform: &str, destination: &Path) -> anyhow::Result<()> {
-    let url = format!("https://greenticstore.com/channels/{platform}/channel_{channel_name}");
+    let url = format!("https://greenticstore.com/channels/{platform}/{channel_name}");
     let client = reqwest::Client::new();
     let response = client
         .get(&url)

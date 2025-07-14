@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Add a follower to a product",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`add_product_follower`]",
+      "properties": {
+        "add_deal_follower_request": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AddDealFollowerRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "description": "The ID of the product",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "AddProductFollowerParams",
+      "type": "object"
+    },
+    "secrets": {
+      "properties": {
+        "PIPEDRIVE_ACCESS_TOKEN": {
+          "description": "OAuth2 bearer token",
+          "type": "string"
+        },
+        "PIPEDRIVE_CLIENT_ID": {
+          "description": "OAuth2 client ID",
+          "type": "string"
+        },
+        "PIPEDRIVE_CLIENT_SECRET": {
+          "description": "OAuth2 client secret",
+          "type": "string"
+        },
+        "PIPEDRIVE_REFRESH_TOKEN": {
+          "description": "OAuth2 refresh token (optional)",
+          "type": "string"
+        },
+        "PIPEDRIVE_X-API-TOKEN": {
+          "description": "API key (header)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "PIPEDRIVE_X-API-TOKEN",
+        "PIPEDRIVE_CLIENT_ID",
+        "PIPEDRIVE_CLIENT_SECRET",
+        "PIPEDRIVE_ACCESS_TOKEN"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "PIPEDRIVE_X-API-TOKEN",
+    "PIPEDRIVE_CLIENT_ID",
+    "PIPEDRIVE_CLIENT_SECRET",
+    "PIPEDRIVE_ACCESS_TOKEN",
+    "secrets"
+  ],
+  "title": "pipedrive_add_product_follower",
+  "type": "object"
+}

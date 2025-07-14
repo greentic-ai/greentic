@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Get an API Key by ID",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_api_key`]",
+      "properties": {
+        "id": {
+          "description": "the ID of the api key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "CockroachCloudGetApiKeyParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_api_key",
+  "type": "object"
+}
