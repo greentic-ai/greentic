@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Get a SCIM schema by ID",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_schema`]",
+      "properties": {
+        "attributes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "excluded_attributes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_id"
+      ],
+      "title": "CockroachCloudGetSchemaParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_schema",
+  "type": "object"
+}

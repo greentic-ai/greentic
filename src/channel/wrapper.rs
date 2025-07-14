@@ -116,12 +116,16 @@ impl PluginWrapper {
     }
 
     pub async fn start(&mut self, config: Vec<(String,String)>, secrets: Vec<(String,String)>) -> Result<(),PluginError> {
+         let log_dir = match self.log_config.log_dir.clone() {
+            Some(log_dir) => Some(log_dir.to_string_lossy().to_string()),
+            None => None,
+        };
          let init = InitParams{ 
                 version: VERSION.to_string(), 
                 config: config, 
                 secrets: secrets, 
                 log_level: self.log_config.log_level.clone(), 
-                log_dir: self.log_config.log_dir.clone(), 
+                log_dir, 
                 otel_endpoint: self.log_config.otel_endpoint.clone(), 
          };
         let result = self.inner.start(init).await;

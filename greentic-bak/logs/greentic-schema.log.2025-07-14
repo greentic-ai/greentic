@@ -1,0 +1,66 @@
+2025-07-14T07:53:40.822287Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T07:53:40.824009Z  INFO greentic::logger: called context=list_tools
+2025-07-14T07:53:40.866245Z  INFO greentic::executor: Loaded tools in 3.78709575s
+2025-07-14T08:03:57.219463Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T08:03:57.221384Z  INFO greentic::logger: called context=list_tools
+2025-07-14T08:03:57.265294Z  INFO greentic::executor: Loaded tools in 3.094615125s
+2025-07-14T08:11:12.116935Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T08:11:12.118870Z  INFO greentic::logger: called context=list_tools
+2025-07-14T08:11:12.162371Z  INFO greentic::executor: Loaded tools in 3.946029792s
+2025-07-14T08:12:11.634848Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T08:12:11.637194Z  INFO greentic::logger: called context=list_tools
+2025-07-14T08:12:11.679288Z  INFO greentic::executor: Loaded tools in 3.246615625s
+2025-07-14T08:18:11.408129Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T08:18:11.410423Z  INFO greentic::logger: called context=list_tools
+2025-07-14T08:18:11.453229Z  INFO greentic::executor: Loaded tools in 3.677478583s
+2025-07-14T08:18:11.509741Z  INFO greentic::channel::manager: Channel plugin added/reloaded: ws
+2025-07-14T08:18:11.513993Z  INFO greentic::channel::manager: Plugin `ws` started
+2025-07-14T08:18:11.514380Z  INFO greentic::channel::plugin: Loaded plugin: ws
+2025-07-14T08:18:11.651760Z  INFO greentic::channel::manager: Channel plugin added/reloaded: telegram
+2025-07-14T08:18:11.653148Z  INFO greentic::channel::manager: Plugin `telegram` started
+2025-07-14T08:18:11.653283Z  INFO greentic::channel::plugin: Loaded plugin: telegram
+2025-07-14T08:25:33.758514Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T08:25:33.760946Z  INFO greentic::logger: called context=list_tools
+2025-07-14T08:25:33.803188Z  INFO greentic::executor: Loaded tools in 3.355154417s
+2025-07-14T08:25:33.860326Z  INFO greentic::channel::manager: Channel plugin added/reloaded: ws
+2025-07-14T08:25:33.864870Z  INFO greentic::channel::manager: Plugin `ws` started
+2025-07-14T08:25:33.865227Z  INFO greentic::channel::plugin: Loaded plugin: ws
+2025-07-14T08:25:33.911839Z  INFO greentic::channel::manager: Channel plugin added/reloaded: telegram
+2025-07-14T08:25:33.913691Z  INFO greentic::channel::manager: Plugin `telegram` started
+2025-07-14T08:25:33.913804Z  INFO greentic::channel::plugin: Loaded plugin: telegram
+2025-07-14T08:29:49.935545Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T08:29:49.937453Z  INFO greentic::logger: called context=list_tools
+2025-07-14T08:29:49.981345Z  INFO greentic::executor: Loaded tools in 3.905999666s
+2025-07-14T08:29:50.038508Z  INFO greentic::channel::manager: Channel plugin added/reloaded: ws
+2025-07-14T08:29:50.043498Z  INFO greentic::channel::manager: Plugin `ws` started
+2025-07-14T08:29:50.043795Z  INFO greentic::channel::plugin: Loaded plugin: ws
+2025-07-14T08:29:50.090564Z  INFO greentic::channel::manager: Channel plugin added/reloaded: telegram
+2025-07-14T08:29:50.092317Z  INFO greentic::channel::manager: Plugin `telegram` started
+2025-07-14T08:29:50.092453Z  INFO greentic::channel::plugin: Loaded plugin: telegram
+2025-07-14T08:32:13.345016Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T08:32:13.347553Z  INFO greentic::logger: called context=list_tools
+2025-07-14T08:32:13.392760Z  INFO greentic::executor: Loaded tools in 4.298425083s
+2025-07-14T08:32:13.451913Z  INFO greentic::channel::manager: Channel plugin added/reloaded: ws
+2025-07-14T08:32:13.456591Z  INFO greentic::channel::manager: Plugin `ws` started
+2025-07-14T08:32:13.456884Z  INFO greentic::channel::plugin: Loaded plugin: ws
+2025-07-14T08:32:13.503003Z  INFO greentic::channel::manager: Channel plugin added/reloaded: telegram
+2025-07-14T08:32:13.504638Z  INFO greentic::channel::manager: Plugin `telegram` started
+2025-07-14T08:32:13.504747Z  INFO greentic::channel::plugin: Loaded plugin: telegram
+2025-07-14T09:45:27.969794Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T09:45:27.973220Z  INFO greentic::logger: called context=list_tools
+2025-07-14T09:45:28.015178Z  INFO greentic::executor: Loaded tools in 4.654144708s
+2025-07-14T09:45:28.073841Z  INFO greentic::channel::manager: Channel plugin added/reloaded: ws
+2025-07-14T09:45:28.078399Z  INFO greentic::channel::manager: Plugin `ws` started
+2025-07-14T09:45:28.078712Z  INFO greentic::channel::plugin: Loaded plugin: ws
+2025-07-14T09:45:28.238702Z  INFO greentic::channel::manager: Channel plugin added/reloaded: telegram
+2025-07-14T09:45:28.240093Z  INFO greentic::channel::manager: Plugin `telegram` started
+2025-07-14T09:45:28.240219Z  INFO greentic::channel::plugin: Loaded plugin: telegram
+2025-07-14T09:46:03.738517Z  INFO greentic::logger: called context=list_secrets
+2025-07-14T09:46:03.740202Z  INFO greentic::logger: called context=list_tools
+2025-07-14T09:46:03.782676Z  INFO greentic::executor: Loaded tools in 3.939308917s
+2025-07-14T09:46:03.838910Z  INFO greentic::channel::manager: Channel plugin added/reloaded: ws
+2025-07-14T09:46:03.843463Z  INFO greentic::channel::manager: Plugin `ws` started
+2025-07-14T09:46:03.843791Z  INFO greentic::channel::plugin: Loaded plugin: ws
+2025-07-14T09:46:03.889512Z  INFO greentic::channel::manager: Channel plugin added/reloaded: telegram
+2025-07-14T09:46:03.891159Z  INFO greentic::channel::manager: Plugin `telegram` started
+2025-07-14T09:46:03.891267Z  INFO greentic::channel::plugin: Loaded plugin: telegram

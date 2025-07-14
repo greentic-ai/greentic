@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Get the backup configuration for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_get_backup_configuration`]",
+      "properties": {
+        "cluster_id": {
+          "description": "The UUID of the cluster that this backup configuration belongs to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cluster_id"
+      ],
+      "title": "CockroachCloudGetBackupConfigurationParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_get_backup_configuration",
+  "type": "object"
+}

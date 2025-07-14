@@ -112,9 +112,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Install Greentic.AI via:
 
 ```bash
-cargo install greentic --version 0.2.0-rc6
+cargo install greentic
 ```
---version is needed until 0.2.0 is released
 
 ### 🔧 Initialise your environment
 
@@ -129,12 +128,14 @@ This will:
 - Create the Greentic configuration directories
 - Register your user and generate a `GREENTIC_TOKEN`
 - Allow you to pull flows, channels, tools, etc. from [greenticstore.com](https://greenticstore.com)
+- Will give an error about the TELEGRAM_TOKEN and WEATHERAPI_KEY not being set. Read about how to create a 
+[Telegram bot](./docs/TELEGRAM.md) and get your free WEATHERAPI_KEY at [https://www.weatherapi.com/](https://www.weatherapi.com/)
 
 ---
 
 ### 🌦️ Example: Telegram Weather Bot
 
-Pull your first flow:
+Pull your first flow: (greentic init does this for you already)
 
 ```bash
 greentic flow pull weather_bot_telegram.ygtc
@@ -142,13 +143,13 @@ greentic flow pull weather_bot_telegram.ygtc
 
 Then:
 
-1. [Create and configure a Telegram bot](https://docs.radist.online/docs/our-products/radist-web/connections/telegram-bot/instructions-for-creating-and-configuring-a-bot-in-botfather), and add your token:
+1. [Create and configure a Telegram bot](./docs/TELEGRAM.md), and add your token:
 
    ```bash
    greentic secret add TELEGRAM_TOKEN <your_token>
    ```
 
-2. [Sign up to WeatherAPI](https://www.weatherapi.com/signup.aspx) and add your API key:
+2. [Sign up to WeatherAPI](https://www.weatherapi.com/signup.aspx) and add your free API key:
 
    ```bash
    greentic secret add WEATHERAPI_KEY <your_key>

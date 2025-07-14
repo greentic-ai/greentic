@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Replace the roles for a user or service account with exactly those provided",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_set_roles_for_user`]",
+      "properties": {
+        "cockroach_cloud_set_roles_for_user_request": {
+          "$ref": "#/definitions/CockroachCloudSetRolesForUserRequest"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cockroach_cloud_set_roles_for_user_request",
+        "user_id"
+      ],
+      "title": "CockroachCloudSetRolesForUserParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_set_roles_for_user",
+  "type": "object"
+}

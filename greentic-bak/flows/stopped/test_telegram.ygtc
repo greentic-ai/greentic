@@ -1,0 +1,21 @@
+id: testing_flow
+title: test different aspects
+description: >
+  This flow tests different aspects
+channels:
+  - telegram
+nodes:
+  telegram_in:
+    channel: telegram
+    in: true
+  debug_process:
+    debug:
+        print: false
+  telegram_out:
+    channel: telegram
+    out: true
+connections:
+  telegram_in:
+    - debug_process
+    - telegram_out
+    

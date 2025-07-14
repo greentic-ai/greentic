@@ -856,7 +856,7 @@ mod tests {
         let config_manager = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
         let channel_origin = ChannelOrigin::new("test_channel".into(), None, None, Participant::new("user".into(), None, None));
-        let process_manager = ProcessManager::new(Path::new("./plugins/processes")).unwrap();
+        let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes")).unwrap();
         let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), LogConfig::default()).await.unwrap();
 
         let mut ctx = NodeContext::new(
@@ -1441,7 +1441,7 @@ connections:
 
         let plugin = spawn_rpc_plugin(path).await.expect("Could not load plugin");
 
-        let log_config = LogConfig::new(LogLevel::Info, Some("./greentic/logs".to_string()), None);
+        let log_config = LogConfig::new(LogLevel::Info, Some(Path::new("./greentic/logs").to_path_buf()), None);
         
         let mock = ManagedChannel::new(PluginWrapper::new(plugin, store.clone(), log_config).await, None, None);
         channel_manager

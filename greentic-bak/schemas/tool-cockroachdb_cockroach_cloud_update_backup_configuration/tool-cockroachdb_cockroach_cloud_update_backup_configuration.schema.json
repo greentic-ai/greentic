@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Update the backup configuration for a cluster",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_update_backup_configuration`]",
+      "properties": {
+        "cluster_id": {
+          "description": "The UUID of the cluster that this backup configuration belongs to.",
+          "type": "string"
+        },
+        "update_backup_configuration_spec": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UpdateBackupConfigurationSpec"
+            }
+          ],
+          "description": "spec contains the information that is being updated for the given BackupConfiguration."
+        }
+      },
+      "required": [
+        "cluster_id",
+        "update_backup_configuration_spec"
+      ],
+      "title": "CockroachCloudUpdateBackupConfigurationParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_update_backup_configuration",
+  "type": "object"
+}

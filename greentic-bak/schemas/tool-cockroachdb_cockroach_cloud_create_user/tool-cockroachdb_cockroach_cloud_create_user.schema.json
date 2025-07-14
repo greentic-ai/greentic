@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Create a user",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_create_user`]",
+      "properties": {
+        "create_user_request": {
+          "$ref": "#/definitions/CreateUserRequest"
+        }
+      },
+      "required": [
+        "create_user_request"
+      ],
+      "title": "CockroachCloudCreateUserParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_create_user",
+  "type": "object"
+}

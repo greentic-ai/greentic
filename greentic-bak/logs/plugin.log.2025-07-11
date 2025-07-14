@@ -1,0 +1,28 @@
+2025-07-11T12:45:53.284101Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T12:45:53.284205Z  INFO [mock] receive_message
+2025-07-11T12:46:03.749078Z  INFO [mock] started
+2025-07-11T12:46:04.737845Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T12:46:04.737909Z  INFO [mock] receive_message
+2025-07-11T12:46:14.743733Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T12:46:14.743801Z  INFO [mock] receive_message
+2025-07-11T12:46:24.748937Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T12:46:24.748976Z  INFO [mock] receive_message
+2025-07-11T13:02:56.088176Z  INFO [ws] listening on 0.0.0.0:8888
+2025-07-11T13:02:57.058444Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T13:02:58.014820Z  INFO [telegram] init
+2025-07-11T13:02:58.991255Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T13:03:00.495384Z  INFO [telegram] message_in 772
+2025-07-11T13:03:00.515537Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T13:03:00.545701Z  INFO [telegram] Sending message: "ask_location_and_days"
+2025-07-11T13:03:00.546002Z  INFO Sending to 182796331
+2025-07-11T13:03:00.648779Z  INFO all messages delivered
+2025-07-11T13:03:02.728944Z  INFO [telegram] message_in 774
+2025-07-11T13:03:02.729094Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T13:03:02.737034Z  INFO [telegram] Sending message: "ask_location_and_days"
+2025-07-11T13:03:02.737095Z  INFO Sending to 182796331
+2025-07-11T13:03:02.832231Z  INFO all messages delivered
+2025-07-11T13:03:04.167103Z  INFO [telegram] message_in 776
+2025-07-11T13:03:04.167435Z  INFO @@@ REMOVE loop state: StateResult { state: RUNNING }
+2025-07-11T13:03:09.214931Z  INFO [telegram] Sending message: "776"
+2025-07-11T13:03:09.215009Z  INFO Sending to 182796331
+2025-07-11T13:03:09.254061Z  INFO all messages delivered

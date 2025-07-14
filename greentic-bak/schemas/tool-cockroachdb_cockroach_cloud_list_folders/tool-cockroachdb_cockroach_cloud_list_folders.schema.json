@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "List folders owned by an organization",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_list_folders`]",
+      "properties": {
+        "pagination_period_as_of_time": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_limit": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pagination_period_page": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pagination_period_sort_order": {
+          "description": "- ASC: Sort in ascending order. This is the default unless otherwise specified.  - DESC: Sort in descending order.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Optional filter to limit the response to include only results that match the given absolute path to that folder. Preceding and ending \\\"/\\\" are optional. For example /folder1/folder2, /folder1/folder2/, folder1/folder2, and folder1/folder2/ are all equivalent. If no matching folder is found, an empty list is returned. Because folder paths are passed via the query parameters, they must be URL-encoded.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "CockroachCloudListFoldersParams",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_list_folders",
+  "type": "object"
+}

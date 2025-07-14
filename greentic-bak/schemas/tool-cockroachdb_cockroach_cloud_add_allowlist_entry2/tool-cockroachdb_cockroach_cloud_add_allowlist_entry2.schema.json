@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Add a new CIDR address to the IP allowlist",
+  "properties": {
+    "parameters": {
+      "description": "struct for passing parameters to the method [`cockroach_cloud_add_allowlist_entry2`]",
+      "properties": {
+        "allowlist_entry1": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AllowlistEntry1"
+            }
+          ],
+          "description": "AllowlistEntry"
+        },
+        "cidr_ip": {
+          "type": "string"
+        },
+        "cidr_mask": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "cluster_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "allowlist_entry1",
+        "cidr_ip",
+        "cidr_mask",
+        "cluster_id"
+      ],
+      "title": "CockroachCloudAddAllowlistEntry2Params",
+      "type": "object"
+    }
+  },
+  "title": "cockroachdb_cockroach_cloud_add_allowlist_entry2",
+  "type": "object"
+}
