@@ -143,6 +143,16 @@ impl Executor {
         })
     }
 
+    pub async fn add_tool(&self, wasm: PathBuf) -> Result<(),Error> {
+        let handler = ToolDirHandler {
+            tools: Arc::clone(&self.executor.tools()),
+            secrets: self.executor.secrets_manager().clone(),
+            logging: self.executor.logger().clone(),
+        };
+        handler.on_create_or_modify(&wasm).await?;
+        Ok(())
+    }
+
     pub async fn watch_tool_dir(&self, tool_dir: PathBuf) -> Result<DirectoryWatcher,Error>  {
         let handler = ToolDirHandler {
             tools: Arc::clone(&self.executor.tools()),

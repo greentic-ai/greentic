@@ -11,9 +11,6 @@ pub async fn validate_flow_file(
     flow_file: PathBuf,
     root_dir:  PathBuf,
     tools_dir: PathBuf,
-    log_level: String,
-    log_dir:   String,
-    event_dir: String,
     secrets_maanger: SecretsManager,
     config_manager: ConfigManager,
     ) -> Result<()> {
@@ -40,9 +37,6 @@ pub async fn validate_flow_file(
         flow_file,
         root_dir,
         tools_dir,
-        log_level,
-        log_dir,
-        event_dir,
         secrets_maanger,
         config_manager,
     ).await;
@@ -58,9 +52,6 @@ pub async fn deploy_flow_file(
     path: PathBuf, 
     root: PathBuf,
     tools_dir: PathBuf,
-    log_level: String,
-    log_file:   String,
-    event_file: String,
     secrets_maanger: SecretsManager,
     config_manager: ConfigManager,
     ) -> Result<()> {
@@ -68,9 +59,6 @@ pub async fn deploy_flow_file(
         path.clone(), 
         root.clone(), 
         tools_dir,
-        log_level,
-        log_file,
-        event_file,
         secrets_maanger,
         config_manager,
     ).await?;

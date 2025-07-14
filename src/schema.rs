@@ -14,12 +14,11 @@ use crate::{
 /// The entry point invoked by `main.rs` for `Commands::Schema`.
 pub async fn write_schema(
     out_dir: PathBuf,
-    root_dir: PathBuf,
     tools_dir: PathBuf,
     channels_dir: PathBuf,
     log_level: String,
-    log_dir: String,
-    event_dir: String,
+    log_dir: PathBuf,
+    event_dir: PathBuf,
 ) -> Result<(), Error> {
     fs::create_dir_all(&out_dir)?;
 
@@ -31,10 +30,10 @@ pub async fn write_schema(
     // 3) tool schemas
     let _ = FileTelemetry::init_files(
         log_level.as_str(),
-        root_dir.join(log_dir),
-        root_dir.join(event_dir),
+        log_dir.join("schema.log"),
+        event_dir,
     );
-    let log_config = LogConfig::new(LogLevel::Info, Some(root_dir.join("logs").to_string_lossy().to_string()), None);
+    let log_config = LogConfig::new(LogLevel::Info, Some(log_dir), None);
     let logger = Logger(Box::new(OpenTelemetryLogger::new()));
     let secrets = SecretsManager(EmptySecretsManager::new());
     let executor = Executor::new(secrets.clone(), logger);

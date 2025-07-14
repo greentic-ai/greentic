@@ -9,19 +9,32 @@ use tokio::task::JoinHandle;
 use tracing::{error, info};
 use anyhow::{anyhow, Result};
 use crate::{
-    channel::{manager::{ChannelManager,IncomingHandler}, node::ChannelsRegistry}, config::ConfigManager, executor::Executor, flow::{manager::FlowManager, session::InMemorySessionStore,}, logger::{LogConfig, Logger}, process::manager::ProcessManager, secret::{EnvSecretsManager, SecretsManager}, watcher::DirectoryWatcher
+    validate::validate,
+    channel::{manager::{ChannelManager,IncomingHandler}, 
+    node::ChannelsRegistry}, 
+    config::{ConfigManager, EnvConfigManager}, 
+    executor::Executor, 
+    flow::{manager::FlowManager, 
+    session::InMemorySessionStore,}, 
+    logger::{LogConfig, Logger}, 
+    process::manager::ProcessManager, 
+    secret::{EnvSecretsManager, SecretsManager}, 
+    watcher::DirectoryWatcher
 };
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 /// Makes a file executable on Unix. On Windows, this is a no-op.
-pub fn make_executable<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
+pub fn make_executable<P: AsRef<Path> + std::fmt::Debug>(path: P) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         let metadata = fs::metadata(&path)?;
         let mut permissions = metadata.permissions();
-        // Add execute bit for owner/group/others
-        permissions.set_mode(permissions.mode() | 0o111);
+        let mut mode = permissions.mode();
+        mode |= 0o110;           // Add execute for user (0o100) and group (0o010)
+        mode &= !0o001;          // Remove execute for others if present
+
+        permissions.set_mode(mode);
         fs::set_permissions(&path, permissions)?;
     }
 
@@ -72,7 +85,7 @@ impl App {
         config:        ConfigManager,
         logger:        Logger,
         log_level:     LogLevel,
-        log_dir:       Option<String>,
+        log_dir:       Option<PathBuf>,
         otel_endpoint: Option<String>,
         secrets:       SecretsManager,
     ) -> Result<(),Error> {
@@ -199,7 +212,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
     }
 
     // 2) write config/.env
-    let conf_path = root.join("greentic/config/.env");
+    let conf_path = root.join("config/.env");
     if !conf_path.exists() {
         let default_cfg = r#""#;
         fs::write(&conf_path, default_cfg)
@@ -237,7 +250,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
         }
     }
     
-    print!("Please provide your email:");
+    print!("Please provide your email: ");
     stdout().flush().unwrap(); // ensure prompt shows before user types
 
     let mut email = String::new();
@@ -326,17 +339,27 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
         bail!("Could not add the GREENTIC_TOKEN={} to the secrets. Please add the token manually. Not doing so will not enable you to download from the Greentic store.",token);
     }
 
-    let out_channels_dir = root.join("greentic/plugins/channels/running");
-    let out_tools_dir = root.join("greentic/plugins/tools");
-    let out_flows_dir = root.join("greentic/flows/running");
-    let platform = detect_host_target();
-    let channels = format!("channels/{}",platform);
-    let _ = download(token, &channels, "channel_telegram", out_channels_dir.clone()).await;
-    let _ = download(token, &channels, "channel_ws", out_channels_dir.clone()).await;
-    let _ = download(token, "tools", "weather_api.wasm", out_tools_dir.clone()).await;
-    let _ = download(token, "flows", "weather_bot_telegram.ygtc", out_flows_dir.clone()).await;
-    let _ = download(token, "flows", "weather_bot_ws.ygtc", out_flows_dir.clone()).await;
+    let out_tools_dir = root.join("plugins/tools");
+    let out_flows_dir = root.join("flows/running");
+    let result = download(token, "flows", "weather_bot_telegram.ygtc", out_flows_dir.clone()).await;
+    if result.is_err() {
+        eprintln!("Error downloading weather_bot_telegram.ygtc because {:?}",result.err().unwrap().to_string());
+    }
+    let result = download(token, "flows", "weather_bot_ws.ygtc", out_flows_dir.clone()).await;
+     if result.is_err() {
+        eprintln!("Error downloading weather_bot_ws.ygtc because {:?}",result.err().unwrap().to_string());
+    }
 
+    let config_manager = ConfigManager(EnvConfigManager::new(root.join("config/.env")));
+    println!("Given this is the first time you download tools and channels, you likely need to add secrets before they work");
+    let result = validate(out_flows_dir.join("weather_bot_telegram.ygtc"),root.clone(),out_tools_dir.clone(),secrets_manager.clone(),config_manager.clone()).await;
+    if result.is_err() {
+        eprintln!("Error setting up weather_bot_telegram.ygtc because {:?}",result.err().unwrap().to_string());
+    }
+    let result = validate(out_flows_dir.join("weather_bot_ws.ygtc"),root.clone(),out_tools_dir,secrets_manager,config_manager).await;
+    if result.is_err() {
+        eprintln!("Error setting up weather_bot_ws.ygtc because {:?}",result.err().unwrap().to_string());
+    }
     println!("Greentic directory initialized at {}", root.display());
     Ok(())
 }

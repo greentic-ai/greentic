@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_yaml_bw as serde_yaml;
 use crate::{
-    apps::detect_host_target, channel::manager::ChannelManager, config::ConfigManager, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger}, secret::SecretsManager
+    apps::{detect_host_target, make_executable}, channel::manager::ChannelManager, config::ConfigManager, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{LogConfig, Logger, OpenTelemetryLogger}, secret::SecretsManager
 };
 
 /// Diagnostic result – collects *all* warnings & errors instead of failing fast.
@@ -65,9 +65,6 @@ pub async fn validate(
     flow_file: PathBuf,
     root_dir:  PathBuf,
     tools_dir: PathBuf,
-    log_level: String,
-    log_file:   String,
-    event_file: String,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
 ) -> Result<()> {
@@ -121,18 +118,18 @@ pub async fn validate(
     // ---------------------------------------------------------------------
     // 2) Spin up Executor + ChannelManager just like schema.rs  -------------
     // ---------------------------------------------------------------------
-    let _ = FileTelemetry::init_files(&log_level, root_dir.join(&log_file), root_dir.join(&event_file));
-    let log_config = LogConfig::new(LogLevel::Info, Some(root_dir.join("logs").to_string_lossy().to_string()), None);
+    //let _ = FileTelemetry::init_files(&log_level, log_file, event_file);
+    let log_config = LogConfig::new(LogLevel::Info, Some(root_dir.join("logs").to_path_buf()), None);
     let logger  = Logger(Box::new(OpenTelemetryLogger::new()));
     let executor = Executor::new(secrets_manager.clone(), logger.clone());
-    let tool_watcher = executor.watch_tool_dir(tools_dir.clone()).await?;
+    //let tool_watcher = executor.watch_tool_dir(tools_dir.clone()).await?;
     let sessions = InMemorySessionStore::new(10);
     let channel_mgr = ChannelManager::new(config_manager.clone(), secrets_manager.clone(), sessions, log_config).await?;
 
     // ---------------------------------------------------------------------
     // 3) Inspect flow JSON to collect all tool & channel IDs ---------------
     // ---------------------------------------------------------------------
-    let mut used_tools    = HashSet::new();
+    let mut used_tools: HashSet<(String,String)>    = HashSet::new();
     let mut used_channels = HashSet::new();
 
     collect_ids(&flow_value, &mut used_tools, &mut used_channels);
@@ -145,15 +142,15 @@ pub async fn validate(
     // 3a) missing plugins ---------------------------------------------------
     for t in &used_channels {
          let channel_file = match cfg!(target_os = "windows") {
-                true => format!("channel_{t}.exe"),
-                false => format!("channel_{t}"),
+                true => format!("{t}.exe"),
+                false => format!("{t}"),
             };
 
         let running_channel = running_path.join(channel_file.clone());
         let stopped_channel = stopped_path.join(channel_file.clone());
 
         if !running_channel.exists() && !stopped_channel.exists() {
-
+            println!("Downloading {channel_file}");
             match pull_channel(&token,&channel_file, detect_host_target(),&running_channel).await {
                 Ok(_) => {
                     tracing::info!("✅ Pulled and stored missing channel: {t}");
@@ -168,28 +165,22 @@ pub async fn validate(
     }
 
     // 3b) missing wasm files for tools -------------------------------------
-    for t in &used_tools {
-        if let Some(tool) = executor.get_tool(t.clone()) {
-            let wasm_path = tools_dir.join(format!("{t}.wasm"));
-            if !wasm_path.exists() {
-                match pull_wasm(&token,t, &wasm_path).await {
-                    Ok(_) => {
-                        tracing::info!("Pulled missing Wasm for tool: {t}");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to pull Wasm for {t}: {e}");
-                        report.missing_wasm.push(wasm_path.display().to_string());
-                    }
+    for (name,_action) in &used_tools {
+        let wasm_file = format!("{name}.wasm");
+        let wasm_path = tools_dir.join(wasm_file.clone());
+        if !wasm_path.exists() {
+            println!("Downloading {wasm_file}");
+            match pull_wasm(&token,name, &wasm_path).await {
+                Ok(_) => {
+                    tracing::info!("Pulled missing Wasm for tool: {name}");
+                    let _ = executor.add_tool(wasm_path).await;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to pull Wasm for {name}: {e}");
+                    report.missing_wasm.push(wasm_path.display().to_string());
                 }
             }
 
-            // gather required secrets & configs
-            for s in tool.secrets() {
-                if s.required && secrets_manager.0.get(&s.name).is_none() {
-                    tracing::warn!("Failed to find secret {} for tool {t}",s.name);
-                    report.missing_secrets.push((s.name.clone(), s.description.clone()));
-                }
-            }
         }
     }
 
@@ -218,8 +209,9 @@ pub async fn validate(
     }
 
     // 3d) channel required keys --------------------------------------------
-    for c in &used_tools {
-        if let Some(wrapper) = executor.get_tool(c.to_string()) {
+    for (name,action) in &used_tools {
+        let tool_name = format!("{name}_{action}");
+        if let Some(wrapper) = executor.get_tool(tool_name) {
             let req_sec  = wrapper.secrets();
 
             for secret in req_sec {
@@ -267,7 +259,6 @@ pub async fn validate(
         }
         let _ = channel_mgr.clone().stop_all();
         plugin_watcher.shutdown();
-        tool_watcher.shutdown();
 
         return Err(anyhow!("validation failed – see diagnostics above"));
     }
@@ -278,7 +269,6 @@ pub async fn validate(
     println!("✅ Validation passed: flow is ready to deploy");
     let _ = channel_mgr.clone().stop_all();
     plugin_watcher.shutdown();
-    tool_watcher.shutdown();
     return Ok(());
 }
 
@@ -299,6 +289,7 @@ async fn pull_channel(token: &str, channel_name: &str, platform: &str, destinati
     let bytes = response.bytes().await?;
     fs::create_dir_all(destination.parent().unwrap())?;
     fs::write(destination, &bytes)?;
+    make_executable(&destination)?;
     Ok(())
 }
 
@@ -326,12 +317,18 @@ async fn pull_wasm(token: &str, tool_name: &str, destination: &Path) -> anyhow::
 // Helper: walk the flow JSON structure and collect `tool:` and `channel:`
 // ids referenced in nodes.
 // -------------------------------------------------------------------------
-fn collect_ids(value: &Value, tools: &mut HashSet<String>, channels: &mut HashSet<String>) {
+fn collect_ids(value: &Value, tools: &mut HashSet<(String,String)>, channels: &mut HashSet<String>) {
     match value {
         Value::Object(map) => {
-            if let Some(Value::String(t)) = map.get("tool") {
+            if let Some(Value::Object(t)) = map.get("tool") {
                 // tool spec can be "weather_api.forecast_weather" → keep full id
-                tools.insert(t.to_string());
+                let name = t.get("name");
+                let action = t.get("action");
+                if name.is_some() && action.is_some() {
+                    let tool_name = name.unwrap().as_str().unwrap();
+                    let tool_action = action.unwrap().as_str().unwrap();
+                    tools.insert((tool_name.to_string(),tool_action.to_string()));
+                }
             }
             if let Some(Value::String(c)) = map.get("channel") {
                 channels.insert(c.to_string());
@@ -391,14 +388,17 @@ connections:
     fn test_collect_ids() {
         let doc = json!({
             "nodes": [
-                { "tool": "weather.forecast" },
+                { "tool": { 
+                    "name": "weather", 
+                    "action":"forecast" 
+                }},
                 { "channel": "telegram" }
             ]
         });
         let mut tools = std::collections::HashSet::new();
         let mut chs   = std::collections::HashSet::new();
         collect_ids(&doc, &mut tools, &mut chs);
-        assert!(tools.contains("weather.forecast"));
+        assert!(tools.contains(&("weather".to_string(),"forecast".to_string())));
         assert!(chs.contains("telegram"));
     }
 
@@ -425,9 +425,6 @@ connections:
             flow_file,
             root_dir.clone(),
             tools_dir,
-            "info".into(),
-            "logs".into(),
-            "events".into(),
             secrets_manager,
             config_manager,
         ).await;
@@ -453,11 +450,8 @@ connections:
 
         let res = validate(
             flow_file,
-            root_dir,
+            root_dir.clone(),
             tools_dir,
-            "info".into(),
-            "logs".into(),
-            "events".into(),
             secrets_manager,
             config_manager,
         ).await;

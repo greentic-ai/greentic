@@ -1,7 +1,7 @@
 use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
-    apps::{cmd_init, download, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::init_tracing, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
+    apps::{cmd_init, download, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::{init_tracing, FileTelemetry}, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
 };
 use std::{env, fs, path::PathBuf, process};
 use tracing::{error, info};
@@ -152,15 +152,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Schema(args) => {
             let out_dir = root.join("schemas");
             let log_level     = args.log_level;
-            let log_file      = "logs/greentic-schema.log".to_string();
-            let event_file      = "logs/greentic-schema.json".to_string();
+            let log_file      = root.join("logs/greentic-schema.log");
+            let event_file      = root.join("logs/greentic-schema.json");
             let tools_dir    = root.join("plugins").join("tools");
             let channels_dir           = root.join("plugins").join("channels").join("running");
             let _processes_dir= root.join("plugins").join("processes");
             fs::create_dir_all(&out_dir)?;
             write_schema(
                 out_dir.clone(),
-                root.clone(),
                 tools_dir.clone(),
                 channels_dir.clone(),
                 log_level,
@@ -172,6 +171,13 @@ async fn main() -> anyhow::Result<()> {
             process::exit(0);
         }
         Commands::Init => {
+            let log_file      = root.join("logs/greentic-init.log");
+            let event_file      = root.join("logs/greentic-init.json");
+            let _ = FileTelemetry::init_files(
+                "info",
+                log_file,
+                event_file,
+            );
             cmd_init(root.clone()).await?;
             println!("Greentic has been initialised. You can start it with 'greentic run'");
             process::exit(0);
@@ -222,17 +228,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Flow(flow_args) => match flow_args.command {
             FlowCommands::Validate { file } => {
-                let log_level     = "info".to_string();
-                let log_file      = "logs/greentic-validation.log".to_string();
-                let event_file      = "logs/greentic-validation.json".to_string();
                 let tools_dir    = root.join("plugins").join("tools");
                 validate_flow_file(
                     file, 
                     root, 
                     tools_dir, 
-                    log_level, 
-                    log_file, 
-                    event_file,
                     secrets_manager,
                     config_manager,
                 ).await?;
@@ -247,25 +247,27 @@ async fn main() -> anyhow::Result<()> {
                 }
                 let token = secrets_manager.0.reveal(token_handle.unwrap()).await.unwrap().unwrap();
                 let out_dir = root.join("flows/running");
-                let result = download(&token, "flows", &name, out_dir).await;
+                let result = download(&token, "flows", &name, out_dir.clone()).await;
                 if result.is_err() {
                     println!("Sorry we could not download {} because {:?}",name, result.err().unwrap().to_string());
                 }
+                let tools_dir    = root.join("plugins").join("tools");
+                validate_flow_file(
+                    out_dir.join(name), 
+                    root, 
+                    tools_dir, 
+                    secrets_manager,
+                    config_manager,
+                ).await?;
                 
                 Ok(())
             },
             FlowCommands::Deploy { file } => {
-                let log_level     = "info".to_string();
-                let log_file      = "logs/greentic-validation.log".to_string();
-                let event_file      = "logs/greentic-validation.json".to_string();
                 let tools_dir    = root.join("plugins").join("tools");
                 deploy_flow_file(
                     file, 
                     root,
                     tools_dir,
-                    log_level,
-                    log_file,
-                    event_file,
                     secrets_manager,
                     config_manager,
                 ).await?;
@@ -299,7 +301,7 @@ async fn run(root: PathBuf,
 ) -> anyhow::Result<()> {
     let flows_dir    = root.join("flows/running");
     let log_file      = "logs/greentic_logs.log".to_string();
-    let log_dir= Some(root.join("logs").to_string_lossy().to_string());
+    let log_dir= Some(root.join("logs"));
     let event_file    = "logs/greentic_events.log".to_string();
     let tools_dir    = root.join("plugins").join("tools");
     let processes_dir= root.join("plugins").join("processes");

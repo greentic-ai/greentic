@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
-use std::{env, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
 #[async_trait::async_trait]
 #[typetag::serde] 
@@ -47,7 +47,9 @@ impl std::fmt::Debug for ConfigManager {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EnvConfigManager;
+pub struct EnvConfigManager{
+    env_file: PathBuf,
+}
 
 impl EnvConfigManager {
     pub fn new(env_file: PathBuf) -> Box<Self> {
@@ -58,7 +60,7 @@ impl EnvConfigManager {
             error!("could not load .env from {}",env_file.display())
         }
 
-        Box::new(Self)
+        Box::new(Self { env_file })
     }
 }
 
@@ -75,11 +77,53 @@ impl ConfigManagerType for EnvConfigManager {
 
     async fn set(&self, key: &str, value: &str) -> Result<(), String> {
         unsafe { env::set_var(key, value); };
+        // Update .env file
+        let env_path = &self.env_file;
+        let content = fs::read_to_string(env_path).unwrap_or_default();
+        let mut lines: Vec<String> = Vec::new();
+        let mut found = false;
+
+        for line in content.lines() {
+            if let Some((k, _)) = line.split_once('=') {
+                if k.trim() == key {
+                    lines.push(format!("{key}={value}"));
+                    found = true;
+                } else {
+                    lines.push(line.to_string());
+                }
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+
+        if !found {
+            lines.push(format!("{key}={value}"));
+        }
+
+        fs::write(env_path, lines.join("\n")).map_err(|e| e.to_string())?;
+
         Ok(())
     }
 
     async fn del(&self, key: &str,) {
         unsafe { env::remove_var(key ); };
+        // Remove from file
+        let env_path = &self.env_file;
+        if let Ok(content) = fs::read_to_string(env_path) {
+            let lines: Vec<String> = content
+                .lines()
+                .filter(|line| {
+                    if let Some((k, _)) = line.split_once('=') {
+                        k.trim() != key
+                    } else {
+                        true
+                    }
+                })
+                .map(|l| l.to_string())
+                .collect();
+
+            let _ = fs::write(env_path, lines.join("\n"));
+        }
     }
 
     fn clone_box(&self) -> Box<dyn ConfigManagerType> {
@@ -136,7 +180,7 @@ impl ConfigManagerType for MapConfigManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
     use std::fs::write;
 
     #[tokio::test]
@@ -209,8 +253,10 @@ mod tests {
 
         // Save previous value
         let backup = std::env::var(key).ok();
+        let tmp = TempDir::new().unwrap();
+        let env = tmp.path().join(".env");
 
-        let mgr = EnvConfigManager::new(PathBuf::from("/nonexistent.env"));
+        let mgr = EnvConfigManager::new(PathBuf::from(env));
 
         // Unsafe block for set/remove
         mgr.set(key, value).await.unwrap();
