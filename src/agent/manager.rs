@@ -1,10 +1,10 @@
-use async_trait::async_trait;
-use schemars::{schema_for, JsonSchema, Schema};
-use serde::{Deserialize, Serialize};
 use crate::{
     message::Message,
     node::{NodeContext, NodeErr, NodeOut, NodeType},
 };
+use async_trait::async_trait;
+use schemars::{JsonSchema, Schema, schema_for};
+use serde::{Deserialize, Serialize};
 
 use super::ollama::OllamaAgent;
 
@@ -46,13 +46,9 @@ impl NodeType for BuiltInAgent {
         schema_for!(BuiltInAgent)
     }
 
-    async fn process(
-        &self,
-        input: Message,
-        context: &mut NodeContext,
-    ) -> Result<NodeOut, NodeErr> {
+    async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         match self {
-            BuiltInAgent::Ollama(inner)  => inner.process(input, context).await,
+            BuiltInAgent::Ollama(inner) => inner.process(input, context).await,
         }
     }
 

@@ -1,16 +1,14 @@
-use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::json;
-use crate::jsonrpc::{  Request, Response};
+use crate::jsonrpc::{Request, Response};
 use crate::message::{ChannelMessage, MessageOutParams};
 use crate::plugin_actor::Method;
-use anyhow::{anyhow,Result};
-use tokio::{
-    sync::{mpsc, oneshot, broadcast},
-};
+use anyhow::{Result, anyhow};
+use async_trait::async_trait;
+use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[async_trait]
-pub trait ChannelClientType:  Send + Sync {
+pub trait ChannelClientType: Send + Sync {
     /// Send a message **to** the channel (bot → users).
     async fn send(&self, msg: ChannelMessage) -> Result<()>;
 
@@ -52,7 +50,7 @@ impl ChannelClientType for ChannelClient {
     }
 }
 
-#[derive( Debug)]
+#[derive(Debug)]
 pub struct RpcChannelClient {
     // ––– outbound request channel –––
     tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>,
@@ -85,30 +83,31 @@ impl RpcChannelClient {
 
     pub async fn call_rpc(&self, req: Request) -> Result<Response> {
         let (tx_rsp, rx_rsp) = oneshot::channel();
-        self.tx.send((req, tx_rsp)).await
+        self.tx
+            .send((req, tx_rsp))
+            .await
             .map_err(|_| anyhow!("Plugin actor is dead"))?;
-        rx_rsp.await.map_err(|_| anyhow!("Plugin actor dropped response"))
+        rx_rsp
+            .await
+            .map_err(|_| anyhow!("Plugin actor dropped response"))
     }
-    
-    pub async fn rpc_notify(
-        &self,
-        req: Request,
-    ) -> anyhow::Result<()> {
 
+    pub async fn rpc_notify(&self, req: Request) -> anyhow::Result<()> {
         // Just fire and forget — use a dummy oneshot::Sender
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        self.tx.send((req, tx)).await
+        self.tx
+            .send((req, tx))
+            .await
             .map_err(|_| anyhow::anyhow!("ActorHandle is dead"))?;
 
         Ok(())
     }
 }
 
-
 #[async_trait::async_trait]
 impl ChannelClientType for RpcChannelClient {
     async fn send(&self, msg: ChannelMessage) -> Result<()> {
-        let params = MessageOutParams{message: msg};
+        let params = MessageOutParams { message: msg };
         let r = Request::notification(Method::MessageOut.to_string(), Some(json!(params)));
         self.rpc_notify(r).await
     }
@@ -118,7 +117,7 @@ impl ChannelClientType for RpcChannelClient {
             match self.rx.recv().await {
                 Ok(msg) => return Some(msg),
                 Err(broadcast::error::RecvError::Lagged(_)) => continue, // just skip lag
-                Err(_) => return None, // channel closed
+                Err(_) => return None,                                   // channel closed
             }
         }
     }
@@ -128,7 +127,7 @@ impl ChannelClientType for RpcChannelClient {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     /// Helper that builds a RpcChannelClient wired to in-memory channels
     fn make_client() -> (
@@ -138,7 +137,11 @@ mod tests {
     ) {
         let (tx, rx) = mpsc::channel::<(Request, oneshot::Sender<Response>)>(8);
         let (msg_tx, _) = broadcast::channel::<ChannelMessage>(8);
-        (RpcChannelClient::new(tx.clone(), msg_tx.clone()), rx, msg_tx)
+        (
+            RpcChannelClient::new(tx.clone(), msg_tx.clone()),
+            rx,
+            msg_tx,
+        )
     }
 
     #[tokio::test]
@@ -158,7 +161,7 @@ mod tests {
         let (req, _rsp_tx) = outbound_rx.recv().await.expect("nothing sent");
         assert_eq!(req.method, "messageOut");
         assert_eq!(req.id, None, "notification must have no id");
-        assert_eq!(req.params, Some(json!(MessageOutParams{message:msg})));
+        assert_eq!(req.params, Some(json!(MessageOutParams { message: msg })));
     }
 
     #[tokio::test]

@@ -1,21 +1,21 @@
-use std::fmt;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use crate::message::Message;
 use crate::node::{NodeContext, NodeErr, NodeError, NodeOut};
 use crate::watcher::WatchedType;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-#[derive(Clone, Debug)]//, Serialize, Deserialize)]
+#[derive(Clone, Debug)] //, Serialize, Deserialize)]
 pub struct ProcessInstance {
     pub name: String,
     pub wasm_path: PathBuf,
 }
 
-#[derive(Clone, Debug,)]//, Serialize, Deserialize)]
-pub struct ProcessWrapper{
+#[derive(Clone, Debug)] //, Serialize, Deserialize)]
+pub struct ProcessWrapper {
     instance: ProcessInstance,
     description: String,
     parameters: Value,
@@ -23,14 +23,18 @@ pub struct ProcessWrapper{
 
 impl ProcessWrapper {
     pub fn new(instance: ProcessInstance, description: String, parameters: Value) -> Self {
-        Self{instance, description, parameters}
+        Self {
+            instance,
+            description,
+            parameters,
+        }
     }
 
     /// Return the key under which this was registered.
     pub fn name(&self) -> &str {
         &self.instance.name
     }
-    
+
     pub fn description(&self) -> String {
         self.description.clone()
     }
@@ -43,10 +47,10 @@ impl ProcessWrapper {
         self.parameters.clone()
     }
 
-    pub async fn process(&self, _msg: Message, _ctx: &mut NodeContext) -> Result<NodeOut, NodeErr>
-    {
+    pub async fn process(&self, _msg: Message, _ctx: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         return Err(NodeErr::fail(NodeError::ExecutionFailed(
-                        "Not yet implemented".to_string())));
+            "Not yet implemented".to_string(),
+        )));
     }
 }
 /// Holds loaded libraries and their process names.
@@ -79,7 +83,8 @@ impl ProcessWatcher {
     }
 
     pub fn register_process(&self, process: Box<ProcessWrapper>) {
-        self.path_to_name.insert(process.instance().wasm_path, process.name().to_string());
+        self.path_to_name
+            .insert(process.instance().wasm_path, process.name().to_string());
         self.processes.insert(process.name().to_string(), process);
     }
 
@@ -89,7 +94,7 @@ impl ProcessWatcher {
     }
 
     pub fn unregister_process_via_path(&self, path: PathBuf) {
-        if let Some(process_name) = self.path_to_name.get(&path){
+        if let Some(process_name) = self.path_to_name.get(&path) {
             self.processes.remove(process_name.as_str());
         }
         self.path_to_name.remove(&path);
@@ -99,7 +104,7 @@ impl ProcessWatcher {
 /// and returning `(boxed_executor, process_name_string)`.
 /// You must implement actual WASM instantiation here (e.g. via Wasmtime, Wasmer, etc.).
 async fn load_wasm_executor(path: &Path) -> anyhow::Result<(Box<ProcessWrapper>, String)> {
-    // TODO: 
+    // TODO:
     //   1) Instantiate the WASM component (e.g. `wasmtime::Instance::new(...)`).
     //   2) Wrap it in a type that implements `ProcessExecutor` (e.g. `WasmProcessExecutor`).
     //   3) Call `executor.process_name()` to get its name.
@@ -167,7 +172,7 @@ impl WatchedType for ProcessWatcher {
     /// We look up the name, unregister it, and drop it from our maps.
     async fn on_remove(&self, path: &Path) -> anyhow::Result<()> {
         let pathbuf = path.to_path_buf();
-        
+
         // If this path had been loaded before:
         if let Some((_, process_name)) = self.path_to_name.remove(&pathbuf) {
             // Unregister globally
@@ -175,7 +180,6 @@ impl WatchedType for ProcessWatcher {
             if let Some(pw) = process {
                 self.unregister_process(pw);
             }
-            
 
             // Remove from local name→executor map
             self.processes.remove(&process_name);
@@ -186,7 +190,6 @@ impl WatchedType for ProcessWatcher {
         Ok(())
     }
 }
-
 
 // Manually implement Debug since `Box<dyn ProcessExecutor>` doesn’t itself implement Debug.
 impl fmt::Debug for ProcessWatcher {

@@ -1,14 +1,14 @@
-use std::fmt::Formatter;
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
 use async_trait::async_trait;
-use rand::{rng, RngCore};
+use dotenvy::Error as DotenvError;
+use rand::{RngCore, rng};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::fmt::Debug;
-use dotenvy::Error as DotenvError;
+use std::fmt::Formatter;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use tracing::{error, info};
 
 use crate::watcher::{DirectoryWatcher, WatchedType};
 
@@ -29,9 +29,9 @@ pub trait SecretsManagerType: Send + Sync {
     }
     fn get(&self, key: &str) -> Option<u32>;
     fn keys(&self) -> Vec<String>;
-    async fn add_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>;
-    async fn update_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>;
-    async fn delete_secret(&self, key: &str) -> Result<(),SecretsError>;
+    async fn add_secret(&self, key: &str, secret: &str) -> Result<(), SecretsError>;
+    async fn update_secret(&self, key: &str, secret: &str) -> Result<(), SecretsError>;
+    async fn delete_secret(&self, key: &str) -> Result<(), SecretsError>;
     async fn reveal(&self, handle: u32) -> Result<Option<String>, SecretsError>;
     fn name(&self) -> &'static str;
     fn clone_box(&self) -> Arc<dyn SecretsManagerType>;
@@ -44,15 +44,15 @@ impl SecretsManager {
         self.0
     }
 
-    pub async fn add_secret(&self, key: &str, value: &str)  -> Result<(),SecretsError> {
+    pub async fn add_secret(&self, key: &str, value: &str) -> Result<(), SecretsError> {
         self.0.add_secret(key, value).await
     }
 
-    pub async fn update_secret(&self, key: &str, value: &str)  -> Result<(),SecretsError> {
+    pub async fn update_secret(&self, key: &str, value: &str) -> Result<(), SecretsError> {
         self.0.update_secret(key, value).await
     }
 
-    pub async fn delete_secret(&self, key: &str)  -> Result<(),SecretsError> {
+    pub async fn delete_secret(&self, key: &str) -> Result<(), SecretsError> {
         self.0.delete_secret(key).await
     }
 }
@@ -78,7 +78,9 @@ impl std::fmt::Debug for SecretsManager {
 
 impl Serialize for SecretsManager {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer {
+    where
+        S: serde::Serializer,
+    {
         // You could serialize name + keys as a basic fallback
         let mut state = serializer.serialize_struct("SecretsManager", 2)?;
         state.serialize_field("name", self.0.name())?;
@@ -89,8 +91,12 @@ impl Serialize for SecretsManager {
 
 impl<'de> Deserialize<'de> for SecretsManager {
     fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de> {
-        Err(serde::de::Error::custom("SecretsManager cannot be deserialized dynamically"))
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Err(serde::de::Error::custom(
+            "SecretsManager cannot be deserialized dynamically",
+        ))
     }
 }
 
@@ -139,9 +145,7 @@ pub struct EnvSecretsManager {
 impl EnvSecretsManager {
     pub fn new(dotenv_path: Option<PathBuf>) -> Arc<Self> {
         let env_path = match dotenv_path.clone() {
-            Some(path) => {
-                Some(path.join(".env"))
-            },
+            Some(path) => Some(path.join(".env")),
             None => None,
         };
         let mgr = Arc::new(Self {
@@ -158,13 +162,16 @@ impl EnvSecretsManager {
 
                 // now spawn the tokio watcher
 
-                let handler = DotenvHandler { path: envfile.clone(), mgr: Arc::clone(&mgr) };
+                let handler = DotenvHandler {
+                    path: envfile.clone(),
+                    mgr: Arc::clone(&mgr),
+                };
                 tokio::spawn(async move {
-                    if let Err(e) = DirectoryWatcher::new(path, Arc::new(handler), &[], false).await {
+                    if let Err(e) = DirectoryWatcher::new(path, Arc::new(handler), &[], false).await
+                    {
                         tracing::error!("dotenv watch_dir failed: {}", e);
                     }
                 });
-            
             } else {
                 error!(
                     ".env file {} not found, skipping load & watch",
@@ -181,8 +188,8 @@ impl EnvSecretsManager {
     /// Synchronous helper for programmatic secrets insertion.
     pub fn add_secret_sync(&self, key: &str, secret: &str) {
         {
-            let mut keys   = self.keys.write().unwrap();
-            let mut secrets= self.secrets.write().unwrap();
+            let mut keys = self.keys.write().unwrap();
+            let mut secrets = self.secrets.write().unwrap();
             let id = rng().next_u32();
             keys.insert(key.to_string(), id);
             secrets.insert(id, secret.to_string());
@@ -192,15 +199,15 @@ impl EnvSecretsManager {
     /// Synchronous helper for programmatic secrets updates.
     pub fn update_secret_sync(&self, key: &str, secret: &str) {
         {
-            let mut keys   = self.keys.write().unwrap();
-            let mut secrets= self.secrets.write().unwrap();
-            let handle = match keys.get(key){
+            let mut keys = self.keys.write().unwrap();
+            let mut secrets = self.secrets.write().unwrap();
+            let handle = match keys.get(key) {
                 Some(handle) => *handle,
                 None => {
                     let id = rng().next_u32();
                     keys.insert(key.to_string(), id);
                     id
-                },
+                }
             };
             secrets.insert(handle, secret.to_string());
         }
@@ -280,32 +287,31 @@ impl EnvSecretsManager {
 
 #[async_trait::async_trait]
 impl SecretsManagerType for EnvSecretsManager {
-    fn get(&self, key: &str) -> Option<u32>{
+    fn get(&self, key: &str) -> Option<u32> {
         self.keys.read().unwrap().get(key).copied()
     }
     fn keys(&self) -> Vec<String> {
         let keys_read = self.keys.read().unwrap();
         keys_read.keys().cloned().collect()
     }
-    async fn add_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>{
+    async fn add_secret(&self, key: &str, secret: &str) -> Result<(), SecretsError> {
         self.add_secret_sync(key, secret);
         Ok(())
     }
 
-    async fn update_secret(&self, key: &str, secret: &str) -> Result<(),SecretsError>{
+    async fn update_secret(&self, key: &str, secret: &str) -> Result<(), SecretsError> {
         self.update_secret_sync(key, secret);
         Ok(())
     }
 
-    async fn delete_secret(&self, key: &str) -> Result<(),SecretsError>{
+    async fn delete_secret(&self, key: &str) -> Result<(), SecretsError> {
         self.delete_secret_sync(key);
         Ok(())
     }
 
-    async fn reveal(&self, handle: u32) -> Result<Option<String>, SecretsError>{
+    async fn reveal(&self, handle: u32) -> Result<Option<String>, SecretsError> {
         Ok(self.secrets.read().unwrap().get(&handle).cloned())
     }
-
 
     fn name(&self) -> &'static str {
         "EnvSecrets (watched)"
@@ -321,7 +327,6 @@ impl SecretsManagerType for EnvSecretsManager {
     }
 }
 
-
 /// Used to reset the secrets member
 #[derive(Clone)]
 pub struct EmptySecretsManager;
@@ -333,41 +338,40 @@ impl EmptySecretsManager {
 }
 
 #[async_trait::async_trait]
-impl SecretsManagerType for EmptySecretsManager{
-    fn get(&self,_key: &str) -> Option<u32>  {
+impl SecretsManagerType for EmptySecretsManager {
+    fn get(&self, _key: &str) -> Option<u32> {
         None
     }
 
-    fn keys(&self) -> Vec<String>  {
+    fn keys(&self) -> Vec<String> {
         vec![]
     }
-    async fn add_secret(&self, _key: &str, _secret: &str) -> Result<(),SecretsError>{
-       Err(SecretsError::NotFound)
+    async fn add_secret(&self, _key: &str, _secret: &str) -> Result<(), SecretsError> {
+        Err(SecretsError::NotFound)
     }
-    async fn update_secret(&self, _key: &str, _secret: &str) -> Result<(),SecretsError>{
-       Err(SecretsError::NotFound)
+    async fn update_secret(&self, _key: &str, _secret: &str) -> Result<(), SecretsError> {
+        Err(SecretsError::NotFound)
     }
-    async fn delete_secret(&self, _key: &str) -> Result<(),SecretsError>{
-       Err(SecretsError::NotFound)
-    }
-
-   async fn reveal(&self, _handle: u32) -> Result<Option<String>, SecretsError> {
+    async fn delete_secret(&self, _key: &str) -> Result<(), SecretsError> {
         Err(SecretsError::NotFound)
     }
 
-    fn name(&self) ->  &'static str {
+    async fn reveal(&self, _handle: u32) -> Result<Option<String>, SecretsError> {
+        Err(SecretsError::NotFound)
+    }
+
+    fn name(&self) -> &'static str {
         ""
     }
 
-    fn clone_box(&self) -> Arc<dyn SecretsManagerType>  {
-       Arc::new(self.clone())
+    fn clone_box(&self) -> Arc<dyn SecretsManagerType> {
+        Arc::new(self.clone())
     }
 
     fn debug_box(&self) -> String {
         "".to_string()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -384,7 +388,7 @@ mod tests {
         let keys = mgr.keys();
         assert_eq!(keys, vec!["API_KEY".to_string()]);
         let handle = mgr.get("API_KEY").unwrap();
-        let read = mgr.secrets.read().unwrap(); 
+        let read = mgr.secrets.read().unwrap();
         let value = read.get(&handle);
         assert_eq!(value, Some(&"123456".to_string()));
     }

@@ -1,11 +1,13 @@
-use async_trait::async_trait;
-use schemars::{Schema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
-use rhai::{serde::to_dynamic, Engine, Scope};
-use serde_json::{json, Value};
+use async_trait::async_trait;
+use rhai::{Engine, Scope, serde::to_dynamic};
+use schemars::{JsonSchema, Schema, schema_for};
+use serde_json::{Value, json};
 
 use crate::{
-    flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}
+    flow::state::StateValue,
+    message::Message,
+    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing},
 };
 
 /// A Rhai script process node
@@ -99,11 +101,11 @@ use crate::{
 /// ## 🔄 Example 5: Structured Output with Routing
 ///
 /// ```rhai
-/// return #{ 
+/// return #{
 ///     __greentic: {
 ///         payload: #{ confirmed: true, name: state["name"] },
 ///         out: ["next_node"]
-///     } 
+///     }
 /// };
 /// ```
 ///
@@ -120,7 +122,7 @@ use crate::{
 ///
 /// ```rhai
 /// if payload["age"] < 18 {
-///     return #{ 
+///     return #{
 ///         __greentic: {
 ///             payload: #{ error: "User must be over 18" },
 ///             err: ["error_node"]
@@ -177,9 +179,9 @@ pub struct ScriptProcessNode {
     pub script: String,
 }
 
-impl ScriptProcessNode{
+impl ScriptProcessNode {
     pub fn new(script: String) -> Self {
-        Self{script}
+        Self { script }
     }
 }
 
@@ -195,12 +197,7 @@ impl NodeType for ScriptProcessNode {
     }
 
     #[tracing::instrument(name = "script_node_process", skip(self, context))]
-    async fn process(
-        &self,
-        input: Message,
-        context: &mut NodeContext,
-    ) -> Result<NodeOut, NodeErr> {
-       
+    async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         let engine = Engine::new();
 
         let mut scope = Scope::new();
@@ -228,23 +225,25 @@ impl NodeType for ScriptProcessNode {
             scope.push_dynamic("connections", dyn_connections);
         }
 
-
-       match engine.eval_with_scope::<rhai::Dynamic>(&mut scope, &self.script) {
+        match engine.eval_with_scope::<rhai::Dynamic>(&mut scope, &self.script) {
             Ok(result) => {
                 match result.clone().as_map_ref() {
                     Ok(output_obj) if output_obj.contains_key("__greentic") => {
                         let greentic = output_obj.get("__greentic").unwrap();
 
                         let gmap = greentic.clone_cast::<rhai::Map>();
-                        let out_routing = gmap.get("out")
+                        let out_routing = gmap
+                            .get("out")
                             .map(|v| extract_routing_list(v))
                             .unwrap_or_default();
 
-                        let err_routing = gmap.get("err")
+                        let err_routing = gmap
+                            .get("err")
                             .map(|v| extract_routing_list(v))
                             .unwrap_or_default();
 
-                        let payload = gmap.get("payload")
+                        let payload = gmap
+                            .get("payload")
                             .and_then(|v| rhai::serde::from_dynamic::<serde_json::Value>(v).ok())
                             .unwrap_or(json!({ "error": "Missing or invalid payload" }));
 
@@ -252,7 +251,10 @@ impl NodeType for ScriptProcessNode {
 
                         if !err_routing.is_empty() {
                             return Err(NodeErr::next(
-                                NodeError::InvalidInput(serde_json::to_string(&json!({ "error": payload })).expect("bug in script node")),
+                                NodeError::InvalidInput(
+                                    serde_json::to_string(&json!({ "error": payload }))
+                                        .expect("bug in script node"),
+                                ),
                                 Some(err_routing),
                             ));
                         } else if !out_routing.is_empty() {
@@ -270,7 +272,11 @@ impl NodeType for ScriptProcessNode {
                             Err(_) => json!({ "error": "Failed to convert Rhai result to JSON" }),
                         };
 
-                        let msg = Message::new(&input.id(), json!({ "output": payload }), input.session_id());
+                        let msg = Message::new(
+                            &input.id(),
+                            json!({ "output": payload }),
+                            input.session_id(),
+                        );
                         Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
                     }
                 }
@@ -287,8 +293,10 @@ impl NodeType for ScriptProcessNode {
                     }
                 }
                 Err(NodeErr::fail(NodeError::InvalidInput(format!(
-                    "Script error: {}", err))))
-            },
+                    "Script error: {}",
+                    err
+                ))))
+            }
         }
     }
 
@@ -310,14 +318,17 @@ fn extract_routing_list(val: &rhai::Dynamic) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{message::Message, node::NodeContext};
     use crate::flow::state::StateValue;
+    use crate::{message::Message, node::NodeContext};
     use serde_json::json;
 
     fn dummy_context_with_state() -> NodeContext {
         let mut ctx = NodeContext::dummy();
         ctx.set_state("age", StateValue::try_from(json!(30)).unwrap());
-        ctx.set_state("user", StateValue::try_from(json!({"name": "Alice"})).unwrap());
+        ctx.set_state(
+            "user",
+            StateValue::try_from(json!({"name": "Alice"})).unwrap(),
+        );
         ctx
     }
 
@@ -341,7 +352,11 @@ mod tests {
             script: "payload.weather.temp + 1".into(),
         };
 
-        let msg = Message::new("id", json!({ "weather": { "temp": 20 } }), "123".to_string());
+        let msg = Message::new(
+            "id",
+            json!({ "weather": { "temp": 20 } }),
+            "123".to_string(),
+        );
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg, &mut ctx).await.unwrap();
@@ -370,7 +385,8 @@ mod tests {
             script: r#"
                 let name = state.user.name;
                 #{ greeting: "Hello " + name }
-            "#.into(),
+            "#
+            .into(),
         };
 
         let msg = Message::new("id", json!({}), "123".to_string());
@@ -390,7 +406,8 @@ mod tests {
                 } else {
                     "unknown"
                 }
-            "#.into(),
+            "#
+            .into(),
         };
 
         let msg = Message::new("id", json!({}), "abc".to_string());
@@ -398,9 +415,9 @@ mod tests {
         let mut ctx = NodeContext::dummy();
 
         let process = node.process(msg, &mut ctx).await;
-        println!("out: {:?}",process);
+        println!("out: {:?}", process);
         let output = process.unwrap();
-                
+
         let result = &output.message().payload()["output"];
         assert_eq!(result.as_str().unwrap(), "known");
     }
@@ -411,7 +428,7 @@ mod tests {
             script: "this_does_not_exist()".into(),
         };
 
-        let msg = Message::new("id", json!({}),"123".to_string());
+        let msg = Message::new("id", json!({}), "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let result = node.process(msg, &mut ctx).await;

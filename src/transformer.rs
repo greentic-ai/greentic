@@ -1,8 +1,8 @@
-use std::{borrow::Cow, collections::HashMap, fmt};
+use crate::{message::Message, node::NodeError};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
-use crate::{message::Message, node::NodeError};
-#[typetag::serde] 
+use std::{borrow::Cow, collections::HashMap, fmt};
+#[typetag::serde]
 pub trait TransformerType: Send + Sync {
     fn transform(&self, input: &Message, context: &TransformContext) -> Result<Message, NodeError>;
     fn clone_box(&self) -> Box<dyn TransformerType>;
@@ -11,7 +11,6 @@ pub trait TransformerType: Send + Sync {
 
 #[derive(Serialize, Deserialize)]
 pub struct Transformer(pub Box<dyn TransformerType>);
-
 
 impl fmt::Debug for Transformer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -40,7 +39,6 @@ impl std::ops::DerefMut for Transformer {
     }
 }
 
-
 /// now give it a JsonSchema impl
 impl JsonSchema for Transformer {
     fn schema_name() -> Cow<'static, str> {
@@ -65,13 +63,11 @@ impl JsonSchema for Transformer {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TransformContext {
     pub caller: String,
     pub config: HashMap<String, String>,
 }
-
 
 pub struct TransformerRegistry {
     transformers: HashMap<String, Transformer>,
@@ -86,7 +82,8 @@ impl TransformerRegistry {
         self.transformers.get(name)
     }
     pub fn add<T: TransformerType + 'static>(&mut self, name: String, transformer: T) {
-        self.transformers.insert(name, Transformer(Box::new(transformer)));
+        self.transformers
+            .insert(name, Transformer(Box::new(transformer)));
     }
     pub fn remove(&mut self, name: &str) {
         self.transformers.remove(name);
@@ -99,7 +96,7 @@ mod tests {
     use crate::message::Message;
     use crate::node::NodeError;
     use schemars::Schema;
-    use schemars::{schema_for, JsonSchema};
+    use schemars::{JsonSchema, schema_for};
     use serde_json::json;
 
     #[derive(Serialize, Deserialize, Clone, JsonSchema)]
@@ -107,11 +104,19 @@ mod tests {
 
     #[typetag::serde]
     impl TransformerType for UppercaseTransformer {
-        fn transform(&self, input: &Message, _context: &TransformContext) -> Result<Message, NodeError> {
+        fn transform(
+            &self,
+            input: &Message,
+            _context: &TransformContext,
+        ) -> Result<Message, NodeError> {
             let binding = input.payload();
             let original = binding["text"].as_str().unwrap_or_default();
             let upper = original.to_uppercase();
-            Ok(Message::new(input.id().as_str(), json!({ "text": upper }),input.session_id()))
+            Ok(Message::new(
+                input.id().as_str(),
+                json!({ "text": upper }),
+                input.session_id(),
+            ))
         }
         fn clone_box(&self) -> Box<dyn TransformerType> {
             Box::new(self.clone())
@@ -154,7 +159,7 @@ mod tests {
     fn test_transformer_execution() {
         let transformer = UppercaseTransformer;
         let context = make_context();
-        let input = Message::new("123", json!({ "text": "hello" }),"123".to_string());
+        let input = Message::new("123", json!({ "text": "hello" }), "123".to_string());
 
         let output = transformer.transform(&input, &context).unwrap();
         assert_eq!(output.payload()["text"], "HELLO");

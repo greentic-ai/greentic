@@ -5,10 +5,15 @@ use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 use anyhow::Error;
 use channel_plugin::message::LogLevel;
 use schemars::schema_for;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
-    channel::manager::ChannelManager, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger}, secret::{EmptySecretsManager, SecretsManager},
+    channel::manager::ChannelManager,
+    config::{ConfigManager, MapConfigManager},
+    executor::Executor,
+    flow::{manager::Flow, session::InMemorySessionStore},
+    logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger},
+    secret::{EmptySecretsManager, SecretsManager},
 };
 
 /// The entry point invoked by `main.rs` for `Commands::Schema`.
@@ -28,11 +33,7 @@ pub async fn write_schema(
     fs::write(out_dir.join("flow.schema.json"), flow_json)?;
 
     // 3) tool schemas
-    let _ = FileTelemetry::init_files(
-        log_level.as_str(),
-        log_dir.join("schema.log"),
-        event_dir,
-    );
+    let _ = FileTelemetry::init_files(log_level.as_str(), log_dir.join("schema.log"), event_dir);
     let log_config = LogConfig::new(LogLevel::Info, Some(log_dir), None);
     let logger = Logger(Box::new(OpenTelemetryLogger::new()));
     let secrets = SecretsManager(EmptySecretsManager::new());
@@ -45,15 +46,19 @@ pub async fn write_schema(
 
     // 4) channel schemas
     let config = ConfigManager(MapConfigManager::new());
-    
-    let store =InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new( config, secrets, store.clone(), log_config)
+
+    let store = InMemorySessionStore::new(10);
+    let channel_mgr = ChannelManager::new(config, secrets, store.clone(), log_config)
         .await
         .expect("Could not start channels");
     let _ = channel_mgr.clone().start_all(channels_dir).await;
-    
+
     for wrapper in channel_mgr.channels().iter() {
-        let (name, schema) = wrapper.wrapper().schema_json().await.expect("Could not get schema_json from wrapper");
+        let (name, schema) = wrapper
+            .wrapper()
+            .schema_json()
+            .await
+            .expect("Could not get schema_json from wrapper");
         let filename = format!("channel-{}.schema.json", name.to_lowercase());
         fs::write(out_dir.join(filename), schema)?;
     }
@@ -78,7 +83,7 @@ fn write_tools_schema(executor: Arc<Executor>, out_dir: &PathBuf) -> anyhow::Res
         props.insert("parameters".to_string(), params_schema);
 
         // secrets subschema, if any
-        
+
         let mut required = Vec::new();
         let secret_keys = tool.secrets();
         if !secret_keys.is_empty() {
@@ -88,7 +93,7 @@ fn write_tools_schema(executor: Arc<Executor>, out_dir: &PathBuf) -> anyhow::Res
                 field.insert("type".into(), json!("string"));
 
                 field.insert("description".into(), json!(&sk.description));
-                
+
                 sec_props.insert(sk.name.clone(), Value::Object(field));
                 if sk.required {
                     required.push(Value::String(sk.name.clone()));
@@ -117,7 +122,10 @@ fn write_tools_schema(executor: Arc<Executor>, out_dir: &PathBuf) -> anyhow::Res
 
         // assemble full schema
         let mut root = serde_json::Map::new();
-        root.insert("$schema".into(), json!("http://json-schema.org/draft-07/schema#"));
+        root.insert(
+            "$schema".into(),
+            json!("http://json-schema.org/draft-07/schema#"),
+        );
         root.insert("title".into(), json!(tool.name()));
         root.insert("description".into(), json!(tool.description()));
         root.insert("type".into(), json!("object"));

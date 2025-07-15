@@ -7,16 +7,17 @@ use crate::node::{NodeContext, NodeErr, NodeError, NodeOut};
 use crate::process::qa_process::QAProcessNode;
 use crate::watcher::DirectoryWatcher;
 use crate::{node::NodeType, process::process::ProcessWatcher};
-use std::path::PathBuf;
-use std::sync::Arc;
 use anyhow::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::error;
 
 // You must have these types already defined elsewhere, each implementing `ProcessWrapper + JsonSchema + Serialize/Deserialize`.
 use super::{
-    debug_process::DebugProcessNode, script_process::ScriptProcessNode, template_process::TemplateProcessNode
+    debug_process::DebugProcessNode, script_process::ScriptProcessNode,
+    template_process::TemplateProcessNode,
 };
 
 /// An enum of all built-in variants plus a “Plugin” marker for any external WASM on disk.
@@ -64,12 +65,12 @@ impl BuiltInProcess {
         }
     }
 
-    pub async fn process(&self, msg: Message, ctx: &mut NodeContext) -> Result<NodeOut, NodeErr>{
+    pub async fn process(&self, msg: Message, ctx: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         match self {
-            BuiltInProcess::Debug(inner) => inner.process(msg,ctx).await,
-            BuiltInProcess::Script(inner) => inner.process(msg,ctx).await,
-            BuiltInProcess::Template(inner) => inner.process(msg,ctx).await,
-            BuiltInProcess::Qa(inner) => inner.process(msg,ctx).await,
+            BuiltInProcess::Debug(inner) => inner.process(msg, ctx).await,
+            BuiltInProcess::Script(inner) => inner.process(msg, ctx).await,
+            BuiltInProcess::Template(inner) => inner.process(msg, ctx).await,
+            BuiltInProcess::Qa(inner) => inner.process(msg, ctx).await,
             BuiltInProcess::Plugin { name, .. } => {
                 let watcher = ctx.process_manager().clone().watcher;
                 if watcher.is_none() {
@@ -79,13 +80,12 @@ impl BuiltInProcess {
                 }
                 let process = watcher.unwrap().get_process(name);
                 match process {
-                    Some(process) => {process.process(msg,ctx).await},
+                    Some(process) => process.process(msg, ctx).await,
                     None => {
-                        let error = format!("Process {} was not found",name);
+                        let error = format!("Process {} was not found", name);
                         error!(error);
                         return Err(NodeErr::fail(NodeError::NotFound(error)));
-                        
-                    },
+                    }
                 }
             }
         }
@@ -115,9 +115,7 @@ impl ProcessManager {
     ///
     /// - `built_ins`: e.g. `vec![ BuiltInProcess::Debug(DebugProcessNode::default()), … ]`
     /// - `process_dir`: directory to watch for external `.wasm` plugins
-    pub fn new(
-        process_dir: impl Into<PathBuf>,
-    ) -> Result<Self, anyhow::Error> {
+    pub fn new(process_dir: impl Into<PathBuf>) -> Result<Self, anyhow::Error> {
         let dir = process_dir.into();
         // 1) Ensure the directory exists on disk
         if !dir.exists() {
@@ -144,9 +142,14 @@ impl ProcessManager {
         // Kick off the actual filesystem watcher:
         // The `&["wasm"]` means “only watch files ending in `.wasm`.”
         let watch_path = self.process_dir.clone();
-        Ok(DirectoryWatcher::new(watch_path.clone(), Arc::new(watcher.clone()), &["wasm"], true).await?)
+        Ok(DirectoryWatcher::new(
+            watch_path.clone(),
+            Arc::new(watcher.clone()),
+            &["wasm"],
+            true,
+        )
+        .await?)
     }
-
 
     /// Unregister all dynamic plugins (but leave baked-ins alone).
     /// After this, the `PROCESS_REGISTRY` will only contain the baked-ins again.
@@ -170,11 +173,14 @@ impl ProcessManager {
 }
 #[cfg(test)]
 pub mod tests {
-    use crate::{process::process::{ProcessInstance, ProcessWrapper}, watcher::WatchedType};
+    use crate::{
+        process::process::{ProcessInstance, ProcessWrapper},
+        watcher::WatchedType,
+    };
 
     use super::*;
-    use std::path::PathBuf;
     use anyhow::Result;
+    use std::path::PathBuf;
 
     // ------------------------------------------------------------------------------------------------
     // 1) We want a minimal “dummy” ProcessWrapper that satisfies the interface expected by
@@ -188,18 +194,18 @@ pub mod tests {
                 wasm_path: path.into(),
                 name: name.into(),
             };
-            let wrapper = ProcessWrapper::new(
-                instance.into(),
-                "dummy".into(),
-                serde_json::Value::Null,
-            );
+            let wrapper =
+                ProcessWrapper::new(instance.into(), "dummy".into(), serde_json::Value::Null);
             Box::new(wrapper)
         }
     }
 
     impl ProcessManager {
         pub fn dummy() -> Arc<ProcessManager> {
-            Arc::new(Self {process_dir: PathBuf::new(),watcher: None })
+            Arc::new(Self {
+                process_dir: PathBuf::new(),
+                watcher: None,
+            })
         }
     }
 
@@ -222,8 +228,14 @@ pub mod tests {
 
         // Create a new manager; it must create the directory on disk
         let manager = ProcessManager::new(&dir_path).unwrap();
-        assert!(manager.process_dir.exists(), "Expected directory to be created");
-        assert!(manager.watcher.is_none(), "Watcher should start out as None");
+        assert!(
+            manager.process_dir.exists(),
+            "Expected directory to be created"
+        );
+        assert!(
+            manager.watcher.is_none(),
+            "Watcher should start out as None"
+        );
 
         Ok(())
     }

@@ -1,28 +1,37 @@
 // src/app.rs
-use std::{fs::{self, File}, io::{stdin, stdout, Write}, path::{Path, PathBuf}, sync::Arc};
-use anyhow::{bail, Context, Error};
-
-use channel_plugin::message::LogLevel;
-use reqwest::{header::{HeaderValue, AUTHORIZATION}, Client};
-use serde::{Deserialize, Serialize};
-use tokio::task::JoinHandle;
-use tracing::{error, info};
-use anyhow::{anyhow, Result};
-use crate::{
-    validate::validate,
-    channel::{manager::{ChannelManager,IncomingHandler}, 
-    node::ChannelsRegistry}, 
-    config::{ConfigManager, EnvConfigManager}, 
-    executor::Executor, 
-    flow::{manager::FlowManager, 
-    session::InMemorySessionStore,}, 
-    logger::{LogConfig, Logger}, 
-    process::manager::ProcessManager, 
-    secret::{EnvSecretsManager, SecretsManager}, 
-    watcher::DirectoryWatcher
+use anyhow::{Context, Error, bail};
+use std::{
+    fs::{self, File},
+    io::{Write, stdin, stdout},
+    path::{Path, PathBuf},
+    sync::Arc,
 };
+
+use crate::{
+    channel::{
+        manager::{ChannelManager, IncomingHandler},
+        node::ChannelsRegistry,
+    },
+    config::{ConfigManager, EnvConfigManager},
+    executor::Executor,
+    flow::{manager::FlowManager, session::InMemorySessionStore},
+    logger::{LogConfig, Logger},
+    process::manager::ProcessManager,
+    secret::{EnvSecretsManager, SecretsManager},
+    validate::validate,
+    watcher::DirectoryWatcher,
+};
+use anyhow::{Result, anyhow};
+use channel_plugin::message::LogLevel;
+use reqwest::{
+    Client,
+    header::{AUTHORIZATION, HeaderValue},
+};
+use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use tokio::task::JoinHandle;
+use tracing::{error, info};
 
 /// Makes a file executable on Unix. On Windows, this is a no-op.
 pub fn make_executable<P: AsRef<Path> + std::fmt::Debug>(path: P) -> std::io::Result<()> {
@@ -31,8 +40,8 @@ pub fn make_executable<P: AsRef<Path> + std::fmt::Debug>(path: P) -> std::io::Re
         let metadata = fs::metadata(&path)?;
         let mut permissions = metadata.permissions();
         let mut mode = permissions.mode();
-        mode |= 0o110;           // Add execute for user (0o100) and group (0o010)
-        mode &= !0o001;          // Remove execute for others if present
+        mode |= 0o110; // Add execute for user (0o100) and group (0o010)
+        mode &= !0o001; // Remove execute for others if present
 
         permissions.set_mode(mode);
         fs::set_permissions(&path, permissions)?;
@@ -45,8 +54,7 @@ pub fn make_executable<P: AsRef<Path> + std::fmt::Debug>(path: P) -> std::io::Re
 
     Ok(())
 }
-pub struct App
-{
+pub struct App {
     watcher: Option<DirectoryWatcher>,
     tools_task: Option<JoinHandle<()>>,
     flow_task: Option<JoinHandle<()>>,
@@ -59,11 +67,11 @@ pub struct App
 
 impl App {
     pub fn new() -> Self {
-        Self{
+        Self {
             watcher: None,
-            tools_task:None,
-            flow_task:None,
-            channels_task:None,
+            tools_task: None,
+            flow_task: None,
+            channels_task: None,
             flow_manager: None,
             process_manager: None,
             executor: None,
@@ -78,47 +86,43 @@ impl App {
     pub async fn bootstrap(
         &mut self,
         session_timeout: u64,
-        flows_dir:     PathBuf,
-        channels_dir:  PathBuf,
-        tools_dir:     PathBuf,
+        flows_dir: PathBuf,
+        channels_dir: PathBuf,
+        tools_dir: PathBuf,
         processes_dir: PathBuf,
-        config:        ConfigManager,
-        logger:        Logger,
-        log_level:     LogLevel,
-        log_dir:       Option<PathBuf>,
+        config: ConfigManager,
+        logger: Logger,
+        log_level: LogLevel,
+        log_dir: Option<PathBuf>,
         otel_endpoint: Option<String>,
-        secrets:       SecretsManager,
-    ) -> Result<(),Error> {
+        secrets: SecretsManager,
+    ) -> Result<(), Error> {
         // 1) Flow manager & initial load + watcher
         let store = InMemorySessionStore::new(session_timeout);
         // Process Manager
-        match ProcessManager::new(processes_dir)
-        {
-            Ok(mut pm) => {
-                match pm.watch_process_dir().await {
-                    Ok(watcher) => {
-                        self.process_manager = Some(pm.clone());
-                        self.watcher = Some(watcher)
-                    },
-                    Err(error) => {
-                        let werror = format!("Could not start up process manager because {:?}",error);
-                        error!(werror);
-                        return Err(error);
-                    },
+        match ProcessManager::new(processes_dir) {
+            Ok(mut pm) => match pm.watch_process_dir().await {
+                Ok(watcher) => {
+                    self.process_manager = Some(pm.clone());
+                    self.watcher = Some(watcher)
+                }
+                Err(error) => {
+                    let werror = format!("Could not start up process manager because {:?}", error);
+                    error!(werror);
+                    return Err(error);
                 }
             },
             Err(err) => {
-                let perror = format!("Could not start up process manager because {:?}",err);
+                let perror = format!("Could not start up process manager because {:?}", err);
                 error!(perror);
                 return Err(err);
-            },
+            }
         }
         let process_manager = Arc::new(self.process_manager.to_owned().unwrap());
 
         // executor
         self.executor = Some(Executor::new(secrets.clone(), logger.clone()));
         let executor = self.executor.clone().unwrap();
-
 
         // 2) Executor / Tool‐watcher
         self.tools_task = Some({
@@ -133,12 +137,18 @@ impl App {
 
         // Channel manager (internally starts its own PluginWatcher over channels_dir)
         let log_config = LogConfig::new(log_level, log_dir, otel_endpoint);
-        let channel_manager = ChannelManager::new(config, secrets.clone(),store.clone(),log_config).await?;
+        let channel_manager =
+            ChannelManager::new(config, secrets.clone(), store.clone(), log_config).await?;
         self.channel_manager = Some(channel_manager.clone());
 
-
         // flow manager
-        let flow_mgr = FlowManager::new(store.clone(), executor.clone(), channel_manager.clone(), process_manager.clone(), secrets.clone());
+        let flow_mgr = FlowManager::new(
+            store.clone(),
+            executor.clone(),
+            channel_manager.clone(),
+            process_manager.clone(),
+            secrets.clone(),
+        );
         self.flow_manager = Some(flow_mgr.clone());
 
         // Load all existing flows, then watch for changes:
@@ -154,15 +164,16 @@ impl App {
         }));
 
         // Register the ChannelsRegistry with the flow and channel manager
-        let registry = ChannelsRegistry::new(
-            flow_mgr.clone(),channel_manager.clone()).await;
+        let registry = ChannelsRegistry::new(flow_mgr.clone(), channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
-        
+
         // then start watching
-        self.channel_manager.clone().unwrap().start_all(channels_dir.clone()).await?;
+        self.channel_manager
+            .clone()
+            .unwrap()
+            .start_all(channels_dir.clone())
+            .await?;
 
-
-        
         // We don’t need to manually `start()` each channel here; ChannelManager::new()
         // will have already subscribed the watcher and started existing plugins.
         //
@@ -176,8 +187,7 @@ impl App {
         Ok(())
     }
 
-    pub async fn shutdown(&self){    
-        
+    pub async fn shutdown(&self) {
         if let Some(handle) = self.flow_task.as_ref() {
             handle.abort();
         };
@@ -187,12 +197,15 @@ impl App {
         if let Some(handle) = self.channels_task.as_ref() {
             handle.abort();
         }
-        self.channel_manager.clone().unwrap().shutdown_all(true, 2000);
+        self.channel_manager
+            .clone()
+            .unwrap()
+            .shutdown_all(true, 2000);
         self.flow_manager.clone().unwrap().shutdown_all().await;
     }
 }
 /// Called when user runs `greentic init --root <dir>`
-pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
+pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     // 1) create all the directories we need
     let dirs = [
         "config",
@@ -249,7 +262,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
             }
         }
     }
-    
+
     print!("Please provide your email: ");
     stdout().flush().unwrap(); // ensure prompt shows before user types
 
@@ -259,7 +272,9 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
 
     let mut marketing_consent = false;
     loop {
-        print!("Are you ok to be contacted by email about new features and other Greentic services? [Y,n]: ");
+        print!(
+            "Are you ok to be contacted by email about new features and other Greentic services? [Y,n]: "
+        );
         stdout().flush().unwrap();
 
         let mut response = String::new();
@@ -289,15 +304,18 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
         .send()
         .await?;
 
-    let _ = match res.json::<Verifying>().await{
+    let _ = match res.json::<Verifying>().await {
         Ok(verifying) => {
-            info!("Verifying status: {}",verifying.status);
+            info!("Verifying status: {}", verifying.status);
             verifying
-        },
+        }
         Err(err) => {
-            error!("Error veryifying: {:?}",err);
-            bail!("Could not continue verification because {:?}",err.to_string());
-        },
+            error!("Error veryifying: {:?}", err);
+            bail!(
+                "Could not continue verification because {:?}",
+                err.to_string()
+            );
+        }
     };
     println!("A verifying code was send to your email. Please reproduce it here.");
     print!("Code: ");
@@ -321,44 +339,86 @@ pub async fn cmd_init(root: PathBuf) -> Result<(),Error> {
 
     let verified = match res.json::<Verified>().await {
         Ok(response) => {
-            info!("Verified status: {}",response.status);
+            info!("Verified status: {}", response.status);
             response
-        },
+        }
         Err(err) => {
             error!("Error verifying: {:?}", err);
-            bail!("Could not continue verification because {:?}", err.to_string());
+            bail!(
+                "Could not continue verification because {:?}",
+                err.to_string()
+            );
         }
     };
 
     let token = &verified.user_token;
 
-    let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("greentic/secrets").to_path_buf())));
+    let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
+        Path::new("greentic/secrets").to_path_buf(),
+    )));
     let result = secrets_manager.add_secret("GREENTIC_TOKEN", token).await;
 
     if result.is_err() {
-        bail!("Could not add the GREENTIC_TOKEN={} to the secrets. Please add the token manually. Not doing so will not enable you to download from the Greentic store.",token);
+        bail!(
+            "Could not add the GREENTIC_TOKEN={} to the secrets. Please add the token manually. Not doing so will not enable you to download from the Greentic store.",
+            token
+        );
     }
 
     let out_tools_dir = root.join("plugins/tools");
     let out_flows_dir = root.join("flows/running");
-    let result = download(token, "flows", "weather_bot_telegram.ygtc", out_flows_dir.clone()).await;
+    let result = download(
+        token,
+        "flows",
+        "weather_bot_telegram.ygtc",
+        out_flows_dir.clone(),
+    )
+    .await;
     if result.is_err() {
-        eprintln!("Error downloading weather_bot_telegram.ygtc because {:?}",result.err().unwrap().to_string());
+        eprintln!(
+            "Error downloading weather_bot_telegram.ygtc because {:?}",
+            result.err().unwrap().to_string()
+        );
     }
     let result = download(token, "flows", "weather_bot_ws.ygtc", out_flows_dir.clone()).await;
-     if result.is_err() {
-        eprintln!("Error downloading weather_bot_ws.ygtc because {:?}",result.err().unwrap().to_string());
+    if result.is_err() {
+        eprintln!(
+            "Error downloading weather_bot_ws.ygtc because {:?}",
+            result.err().unwrap().to_string()
+        );
     }
 
     let config_manager = ConfigManager(EnvConfigManager::new(root.join("config/.env")));
-    println!("Given this is the first time you download tools and channels, you likely need to add secrets before they work");
-    let result = validate(out_flows_dir.join("weather_bot_telegram.ygtc"),root.clone(),out_tools_dir.clone(),secrets_manager.clone(),config_manager.clone()).await;
+    println!(
+        "Given this is the first time you download tools and channels, you likely need to add secrets before they work"
+    );
+    let result = validate(
+        out_flows_dir.join("weather_bot_telegram.ygtc"),
+        root.clone(),
+        out_tools_dir.clone(),
+        secrets_manager.clone(),
+        config_manager.clone(),
+    )
+    .await;
     if result.is_err() {
-        eprintln!("Error setting up weather_bot_telegram.ygtc because {:?}",result.err().unwrap().to_string());
+        eprintln!(
+            "Error setting up weather_bot_telegram.ygtc because {:?}",
+            result.err().unwrap().to_string()
+        );
     }
-    let result = validate(out_flows_dir.join("weather_bot_ws.ygtc"),root.clone(),out_tools_dir,secrets_manager,config_manager).await;
+    let result = validate(
+        out_flows_dir.join("weather_bot_ws.ygtc"),
+        root.clone(),
+        out_tools_dir,
+        secrets_manager,
+        config_manager,
+    )
+    .await;
     if result.is_err() {
-        eprintln!("Error setting up weather_bot_ws.ygtc because {:?}",result.err().unwrap().to_string());
+        eprintln!(
+            "Error setting up weather_bot_ws.ygtc because {:?}",
+            result.err().unwrap().to_string()
+        );
     }
     println!("Greentic directory initialized at {}", root.display());
     Ok(())
@@ -384,13 +444,19 @@ pub async fn download(
     download_file: &str,
     out_dir: PathBuf,
 ) -> Result<()> {
-    let url = format!("https://greenticstore.com/{}/{}", download_type, download_file);
+    let url = format!(
+        "https://greenticstore.com/{}/{}",
+        download_type, download_file
+    );
     let output_path = out_dir.join(&download_file);
 
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
-        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))?)
+        .header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        )
         .send()
         .await?;
 
@@ -423,7 +489,6 @@ struct RegisterRequest<'a> {
 struct Verifying {
     status: String,
 }
-
 
 #[derive(Serialize)]
 struct VerifyRequest<'a> {

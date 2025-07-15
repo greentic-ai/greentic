@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use std::time::Duration;
-use std::fmt::Debug;
+use crate::flow::state::{InMemoryState, SessionState};
 use async_trait::async_trait;
 use moka::future::Cache;
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::info;
-use crate::flow::state::{InMemoryState, SessionState};
 
 pub type SessionStore = Arc<dyn SessionStoreType>;
 
@@ -12,9 +12,9 @@ pub type SessionStore = Arc<dyn SessionStoreType>;
 #[async_trait]
 pub trait SessionStoreType: Send + Sync + Debug {
     /// Returns an existing session if it exists.
-    async fn get(&self, session_id: &str) ->  Option<SessionState>;
+    async fn get(&self, session_id: &str) -> Option<SessionState>;
     /// Returns an existing session or creates a new one with default state.
-    async fn get_or_create(&self, session_id: &str) ->  SessionState;
+    async fn get_or_create(&self, session_id: &str) -> SessionState;
 
     /// Try to get session by unique plugin identifier and and run route matching if no session is available
     async fn get_channel(&self, channel_key: &str) -> Option<String>;
@@ -32,8 +32,8 @@ pub trait SessionStoreType: Send + Sync + Debug {
 #[derive(Clone, Debug)]
 pub struct InMemorySessionStore {
     cache: Cache<String, Arc<InMemoryState>>, // session_id → session state
-    by_channel: Cache<String, String>, // (plugin_name|key) = channel_key → session_id
-    reverse_map: Cache<String, String>,  // session_id → (plugin_name | key) = channel_key
+    by_channel: Cache<String, String>,        // (plugin_name|key) = channel_key → session_id
+    reverse_map: Cache<String, String>,       // session_id → (plugin_name | key) = channel_key
 }
 
 impl InMemorySessionStore {
@@ -42,10 +42,7 @@ impl InMemorySessionStore {
         let cache = Cache::builder()
             .time_to_idle(Duration::from_secs(ttl_secs))
             .eviction_listener(|key: Arc<String>, _value: Arc<InMemoryState>, cause| {
-                info!(
-                    "Session expired: key={}, cause={:?}",
-                    key, cause, 
-                );
+                info!("Session expired: key={}, cause={:?}", key, cause,);
                 // Optionally trigger cleanup logic or emit metrics here.
             })
             .build();
@@ -54,15 +51,18 @@ impl InMemorySessionStore {
             .build();
 
         let reverse_map = Cache::builder()
-        .time_to_idle(Duration::from_secs(ttl_secs))
-        .build();
+            .time_to_idle(Duration::from_secs(ttl_secs))
+            .build();
 
-        Arc::new(Self { cache, by_channel , reverse_map})
+        Arc::new(Self {
+            cache,
+            by_channel,
+            reverse_map,
+        })
     }
 }
 #[async_trait]
 impl SessionStoreType for InMemorySessionStore {
-
     /// Forcefully removes a session (e.g. after completion or error).
     async fn remove(&self, session_id: &str) {
         self.cache.invalidate(session_id).await;
@@ -91,8 +91,12 @@ impl SessionStoreType for InMemorySessionStore {
             return entry;
         } else {
             let session_id = uuid::Uuid::new_v4().to_string();
-            self.by_channel.insert(channel_key.to_string(), session_id.clone()).await;
-            self.reverse_map.insert(session_id.clone(), channel_key.to_string()).await;
+            self.by_channel
+                .insert(channel_key.to_string(), session_id.clone())
+                .await;
+            self.reverse_map
+                .insert(session_id.clone(), channel_key.to_string())
+                .await;
             session_id
         }
     }
@@ -109,10 +113,10 @@ impl SessionStoreType for InMemorySessionStore {
         };
         result
     }
-    
+
     async fn get_or_create(&self, session_id: &str) -> SessionState {
         let key = session_id.to_string();
-        
+
         let result = match self.cache.get(&key).await {
             Some(state) => state as SessionState,
             None => {
@@ -123,12 +127,12 @@ impl SessionStoreType for InMemorySessionStore {
         };
         result
     }
-} 
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::state::{StateValue};
+    use crate::flow::state::StateValue;
 
     #[tokio::test]
     async fn test_session_store_create_and_retrieve() {
@@ -160,7 +164,7 @@ mod tests {
         assert_eq!(val, None); // should be empty after recreation
     }
 
-     #[tokio::test]
+    #[tokio::test]
     async fn test_get_channel_none() {
         let store = InMemorySessionStore::new(60);
         let result = store.get_channel("telegram|chat_123").await;
@@ -178,7 +182,6 @@ mod tests {
         store.remove(&sid1).await;
 
         assert!(store.get_channel("telegram|chat_123").await.is_none());
-
     }
 
     #[tokio::test]
@@ -206,5 +209,4 @@ mod tests {
         let expected_none = store.reverse_map.get::<str>(sid.as_ref()).await;
         assert!(expected_none.is_none());
     }
-
 }

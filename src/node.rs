@@ -1,18 +1,32 @@
-use std::{borrow::Cow, fmt, sync::Arc};
+use crate::{
+    channel::manager::ChannelManager,
+    executor::{
+        Executor,
+        exports::wasix::mcp::router::{Content, ResourceContents},
+    },
+    flow::manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate},
+    mapper::Mapper,
+    message::Message,
+    process::manager::ProcessManager,
+    secret::SecretsManager,
+    util::extension_from_mime,
+};
+use crate::{
+    channel::node::ChannelNode,
+    flow::state::{SessionState, StateValue},
+};
 use async_trait::async_trait;
 use channel_plugin::message::{MessageDirection, Participant};
-use dashmap::{DashMap};
-use crate::{channel::node::ChannelNode, flow::state::{SessionState, StateValue}};
-use handlebars::{Handlebars,JsonValue};
-use serde::{Deserialize,  Serialize};
-use tempfile::TempDir;
-use std::fs;
+use dashmap::DashMap;
+use handlebars::{Handlebars, JsonValue};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema, schema_for};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::fmt::Debug;
+use std::fs;
 use std::path::PathBuf;
-use serde_json::{json, Value};
-use crate::{channel::{manager::ChannelManager}, executor::{exports::wasix::mcp::router::{Content, ResourceContents}, Executor}, flow::{manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate},}, mapper::Mapper, message::Message, process::manager::ProcessManager, secret::SecretsManager, util::extension_from_mime};
-use schemars::{json_schema, schema_for, JsonSchema, Schema, SchemaGenerator};
-
+use std::{borrow::Cow, fmt, sync::Arc};
+use tempfile::TempDir;
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub enum Routing {
@@ -24,7 +38,7 @@ pub enum Routing {
     /// Send a reply to the original incoming channel
     ReplyToOrigin,
     /// Ends the Flow,
-    EndFlow
+    EndFlow,
 }
 
 impl Routing {
@@ -59,49 +73,69 @@ impl Routing {
 /// to either:
 /// * all connections (FollowGraph)
 /// * some connections (ToNodes)
-/// * to the original incoming channel and user (ReplyToOrigin) 
+/// * to the original incoming channel and user (ReplyToOrigin)
 /// * end the flow (EndFlow)
-#[derive(Clone,Debug, Serialize, Deserialize,JsonSchema)]
-pub struct NodeOut{
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NodeOut {
     message: Message,
     routing: Routing,
 }
 
 impl NodeOut {
     pub fn follow_graph(message: Message) -> Self {
-        Self { message, routing: Routing::FollowGraph }
+        Self {
+            message,
+            routing: Routing::FollowGraph,
+        }
     }
 
     pub fn to_nodes(message: Message, targets: Vec<String>) -> Self {
-        Self { message, routing: Routing::ToNodes(targets) }
+        Self {
+            message,
+            routing: Routing::ToNodes(targets),
+        }
     }
 
     pub fn to_node(message: Message, target: String) -> Self {
-        Self { message, routing: Routing::ToNode(target) }
+        Self {
+            message,
+            routing: Routing::ToNode(target),
+        }
     }
 
     pub fn all(message: Message) -> Self {
-        Self { message, routing: Routing::FollowGraph }
+        Self {
+            message,
+            routing: Routing::FollowGraph,
+        }
     }
 
     pub fn next(message: Message, targets: Option<Vec<String>>) -> Self {
         let routing = match targets {
-            Some(targets) => if targets.len() == 1 {
-                Routing::ToNode(targets.first().unwrap().to_owned())
-            } else {
-                Routing::ToNodes(targets)
-            },
+            Some(targets) => {
+                if targets.len() == 1 {
+                    Routing::ToNode(targets.first().unwrap().to_owned())
+                } else {
+                    Routing::ToNodes(targets)
+                }
+            }
             None => Routing::FollowGraph,
         };
-        Self {message, routing}
+        Self { message, routing }
     }
 
     pub fn reply(message: Message) -> Self {
-        Self { message, routing: Routing::ReplyToOrigin }
+        Self {
+            message,
+            routing: Routing::ReplyToOrigin,
+        }
     }
 
     pub fn end_flow(message: Message) -> Self {
-        Self { message, routing: Routing::EndFlow }
+        Self {
+            message,
+            routing: Routing::EndFlow,
+        }
     }
 
     pub fn routing(&self) -> &Routing {
@@ -121,53 +155,75 @@ impl NodeOut {
 /// to either:
 /// * all connections (FollowGraph)
 /// * some connections (ToNodes)
-/// * to the original incoming channel and user (ReplyToOrigin) 
+/// * to the original incoming channel and user (ReplyToOrigin)
 /// * end the flow (EndFlow)
-#[derive(Clone,Debug, Serialize, Deserialize,JsonSchema)]
-pub struct NodeErr{
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NodeErr {
     error: NodeError,
     routing: Routing,
 }
 
-
 impl NodeErr {
     pub fn fail(error: NodeError) -> Self {
-        Self { error, routing: Routing::EndFlow }
+        Self {
+            error,
+            routing: Routing::EndFlow,
+        }
     }
     pub fn follow_graph(error: NodeError) -> Self {
-        Self { error, routing: Routing::FollowGraph }
+        Self {
+            error,
+            routing: Routing::FollowGraph,
+        }
     }
 
     pub fn all(error: NodeError) -> Self {
-        Self { error, routing: Routing::FollowGraph }
+        Self {
+            error,
+            routing: Routing::FollowGraph,
+        }
     }
 
     pub fn next(error: NodeError, targets: Option<Vec<String>>) -> Self {
         let routing = match targets {
-            Some(targets) => if targets.len() == 1 {
-                Routing::ToNode(targets.first().unwrap().to_owned())
-            } else {
-                Routing::ToNodes(targets)
-            },
+            Some(targets) => {
+                if targets.len() == 1 {
+                    Routing::ToNode(targets.first().unwrap().to_owned())
+                } else {
+                    Routing::ToNodes(targets)
+                }
+            }
             None => Routing::FollowGraph,
         };
-        Self {error, routing}
+        Self { error, routing }
     }
 
     pub fn to_nodes(error: NodeError, targets: Vec<String>) -> Self {
-        Self { error, routing: Routing::ToNodes(targets) }
+        Self {
+            error,
+            routing: Routing::ToNodes(targets),
+        }
     }
-    
+
     pub fn to_node(error: NodeError, target: String) -> Self {
-        Self { error, routing: Routing::ToNode(target) }
+        Self {
+            error,
+            routing: Routing::ToNode(target),
+        }
     }
 
     pub fn reply(error: NodeError) -> Self {
-        Self { error, routing: Routing::ReplyToOrigin }
+        Self {
+            error,
+            routing: Routing::ReplyToOrigin,
+        }
     }
 
     pub fn end_flow(error: NodeError) -> Self {
-        Self { error, routing: Routing::EndFlow }
+        Self {
+            error,
+            routing: Routing::EndFlow,
+        }
     }
 
     pub fn routing(&self) -> &Routing {
@@ -183,8 +239,7 @@ impl NodeErr {
     }
 }
 
-
-#[typetag::serde] 
+#[typetag::serde]
 #[async_trait]
 pub trait NodeType: Send + Sync + Debug {
     fn type_name(&self) -> String;
@@ -194,7 +249,7 @@ pub trait NodeType: Send + Sync + Debug {
     fn schema(&self) -> schemars::Schema;
 }
 
-#[derive( Serialize, Deserialize )]
+#[derive(Serialize, Deserialize)]
 pub struct Node(pub Box<dyn NodeType>);
 
 // Optional if you want to access `.0`
@@ -238,7 +293,7 @@ impl JsonSchema for Node {
     }
 
     fn json_schema(generate: &mut SchemaGenerator) -> Schema {
-       //---------------------------------------------------------------
+        //---------------------------------------------------------------
         // 1) Register *all concrete variants* so they end up in
         //    the generator’s definitions map.
         //---------------------------------------------------------------
@@ -258,10 +313,9 @@ impl JsonSchema for Node {
             ]
         })
     }
-    
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct ChannelOrigin {
     channel: String,
     reply_to: Option<String>,
@@ -271,12 +325,17 @@ pub struct ChannelOrigin {
 
 impl ChannelOrigin {
     pub fn new(
-        channel: String, 
+        channel: String,
         reply_to: Option<String>,
         thread_id: Option<String>,
-        participant: Participant) -> Self
-    {
-        Self {channel,reply_to,thread_id, participant}
+        participant: Participant,
+    ) -> Self {
+        Self {
+            channel,
+            reply_to,
+            thread_id,
+            participant,
+        }
     }
 
     pub fn channel(&self) -> String {
@@ -287,49 +346,48 @@ impl ChannelOrigin {
         self.participant.clone()
     }
 
-
     pub fn reply_to(&self) -> Option<String> {
         self.reply_to.clone()
     }
-
 
     pub fn thread_id(&self) -> Option<String> {
         self.thread_id.clone()
     }
 
     /// Build a ChannelMessage that “replies” with `payload` to the original sender.
-    pub fn reply(&self, 
-                 node_id: &str,
-                 session_id: String,
-                 payload: serde_json::Value,
-                 ctx: &NodeContext
+    pub fn reply(
+        &self,
+        node_id: &str,
+        session_id: String,
+        payload: serde_json::Value,
+        ctx: &NodeContext,
     ) -> Result<channel_plugin::message::ChannelMessage, ResolveError> {
         // you can re‐use your existing ChannelNodeConfig logic
         // to fill in from/to/content/thread_id/etc.
         let cfg = ChannelNodeConfig {
-          channel_name: self.channel.clone(),
-          channel_in: false,
-          channel_out: true,
-          from: None,           // defaults to `greentic` platform
-          to: Some(vec![ValueOrTemplate::Value(self.participant.clone())]),
-          content: None,        // so that create_out_msg falls back to payload
-          thread_id: None,
-          reply_to_id: None,
+            channel_name: self.channel.clone(),
+            channel_in: false,
+            channel_out: true,
+            from: None, // defaults to `greentic` platform
+            to: Some(vec![ValueOrTemplate::Value(self.participant.clone())]),
+            content: None, // so that create_out_msg falls back to payload
+            thread_id: None,
+            reply_to_id: None,
         };
 
         // build it:
         cfg.create_out_msg(
-          ctx,
-          node_id.to_string(),
-          session_id,
-          payload,
-          MessageDirection::Outgoing
+            ctx,
+            node_id.to_string(),
+            session_id,
+            payload,
+            MessageDirection::Outgoing,
         )
     }
 }
 
 #[warn(dead_code)]
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct NodeContext {
     session_id: String,
     state: SessionState,
@@ -343,11 +401,30 @@ pub struct NodeContext {
     pub hb: Arc<Handlebars<'static>>,
 }
 
-impl NodeContext
-{
-    pub fn new(session_id: String, state: SessionState, config: DashMap<String, String>, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager, channel_origin: Option<ChannelOrigin> ) -> Self {
+impl NodeContext {
+    pub fn new(
+        session_id: String,
+        state: SessionState,
+        config: DashMap<String, String>,
+        executor: Arc<Executor>,
+        channel_manager: Arc<ChannelManager>,
+        process_manager: Arc<ProcessManager>,
+        secrets: SecretsManager,
+        channel_origin: Option<ChannelOrigin>,
+    ) -> Self {
         let hb = make_handlebars();
-        Self {session_id, state, config, executor, channel_manager, process_manager, secrets, connections: None, channel_origin, hb,}
+        Self {
+            session_id,
+            state,
+            config,
+            executor,
+            channel_manager,
+            process_manager,
+            secrets,
+            connections: None,
+            channel_origin,
+            hb,
+        }
     }
 
     pub fn get_session_id(&self) -> String {
@@ -376,13 +453,11 @@ impl NodeContext
         self.state.add_node(node);
     }
 
-    pub fn set_node(&self, node: String)
-    {
+    pub fn set_node(&self, node: String) {
         self.state.set_nodes(vec![node.clone()]);
     }
 
-    pub fn set_nodes(&self, nodes: Vec<String>)
-    {
+    pub fn set_nodes(&self, nodes: Vec<String>) {
         self.state.set_nodes(nodes);
     }
 
@@ -398,8 +473,7 @@ impl NodeContext
         self.state.add_flow(flow);
     }
 
-    pub fn set_flows(&self, flows: Vec<String>)
-    {
+    pub fn set_flows(&self, flows: Vec<String>) {
         self.state.set_flows(flows);
     }
 
@@ -417,7 +491,7 @@ impl NodeContext
 
     pub fn save_state<I>(&self, items: I)
     where
-        I: IntoIterator<Item = (String, StateValue)> + Send
+        I: IntoIterator<Item = (String, StateValue)> + Send,
     {
         for (k, v) in items {
             self.state.set(k, v);
@@ -478,19 +552,15 @@ impl NodeContext
     }
 
     pub async fn reveal_secret(&self, key: &str) -> Option<String> {
-        match self.secrets.0.get(key){
-            Some(handle) => 
-                match self.secrets.0.reveal(handle).await {
-                    Ok(secret) => secret,
-                    Err(_) => None,
-                }
+        match self.secrets.0.get(key) {
+            Some(handle) => match self.secrets.0.reveal(handle).await {
+                Ok(secret) => secret,
+                Err(_) => None,
+            },
             None => None,
         }
     }
-
 }
-
-
 
 /// A shared registry you build once at startup:
 fn make_handlebars() -> Arc<Handlebars<'static>> {
@@ -507,7 +577,6 @@ fn make_handlebars() -> Arc<Handlebars<'static>> {
 
     Arc::new(hb)
 }
-
 
 pub fn state_map_to_json(state: &DashMap<String, StateValue>) -> JsonValue {
     let mut obj = serde_json::Map::new();
@@ -532,7 +601,7 @@ impl TemplateContext for NodeContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum NodeError {
-    NotFound (String),
+    NotFound(String),
     InvalidInput(String),
     ExecutionFailed(String),
     ConnectionFailed(String),
@@ -542,10 +611,10 @@ pub enum NodeError {
 impl fmt::Display for NodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NodeError::NotFound(msg) => write!(f, "Node {} not found.",msg),
+            NodeError::NotFound(msg) => write!(f, "Node {} not found.", msg),
             NodeError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
-            NodeError::ExecutionFailed(msg) => write!(f, "Processing error: {}",msg),
-            NodeError::ConnectionFailed(msg) => write!(f, "Failed to connect to node: {}",msg),
+            NodeError::ExecutionFailed(msg) => write!(f, "Processing error: {}", msg),
+            NodeError::ConnectionFailed(msg) => write!(f, "Failed to connect to node: {}", msg),
             NodeError::Internal(msg) => write!(f, "Internal error: {}", msg),
         }
     }
@@ -561,14 +630,14 @@ impl std::error::Error for NodeError {}
 ///     "action": "<tool action to call>",
 ///     "input": "<input parameters to pass to the tool>"
 /// }
-/// You can use an optional Mapper for transforming input (in_map), 
+/// You can use an optional Mapper for transforming input (in_map),
 /// output (out_map) and error (err_map).
 /// If you want a specific set of connections to be called when the
 /// call is successful, then set the names in the on_ok list.
 /// If you want other connections to be called on error, set their names
 /// in the on_err list.
-/// If no on_ok or on_err are specified then all connections will be called 
-/// with the result. 
+/// If no on_ok or on_err are specified then all connections will be called
+/// with the result.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename = "tool")]
 pub struct ToolNode {
@@ -583,14 +652,14 @@ pub struct ToolNode {
 
 impl ToolNode {
     pub fn new(
-            name: String,
-            action: String,
-            in_map: Option<Mapper>,
-            out_map: Option<Mapper>,
-            err_map: Option<Mapper>,
-            on_ok: Option<Vec<String>>,
-            on_err: Option<Vec<String>>,
-        ) -> Self {
+        name: String,
+        action: String,
+        in_map: Option<Mapper>,
+        out_map: Option<Mapper>,
+        err_map: Option<Mapper>,
+        on_ok: Option<Vec<String>>,
+        on_err: Option<Vec<String>>,
+    ) -> Self {
         Self {
             name,
             action,
@@ -601,7 +670,6 @@ impl ToolNode {
             on_err,
         }
     }
-
 
     pub fn in_map(&self) -> Option<&Mapper> {
         self.in_map.as_ref()
@@ -663,7 +731,6 @@ impl ToolNode {
             }
         }
     }
-
 }
 impl Clone for ToolNode {
     fn clone(&self) -> Self {
@@ -691,35 +758,36 @@ impl NodeType for ToolNode {
         schema_for!(ToolNode)
     }
 
-     #[tracing::instrument(name = "tool_node_process", skip(self,context))]
+    #[tracing::instrument(name = "tool_node_process", skip(self, context))]
     async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
-
-
         let executor = context.executor();
 
         // Check for dynamic override and go dynamic, otherwise use static configuration
         let (name, action, params) = match input.payload().get("tool_call") {
             Some(tool_call) => {
-                let name = tool_call.get("name")
+                let name = tool_call
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.name)
                     .to_string();
 
-                let action = tool_call.get("action")
+                let action = tool_call
+                    .get("action")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.action)
                     .to_string();
 
                 let input = tool_call.get("input").cloned().unwrap_or(json!({}));
                 (name, action, input)
-            },
+            }
             None => {
                 // Fallback to static configuration
                 let payload = if self.use_in_map() {
-                    self.in_map
-                        .as_ref()
-                        .unwrap()
-                        .apply_input(&input.payload(), &context.config, context.state.all())
+                    self.in_map.as_ref().unwrap().apply_input(
+                        &input.payload(),
+                        &context.config,
+                        context.state.all(),
+                    )
                 } else {
                     input.payload()
                 };
@@ -734,11 +802,12 @@ impl NodeType for ToolNode {
             tracing::info!("Executing static tool call: {}/{}", name, action);
         }
 
-        let result = executor.executor.call_tool(name.clone(), action.clone(), params);
+        let result = executor
+            .executor
+            .call_tool(name.clone(), action.clone(), params);
 
         match result {
             Ok(call_result) => {
-                
                 let mut outputs = Vec::new();
 
                 for (i, item) in call_result.content.iter().enumerate() {
@@ -753,29 +822,52 @@ impl NodeType for ToolNode {
                         }
                         Content::Image(image) => {
                             let storage_dir = resolve_or_create_storage_dir(&context.config)?;
-                            let filename = storage_dir.join(format!("image_{}.{}", i, extension_from_mime(&image.mime_type)));
-                            fs::write(&filename, &image.data)
-                                .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Failed to write image: {}", e))))?;
-                            outputs.push(serde_json::json!({ "image": filename.to_string_lossy() }));
+                            let filename = storage_dir.join(format!(
+                                "image_{}.{}",
+                                i,
+                                extension_from_mime(&image.mime_type)
+                            ));
+                            fs::write(&filename, &image.data).map_err(|e| {
+                                NodeErr::fail(NodeError::ExecutionFailed(format!(
+                                    "Failed to write image: {}",
+                                    e
+                                )))
+                            })?;
+                            outputs
+                                .push(serde_json::json!({ "image": filename.to_string_lossy() }));
                         }
-                        Content::Embedded(embedded) => {
-                            match &embedded.resource_contents {
-                                ResourceContents::Blob(blob) => {
-                                    let storage_dir = resolve_or_create_storage_dir(&context.config,)?;
-                                    let filename = storage_dir.join(format!("blob_{}.{}", i, extension_from_mime(blob.mime_type.as_deref().unwrap_or("bin"))));
-                                    fs::write(&filename, &blob.blob)
-                                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Failed to write blob: {}", e))))?;
-                                    outputs.push(serde_json::json!({ "blob": filename.to_string_lossy() }));
-                                }
-                                ResourceContents::Text(text) => {
-                                    let storage_dir = resolve_or_create_storage_dir(&context.config)?;
-                                    let filename = storage_dir.join(format!("text_{}.txt", i));
-                                    fs::write(&filename, &text.text)
-                                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Failed to write text: {}", e))))?;
-                                    outputs.push(serde_json::json!({ "text_file": filename.to_string_lossy() }));
-                                }
+                        Content::Embedded(embedded) => match &embedded.resource_contents {
+                            ResourceContents::Blob(blob) => {
+                                let storage_dir = resolve_or_create_storage_dir(&context.config)?;
+                                let filename = storage_dir.join(format!(
+                                    "blob_{}.{}",
+                                    i,
+                                    extension_from_mime(blob.mime_type.as_deref().unwrap_or("bin"))
+                                ));
+                                fs::write(&filename, &blob.blob).map_err(|e| {
+                                    NodeErr::fail(NodeError::ExecutionFailed(format!(
+                                        "Failed to write blob: {}",
+                                        e
+                                    )))
+                                })?;
+                                outputs.push(
+                                    serde_json::json!({ "blob": filename.to_string_lossy() }),
+                                );
                             }
-                        }
+                            ResourceContents::Text(text) => {
+                                let storage_dir = resolve_or_create_storage_dir(&context.config)?;
+                                let filename = storage_dir.join(format!("text_{}.txt", i));
+                                fs::write(&filename, &text.text).map_err(|e| {
+                                    NodeErr::fail(NodeError::ExecutionFailed(format!(
+                                        "Failed to write text: {}",
+                                        e
+                                    )))
+                                })?;
+                                outputs.push(
+                                    serde_json::json!({ "text_file": filename.to_string_lossy() }),
+                                );
+                            }
+                        },
                     }
                 }
 
@@ -785,15 +877,23 @@ impl NodeType for ToolNode {
                     Value::Array(outputs)
                 };
 
-                let mapped = if call_result.is_error.unwrap_or(false)  {
+                let mapped = if call_result.is_error.unwrap_or(false) {
                     if self.use_err_map() {
-                        Some(self.err_map.as_ref().unwrap().apply_result(&output_json, &context.config, context.state.all()))
+                        Some(self.err_map.as_ref().unwrap().apply_result(
+                            &output_json,
+                            &context.config,
+                            context.state.all(),
+                        ))
                     } else {
                         None
                     }
                 } else {
                     if self.use_out_map() {
-                        Some(self.out_map.as_ref().unwrap().apply_result(&output_json, &context.config, context.state.all()))
+                        Some(self.out_map.as_ref().unwrap().apply_result(
+                            &output_json,
+                            &context.config,
+                            context.state.all(),
+                        ))
                     } else {
                         None
                     }
@@ -806,7 +906,8 @@ impl NodeType for ToolNode {
                     for (k, v) in mapper_output.config_updates {
                         context.config.insert(k, v);
                     }
-                    let output_message = Message::new(&input.id(), mapper_output.payload, input.session_id());
+                    let output_message =
+                        Message::new(&input.id(), mapper_output.payload, input.session_id());
 
                     let routing = self.build_routing(call_result.is_error.unwrap_or(false));
                     Ok(NodeOut::with_routing(output_message, routing))
@@ -816,11 +917,10 @@ impl NodeType for ToolNode {
                     Ok(NodeOut::with_routing(output_message, routing))
                 }
             }
-            Err(e) => {
-                Err(NodeErr::fail(
-                    NodeError::ExecutionFailed(format!("Tool call failed: {:?}", e))
-                ))
-            }
+            Err(e) => Err(NodeErr::fail(NodeError::ExecutionFailed(format!(
+                "Tool call failed: {:?}",
+                e
+            )))),
         }
     }
     fn clone_box(&self) -> Box<dyn NodeType> {
@@ -828,57 +928,55 @@ impl NodeType for ToolNode {
     }
 }
 
-fn resolve_or_create_storage_dir(
-    config: &DashMap<String, String>,
-) -> Result<PathBuf, NodeErr> {
+fn resolve_or_create_storage_dir(config: &DashMap<String, String>) -> Result<PathBuf, NodeErr> {
     if let Some(dir_str) = config.get("node_storage_dir") {
         let path = PathBuf::from(dir_str.value());
         if !path.exists() {
-            fs::create_dir_all(&path)
-            .map_err(|e| {
-                NodeErr::fail(
-                    NodeError::ExecutionFailed(format!("Failed to create node_storage_dir: {}", e)),
-                )
+            fs::create_dir_all(&path).map_err(|e| {
+                NodeErr::fail(NodeError::ExecutionFailed(format!(
+                    "Failed to create node_storage_dir: {}",
+                    e
+                )))
             })?;
         }
         Ok(path)
     } else {
-        let tempdir = TempDir::new()
-            .map_err(|e| {
-                NodeErr::fail(
-                    NodeError::ExecutionFailed(format!("Failed to create tempdir: {}", e)),
-                )
-            })?;
+        let tempdir = TempDir::new().map_err(|e| {
+            NodeErr::fail(NodeError::ExecutionFailed(format!(
+                "Failed to create tempdir: {}",
+                e
+            )))
+        })?;
         Ok(tempdir.path().to_path_buf())
     }
 }
 
 #[cfg(test)]
 pub mod tests {
-    use std::path::Path;
     use super::*;
     use crate::config::{ConfigManager, MapConfigManager};
     use crate::executor::exports::wasix::mcp::router::{CallToolResult, TextContent, ToolError};
     use crate::flow::session::InMemorySessionStore;
+    use crate::flow::state::{InMemoryState, StateValue};
     use crate::logger::{LogConfig, Logger, OpenTelemetryLogger};
     use crate::message::Message;
     use crate::secret::{EmptySecretsManager, SecretsManager};
-    use crate::flow::state::{InMemoryState, StateValue};
     use serde_json::json;
+    use std::path::Path;
     use tempfile::TempDir;
 
     impl NodeContext {
         pub fn dummy() -> Self {
             let hb = make_handlebars();
-            Self { 
+            Self {
                 session_id: "123".to_string(),
-                state: InMemoryState::new(), 
-                config: DashMap::new(), 
-                executor: Executor::dummy(), 
-                channel_manager: ChannelManager::dummy(), 
-                process_manager: ProcessManager::dummy(), 
-                secrets: SecretsManager(EmptySecretsManager::new()), 
-                channel_origin: None, 
+                state: InMemoryState::new(),
+                config: DashMap::new(),
+                executor: Executor::dummy(),
+                channel_manager: ChannelManager::dummy(),
+                process_manager: ProcessManager::dummy(),
+                secrets: SecretsManager(EmptySecretsManager::new()),
+                channel_origin: None,
                 connections: None,
                 hb,
             }
@@ -886,22 +984,20 @@ pub mod tests {
 
         pub fn mock(result: Result<CallToolResult, ToolError>) -> Self {
             let hb = make_handlebars();
-            Self { 
+            Self {
                 session_id: "123".to_string(),
-                state: InMemoryState::new(), 
-                config: DashMap::new(), 
-                executor: Arc::new(Executor::mock(result)), 
-                channel_manager: ChannelManager::dummy(), 
-                process_manager: ProcessManager::dummy(), 
-                secrets: SecretsManager(EmptySecretsManager::new()), 
-                channel_origin: None, 
+                state: InMemoryState::new(),
+                config: DashMap::new(),
+                executor: Arc::new(Executor::mock(result)),
+                channel_manager: ChannelManager::dummy(),
+                process_manager: ProcessManager::dummy(),
+                secrets: SecretsManager(EmptySecretsManager::new()),
+                channel_origin: None,
                 connections: None,
                 hb,
             }
         }
     }
-
-    
 
     #[derive(Debug, Serialize, Deserialize, JsonSchema)]
     struct EchoNode;
@@ -924,7 +1020,11 @@ pub mod tests {
             schema_for!(EchoNode)
         }
 
-        async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
+        async fn process(
+            &self,
+            input: Message,
+            context: &mut NodeContext,
+        ) -> Result<NodeOut, NodeErr> {
             context.set_state("echoed", StateValue::String("yes".to_string()));
             Ok(NodeOut::with_routing(input, Routing::FollowGraph))
         }
@@ -933,8 +1033,6 @@ pub mod tests {
             Box::new(self.clone())
         }
     }
-
-   
 
     fn make_test_context_with_mock(exec_result: Result<CallToolResult, ToolError>) -> NodeContext {
         NodeContext::mock(exec_result)
@@ -952,21 +1050,29 @@ pub mod tests {
 
         let input = Message::new("test", payload, "sess1".to_string());
         let result = CallToolResult {
-            content: vec![Content::Text(TextContent {text:"{\"result\":\"sunny\"}".into(), annotations: None })],
+            content: vec![Content::Text(TextContent {
+                text: "{\"result\":\"sunny\"}".into(),
+                annotations: None,
+            })],
             is_error: Some(false),
         };
 
         let node = ToolNode::new(
             "fallback_tool".into(),
             "fallback_action".into(),
-            None, None, None,
+            None,
+            None,
+            None,
             Some(vec!["next_success".into()]),
-            Some(vec!["on_error".into()])
+            Some(vec!["on_error".into()]),
         );
 
         let mut ctx = make_test_context_with_mock(Ok(result));
         let out = node.process(input, &mut ctx).await.unwrap();
-        assert_eq!(out.routing(), &Routing::ToNodes(vec!["next_success".into()]));
+        assert_eq!(
+            out.routing(),
+            &Routing::ToNodes(vec!["next_success".into()])
+        );
     }
 
     #[tokio::test]
@@ -975,11 +1081,22 @@ pub mod tests {
         let input = Message::new("static_test", payload.clone(), "sess2".to_string());
 
         let result = CallToolResult {
-            content: vec![Content::Text(TextContent {text:"{\"static\":\"ok\"}".into(), annotations:None})],
+            content: vec![Content::Text(TextContent {
+                text: "{\"static\":\"ok\"}".into(),
+                annotations: None,
+            })],
             is_error: Some(false),
         };
 
-        let node = ToolNode::new("static_tool".into(), "run".into(), None, None, None, None, None);
+        let node = ToolNode::new(
+            "static_tool".into(),
+            "run".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let mut ctx = make_test_context_with_mock(Ok(result));
         let out = node.process(input.clone(), &mut ctx).await.unwrap();
         assert_eq!(out.message().payload()["static"], "ok");
@@ -1000,12 +1117,15 @@ pub mod tests {
         let node = ToolNode::new(
             "fallback".into(),
             "noop".into(),
-            None, None, None,
+            None,
+            None,
+            None,
             Some(vec!["ok_conn".into()]),
-            Some(vec!["err_conn".into()])
+            Some(vec!["err_conn".into()]),
         );
 
-        let mut ctx = make_test_context_with_mock(Err(ToolError::ExecutionError("bad call".into())));
+        let mut ctx =
+            make_test_context_with_mock(Err(ToolError::ExecutionError("bad call".into())));
 
         let err = node.process(input, &mut ctx).await.unwrap_err();
         assert_eq!(err.routing(), &Routing::EndFlow);
@@ -1021,11 +1141,22 @@ pub mod tests {
 
         let input = Message::new("missing", payload.clone(), "sess4".to_string());
         let result = CallToolResult {
-            content: vec![Content::Text(TextContent {text:"{\"fallback\":\"true\"}".into(), annotations: None })],
+            content: vec![Content::Text(TextContent {
+                text: "{\"fallback\":\"true\"}".into(),
+                annotations: None,
+            })],
             is_error: Some(false),
         };
 
-        let node = ToolNode::new("fallback_tool".into(), "fallback_action".into(), None, None, None, None, None);
+        let node = ToolNode::new(
+            "fallback_tool".into(),
+            "fallback_action".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let mut ctx = make_test_context_with_mock(Ok(result));
         let out = node.process(input, &mut ctx).await.unwrap();
 
@@ -1036,20 +1167,42 @@ pub mod tests {
     async fn test_node_context_get_set_delete() {
         let temp_dir = TempDir::new().unwrap();
         let config = DashMap::new();
-        config.insert("node_storage_dir".into(), temp_dir.path().to_string_lossy().to_string());
+        config.insert(
+            "node_storage_dir".into(),
+            temp_dir.path().to_string_lossy().to_string(),
+        );
 
-        let secrets =SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(EmptySecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
-        let executor = Executor::new(secrets.clone(),logging);
+        let executor = Executor::new(secrets.clone(), logging);
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let store =InMemorySessionStore::new(10);
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(),store.clone(), LogConfig::default()).await.expect("could not create channel manager");
+        let store = InMemorySessionStore::new(10);
+        let channel_manager = ChannelManager::new(
+            config_mgr,
+            secrets.clone(),
+            store.clone(),
+            LogConfig::default(),
+        )
+        .await
+        .expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
-        let mut ctx = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor,channel_manager, process_manager, secrets, None);
+        let mut ctx = NodeContext::new(
+            "123".to_string(),
+            InMemoryState::new(),
+            config,
+            executor,
+            channel_manager,
+            process_manager,
+            secrets,
+            None,
+        );
         assert!(ctx.get_state("missing").is_none());
 
         ctx.set_state("key", StateValue::String("value".to_string()));
-        assert_eq!(ctx.get_state("key"), Some(StateValue::String("value".to_string())));
+        assert_eq!(
+            ctx.get_state("key"),
+            Some(StateValue::String("value".to_string()))
+        );
 
         ctx.delete_state("key");
         assert!(ctx.get_state("key").is_none());
@@ -1062,33 +1215,60 @@ pub mod tests {
         assert_eq!(output, r#"Node(EchoNode)"#);
     }
 
-
     #[test]
     fn test_node_error_display() {
         let err = NodeError::InvalidInput("bad".to_string());
         assert_eq!(format!("{}", err), "Invalid input: bad");
     }
 
-
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tool_node_with_text_output() {
         let temp_dir = TempDir::new().unwrap();
         let config = DashMap::new();
-        config.insert("node_storage_dir".into(), temp_dir.path().to_string_lossy().to_string());
+        config.insert(
+            "node_storage_dir".into(),
+            temp_dir.path().to_string_lossy().to_string(),
+        );
 
-        let secrets =SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(EmptySecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
-        let executor = Executor::new(secrets.clone(),logging);
-        let watcher = executor.watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf()).await;
+        let executor = Executor::new(secrets.clone(), logging);
+        let watcher = executor
+            .watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf())
+            .await;
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let store =InMemorySessionStore::new(10);
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(),LogConfig::default()).await.expect("could not create channel manager");
+        let store = InMemorySessionStore::new(10);
+        let channel_manager = ChannelManager::new(
+            config_mgr,
+            secrets.clone(),
+            store.clone(),
+            LogConfig::default(),
+        )
+        .await
+        .expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
-        let mut context = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor, channel_manager, process_manager, secrets, None);
+        let mut context = NodeContext::new(
+            "123".to_string(),
+            InMemoryState::new(),
+            config,
+            executor,
+            channel_manager,
+            process_manager,
+            secrets,
+            None,
+        );
 
-        let node = ToolNode::new("mock_tool".to_string(), "text_output".to_string(),None, None, None, None, None);
-        let msg = Message::new("msg1", json!({"input": "Hello"}),"123".to_string());
+        let node = ToolNode::new(
+            "mock_tool".to_string(),
+            "text_output".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let msg = Message::new("msg1", json!({"input": "Hello"}), "123".to_string());
 
         let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();
@@ -1100,21 +1280,50 @@ pub mod tests {
     async fn test_tool_node_saves_binary_and_text() {
         let temp_dir = TempDir::new().unwrap();
         let config = DashMap::new();
-        config.insert("node_storage_dir".into(), temp_dir.path().to_string_lossy().to_string());
+        config.insert(
+            "node_storage_dir".into(),
+            temp_dir.path().to_string_lossy().to_string(),
+        );
 
-        let secrets =SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(EmptySecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
-        let executor = Executor::new(secrets.clone(),logging);
-        let watcher = executor.watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf()).await;
+        let executor = Executor::new(secrets.clone(), logging);
+        let watcher = executor
+            .watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf())
+            .await;
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
-        let store =InMemorySessionStore::new(10);
-        let channel_manager = ChannelManager::new(config_mgr, secrets.clone(), store.clone(), LogConfig::default()).await.expect("could not create channel manager");
+        let store = InMemorySessionStore::new(10);
+        let channel_manager = ChannelManager::new(
+            config_mgr,
+            secrets.clone(),
+            store.clone(),
+            LogConfig::default(),
+        )
+        .await
+        .expect("could not create channel manager");
         let process_manager = ProcessManager::dummy();
-        let mut context = NodeContext::new("123".to_string(),InMemoryState::new(), config, executor, channel_manager, process_manager, secrets, None);
+        let mut context = NodeContext::new(
+            "123".to_string(),
+            InMemoryState::new(),
+            config,
+            executor,
+            channel_manager,
+            process_manager,
+            secrets,
+            None,
+        );
 
-        let node = ToolNode::new("mock_tool".to_string(), "file_output".to_string(), None, None, None, None, None);
-        let msg = Message::new("msg2", json!({"input": "data"}),"123".to_string());
+        let node = ToolNode::new(
+            "mock_tool".to_string(),
+            "file_output".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let msg = Message::new("msg2", json!({"input": "data"}), "123".to_string());
 
         let result = node.process(msg.clone(), &mut context).await.unwrap();
         let output = result.message.payload();
@@ -1126,9 +1335,7 @@ pub mod tests {
             "Expected file path to exist: {}",
             path
         );
-        
+
         watcher.unwrap().shutdown();
     }
-
 }
-

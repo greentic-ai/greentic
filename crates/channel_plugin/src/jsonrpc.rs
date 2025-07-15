@@ -4,7 +4,6 @@ use tracing::error;
 
 use crate::plugin_actor::Method;
 
-
 /// JSON‑RPC 2.0 core types for Greentic plugins communicated over stdin/stdout.
 ///
 /// These structs intentionally mirror the [JSON‑RPC 2.0 spec](https://www.jsonrpc.org/specification).
@@ -128,7 +127,6 @@ impl Response {
     }
 }
 
-
 /// Strongly‑typed list of JSON‑RPC method names used between the Plugin Manager
 /// and plugin subprocesses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -210,13 +208,12 @@ impl std::str::FromStr for PluginMethod {
             "getSession" => Ok(PluginMethod::GetSession),
             "invalidateSession" => Ok(PluginMethod::InvalidateSession),
             other => {
-                error!("Fix bug in PluginMethod FromStr for {}",other);
+                error!("Fix bug in PluginMethod FromStr for {}", other);
                 Err(())
-            },
+            }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

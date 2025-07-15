@@ -1,9 +1,17 @@
+use crate::{
+    jsonrpc::{Id, Request, Response},
+    message::{
+        CapabilitiesResult, ChannelCapabilities, ChannelState, DrainResult, HealthResult,
+        InitParams, InitResult, ListKeysResult, NameResult, StateResult, StopResult,
+        WaitUntilDrainedResult,
+    },
+    plugin_actor::Method,
+};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use tokio::sync::{mpsc, oneshot};
-use anyhow::{anyhow, Result};
 use uuid::Uuid;
-use crate::{jsonrpc::{Id, Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelState, DrainResult, HealthResult, InitParams, InitResult, ListKeysResult, NameResult, StateResult, StopResult, WaitUntilDrainedResult}, plugin_actor::Method};
 
 #[async_trait]
 pub trait ControlClientType: Send + Sync + 'static {
@@ -26,11 +34,8 @@ pub enum ControlClient {
     // Future: Grpc(GrpcControlClient), etc.
 }
 
-
 impl ControlClient {
-    pub fn new(
-        tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>,
-    ) -> Self {
+    pub fn new(tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>) -> Self {
         ControlClient::Rpc(RpcControlClient::new(tx))
     }
 }
@@ -111,19 +116,13 @@ pub struct RpcControlClient {
 }
 
 impl RpcControlClient {
-    pub fn new(
-        tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>,
-    ) -> Self {
+    pub fn new(tx: mpsc::Sender<(Request, oneshot::Sender<Response>)>) -> Self {
         Self { tx }
     }
 
     /// Generic helper: send `method` with optional `params` and
     /// deserialize the JSON-RPC result into `R`.
-    async fn call<R>(
-        &self,
-        method: Method,
-        params: Option<serde_json::Value>,
-    ) -> Result<R>
+    async fn call<R>(&self, method: Method, params: Option<serde_json::Value>) -> Result<R>
     where
         R: DeserializeOwned,
     {
@@ -143,9 +142,7 @@ impl RpcControlClient {
         if let Some(err) = rsp.error {
             return Err(anyhow!("RPC error: {:?}", err));
         }
-        let val = rsp
-            .result
-            .ok_or_else(|| anyhow!("missing result field"))?;
+        let val = rsp.result.ok_or_else(|| anyhow!("missing result field"))?;
         Ok(serde_json::from_value(val)?)
     }
 }
@@ -153,16 +150,21 @@ impl RpcControlClient {
 #[async_trait]
 impl ControlClientType for RpcControlClient {
     async fn name(&self) -> anyhow::Result<String> {
-        let name: NameResult = self.call::<NameResult>(Method::Name,None).await.expect("Could not get name");
+        let name: NameResult = self
+            .call::<NameResult>(Method::Name, None)
+            .await
+            .expect("Could not get name");
         return Ok(name.name);
     }
 
     async fn init(&self, p: InitParams) -> Result<InitResult> {
-        self.call(Method::Init, Some(serde_json::to_value(p)?)).await
+        self.call(Method::Init, Some(serde_json::to_value(p)?))
+            .await
     }
 
     async fn start(&self, p: InitParams) -> Result<InitResult> {
-        self.call(Method::Start, Some(serde_json::to_value(p)?)).await
+        self.call(Method::Start, Some(serde_json::to_value(p)?))
+            .await
     }
 
     async fn drain(&self) -> Result<DrainResult> {
@@ -174,7 +176,10 @@ impl ControlClientType for RpcControlClient {
     }
 
     async fn state(&self) -> Result<ChannelState> {
-        let state: StateResult = self.call::<StateResult>(Method::State,None).await.expect("Could not get state");
+        let state: StateResult = self
+            .call::<StateResult>(Method::State, None)
+            .await
+            .expect("Could not get state");
         return Ok(state.state);
     }
 
@@ -183,7 +188,10 @@ impl ControlClientType for RpcControlClient {
     }
 
     async fn capabilities(&self) -> Result<ChannelCapabilities> {
-        let caps: CapabilitiesResult = self.call::<CapabilitiesResult>(Method::Capabilities,None).await.expect("Could not get capabilities");
+        let caps: CapabilitiesResult = self
+            .call::<CapabilitiesResult>(Method::Capabilities, None)
+            .await
+            .expect("Could not get capabilities");
         return Ok(caps.capabilities);
     }
 

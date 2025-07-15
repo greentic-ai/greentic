@@ -5,11 +5,11 @@ use dashmap::DashMap;
 use handlebars::Handlebars;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::flow::state::StateValue;
 
-#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, PartialEq )]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, PartialEq)]
 #[serde(tag = "type", rename = "map", rename_all = "snake_case")]
 pub enum Mapper {
     Copy(CopyMapper),
@@ -17,10 +17,10 @@ pub enum Mapper {
     Script(ScriptMapper),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema )]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(rename = "map_out")]
 pub enum MapperOutput {
-    Simple(Value),                        // used for input mapping
+    Simple(Value), // used for input mapping
     Result {
         payload: Value,
         #[schemars(with = "std::collections::HashMap<String, StateValue>")]
@@ -30,7 +30,7 @@ pub enum MapperOutput {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema )]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(rename = "map_res")]
 pub struct MapperResult {
     pub payload: Value,
@@ -79,11 +79,11 @@ impl Mapper {
 
 /// A mapper that copies selected fields from payload, config, and state,
 /// with an optional default value in case the field is not found.
-/// 
+///
 /// Config and state only accept strings as keys. Payload also accepts
 /// JSON pointers so you can look up a value inside the payload, e.g.
 /// /parameters/days
-/// 
+///
 /// # Example
 /// ```json
 /// {
@@ -118,8 +118,14 @@ impl PartialEq for CopyKey {
             (CopyKey::Key(a), CopyKey::Key(b)) => a == b,
             (CopyKey::WithDefault(a), CopyKey::WithDefault(b)) => {
                 // Convert DashMap to regular HashMap for comparison
-                let a_map: HashMap<_, _> = a.iter().map(|entry| (entry.key().clone(), entry.value().clone())).collect();
-                let b_map: HashMap<_, _> = b.iter().map(|entry| (entry.key().clone(), entry.value().clone())).collect();
+                let a_map: HashMap<_, _> = a
+                    .iter()
+                    .map(|entry| (entry.key().clone(), entry.value().clone()))
+                    .collect();
+                let b_map: HashMap<_, _> = b
+                    .iter()
+                    .map(|entry| (entry.key().clone(), entry.value().clone()))
+                    .collect();
                 a_map == b_map
             }
             _ => false,
@@ -131,7 +137,10 @@ impl CopyKey {
         match self {
             CopyKey::Key(k) => (k.clone(), None),
             CopyKey::WithDefault(map) => {
-                let entry = map.iter().next().expect("default map should have one entry");
+                let entry = map
+                    .iter()
+                    .next()
+                    .expect("default map should have one entry");
                 let k = entry.key();
                 let v = entry.value();
                 (k.clone(), Some(v.clone()))
@@ -216,23 +225,43 @@ impl CopyMapper {
 #[serde(rename = "rename")]
 pub struct RenameMapper(
     #[schemars(with = "std::collections::HashMap<String, StateValue>")]
-    pub DashMap<String, SourceField>
+    pub  DashMap<String, SourceField>,
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(tag = "from", rename="source")]
+#[serde(tag = "from", rename = "source")]
 pub enum SourceField {
     #[serde(rename = "payload")]
-    Payload { key: String, #[serde(default)] default: Option<Value> },
+    Payload {
+        key: String,
+        #[serde(default)]
+        default: Option<Value>,
+    },
     #[serde(rename = "config")]
-    Config { key: String, #[serde(default)] default: Option<Value> },
+    Config {
+        key: String,
+        #[serde(default)]
+        default: Option<Value>,
+    },
     #[serde(rename = "state")]
-    State { key: String, #[serde(default)] default: Option<Value> },
+    State {
+        key: String,
+        #[serde(default)]
+        default: Option<Value>,
+    },
 }
 impl PartialEq for RenameMapper {
     fn eq(&self, other: &Self) -> bool {
-        let self_map: HashMap<_, _> = self.0.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect();
-        let other_map: HashMap<_, _> = other.0.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect();
+        let self_map: HashMap<_, _> = self
+            .0
+            .iter()
+            .map(|kv| (kv.key().clone(), kv.value().clone()))
+            .collect();
+        let other_map: HashMap<_, _> = other
+            .0
+            .iter()
+            .map(|kv| (kv.key().clone(), kv.value().clone()))
+            .collect();
         self_map == other_map
     }
 }
@@ -243,7 +272,7 @@ impl RenameMapper {
         config: &DashMap<String, String>,
         state: Vec<(String, StateValue)>,
     ) -> Value {
-       let mut out = serde_json::Map::new();
+        let mut out = serde_json::Map::new();
 
         for entry in self.0.iter() {
             let out_key = entry.key();
@@ -253,16 +282,15 @@ impl RenameMapper {
                 SourceField::Payload { key, default } => {
                     payload.get(key).cloned().or_else(|| default.clone())
                 }
-                SourceField::Config { key, default } => {
-                    config.get(key).map(|v| json!(v.clone())).or_else(|| default.clone())
-                }
-                SourceField::State { key, default } => {
-                    state
+                SourceField::Config { key, default } => config
+                    .get(key)
+                    .map(|v| json!(v.clone()))
+                    .or_else(|| default.clone()),
+                SourceField::State { key, default } => state
                     .iter()
                     .find(|(k, _)| k == key)
                     .map(|(_, v)| v.to_json())
-                    .or_else(|| default.clone())
-                }
+                    .or_else(|| default.clone()),
             };
 
             if let Some(v) = val {
@@ -270,10 +298,8 @@ impl RenameMapper {
             }
         }
 
-
         Value::Object(out)
     }
-    
 }
 
 // ---------------------------------------------
@@ -290,7 +316,7 @@ impl RenameMapper {
 /// ```
 /// Variables from `payload`, `config`, and `state` are flattened and available
 /// to the template context.
-/// 
+///
 /// If the payload variable is an array coming from a tool, then automatically it will
 /// be converted into an object with key root: { ... the array ... }.
 /// You can then get information out in the following way:
@@ -322,7 +348,7 @@ impl ScriptMapper {
             merged.insert(entry.key().clone(), Value::String(entry.value().clone()));
         }
 
-        for (key,value) in state.iter() {
+        for (key, value) in state.iter() {
             merged.insert(key.clone(), value.to_json());
         }
 
@@ -358,7 +384,7 @@ impl ScriptMapper {
             merged.insert(entry.key().clone(), Value::String(entry.value().clone()));
         }
 
-        for (key,value) in state.iter() {
+        for (key, value) in state.iter() {
             merged.insert(key.clone(), value.to_json());
         }
 
@@ -395,24 +421,24 @@ impl ScriptMapper {
                 }
                 _ => MapperResult::from_payload(json!({ "error": "invalid json structure" })),
             },
-            Err(e) => MapperResult::from_payload(json!({ "error": format!("template error: {}", e) })),
+            Err(e) => {
+                MapperResult::from_payload(json!({ "error": format!("template error: {}", e) }))
+            }
         }
-    
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use crate::flow::state::StateValue;
+    use serde_json::json;
 
     #[test]
     fn test_copy_mapper_with_slash_pointer_and_simple_keys() {
         use super::*;
-        use serde_json::json;
         use crate::flow::state::StateValue;
+        use serde_json::json;
 
         // Mapper that pulls q and days out of a nested "parameters" object,
         // plus simple keys for config and state.
@@ -421,12 +447,8 @@ mod tests {
                 CopyKey::Key("/parameters/q".into()),
                 CopyKey::Key("/parameters/days".into()),
             ]),
-            config: Some(vec![
-                CopyKey::Key("env".into()),
-            ]),
-            state: Some(vec![
-                CopyKey::Key("done".into()),
-            ]),
+            config: Some(vec![CopyKey::Key("env".into())]),
+            state: Some(vec![CopyKey::Key("done".into())]),
         };
 
         // Nested payload, plus flat config and state maps
@@ -439,7 +461,8 @@ mod tests {
         let config: DashMap<String, String> = [("env".to_string(), "production".to_string())]
             .into_iter()
             .collect();
-        let state: Vec<(String, StateValue)> = vec![("done".to_string(), StateValue::String("yes".into()))];
+        let state: Vec<(String, StateValue)> =
+            vec![("done".to_string(), StateValue::String("yes".into()))];
 
         let output = mapper.apply(&payload, &config, state);
 
@@ -463,24 +486,23 @@ mod tests {
                 }),
                 CopyKey::Key("b".into()),
             ]),
-            config: Some(vec![
-                CopyKey::WithDefault({
-                    let map = DashMap::new();
-                    map.insert("env".into(), json!("prod"));
-                    map
-                }),
-            ]),
-            state: Some(vec![
-                CopyKey::WithDefault({
-                    let map = DashMap::new();
-                    map.insert("done".into(), json!("yes"));
-                    map
-                }),
-            ]),
+            config: Some(vec![CopyKey::WithDefault({
+                let map = DashMap::new();
+                map.insert("env".into(), json!("prod"));
+                map
+            })]),
+            state: Some(vec![CopyKey::WithDefault({
+                let map = DashMap::new();
+                map.insert("done".into(), json!("yes"));
+                map
+            })]),
         };
 
         let payload = json!({ "a": "from_payload", "b": "from_payload_b" });
-        let config = [("env".into(), "from_config".into())].iter().cloned().collect();
+        let config = [("env".into(), "from_config".into())]
+            .iter()
+            .cloned()
+            .collect();
         let state = vec![("done".into(), StateValue::String("from_state".into()))];
 
         let output = mapper.apply(&payload, &config, state);
@@ -493,23 +515,35 @@ mod tests {
     #[test]
     fn test_rename_mapper() {
         let mapping = DashMap::new();
-        mapping.insert("x".into(), SourceField::Payload {
-            key: "a".into(),
-            default: Some(json!("default_val")),
-        });
-        mapping.insert("y".into(), SourceField::Config {
-            key: "b".into(),
-            default: None,
-        });
-        mapping.insert("z".into(), SourceField::State {
-            key: "c".into(),
-            default: Some(json!("fallback_state")),
-        });
+        mapping.insert(
+            "x".into(),
+            SourceField::Payload {
+                key: "a".into(),
+                default: Some(json!("default_val")),
+            },
+        );
+        mapping.insert(
+            "y".into(),
+            SourceField::Config {
+                key: "b".into(),
+                default: None,
+            },
+        );
+        mapping.insert(
+            "z".into(),
+            SourceField::State {
+                key: "c".into(),
+                default: Some(json!("fallback_state")),
+            },
+        );
 
         let mapper = RenameMapper(mapping);
 
         let payload = json!({ "a": "payload_val" });
-        let config = [("b".into(), "config_val".into())].iter().cloned().collect();
+        let config = [("b".into(), "config_val".into())]
+            .iter()
+            .cloned()
+            .collect();
         let state = vec![("c".into(), StateValue::String("state_val".into()))];
 
         let output = mapper.apply(&payload, &config, state);
@@ -558,7 +592,8 @@ mod tests {
                 "payload": { "message": "{{msg}}" },
                 "state": { "done": "true" },
                 "config": { "step": "post" }
-            }"#.into(),
+            }"#
+            .into(),
         };
 
         let output = json!({ "msg": "Completed" });
@@ -568,8 +603,14 @@ mod tests {
         let result = mapper.apply_result(&output, &config, state);
 
         assert_eq!(result.payload["message"], "Completed");
-        assert_eq!(result.state_updates.get("done").as_deref(), Some(&StateValue::String("true".into())));
-        assert_eq!(result.config_updates.get("step").as_deref(), Some(&"post".to_string()));
+        assert_eq!(
+            result.state_updates.get("done").as_deref(),
+            Some(&StateValue::String("true".into()))
+        );
+        assert_eq!(
+            result.config_updates.get("step").as_deref(),
+            Some(&"post".to_string())
+        );
     }
 
     #[test]
@@ -577,7 +618,8 @@ mod tests {
         let mapper = ScriptMapper {
             template: r#"{
                 "payload": { "info": "{{data}}" }
-            }"#.into(),
+            }"#
+            .into(),
         };
 
         let output = json!({ "data": "X" });
@@ -627,7 +669,8 @@ mod tests {
         use crate::mapper::{Mapper, ScriptMapper};
         use serde_json::json;
 
-        let input_json = serde_json::from_str::<serde_json::Value>(r#"
+        let input_json = serde_json::from_str::<serde_json::Value>(
+            r#"
         [
         {
             "current": {
@@ -671,12 +714,16 @@ mod tests {
             }
         }
         ]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         // Extract temperature from input[0].current.temp_c
         let script = r#"{"payload": { "temperature": {{root.[0].current.temp_c}} }}"#;
 
-        let mapper = ScriptMapper { template: script.into() };
+        let mapper = ScriptMapper {
+            template: script.into(),
+        };
         let mapper = Mapper::Script(mapper);
 
         let result = mapper.apply_result(&input_json, &DashMap::new(), vec![]);
@@ -687,6 +734,4 @@ mod tests {
             "Expected temperature to be extracted correctly"
         );
     }
-
-
 }

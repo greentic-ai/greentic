@@ -2,12 +2,12 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
 use std::{env, fs, path::PathBuf};
+use tracing::{error, info};
 
 #[async_trait::async_trait]
-#[typetag::serde] 
-pub trait ConfigManagerType: Send + Sync  {
+#[typetag::serde]
+pub trait ConfigManagerType: Send + Sync {
     async fn as_vec(&self) -> Vec<(String, String)> {
         let mut config = vec![];
         for key in self.keys().await {
@@ -25,7 +25,7 @@ pub trait ConfigManagerType: Send + Sync  {
     fn debug_box(&self) -> String;
 }
 
-#[derive(Serialize, Deserialize )]
+#[derive(Serialize, Deserialize)]
 pub struct ConfigManager(pub Box<dyn ConfigManagerType>);
 
 impl ConfigManager {
@@ -47,7 +47,7 @@ impl std::fmt::Debug for ConfigManager {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EnvConfigManager{
+pub struct EnvConfigManager {
     env_file: PathBuf,
 }
 
@@ -57,7 +57,7 @@ impl EnvConfigManager {
             dotenvy::from_path(env_file.clone()).ok();
             info!("Loaded .env from {}", env_file.display());
         } else {
-            error!("could not load .env from {}",env_file.display())
+            error!("could not load .env from {}", env_file.display())
         }
 
         Box::new(Self { env_file })
@@ -67,7 +67,6 @@ impl EnvConfigManager {
 #[typetag::serde]
 #[async_trait]
 impl ConfigManagerType for EnvConfigManager {
-
     async fn keys(&self) -> Vec<String> {
         env::vars().map(|(k, _)| k).collect()
     }
@@ -76,7 +75,9 @@ impl ConfigManagerType for EnvConfigManager {
     }
 
     async fn set(&self, key: &str, value: &str) -> Result<(), String> {
-        unsafe { env::set_var(key, value); };
+        unsafe {
+            env::set_var(key, value);
+        };
         // Update .env file
         let env_path = &self.env_file;
         let content = fs::read_to_string(env_path).unwrap_or_default();
@@ -105,8 +106,10 @@ impl ConfigManagerType for EnvConfigManager {
         Ok(())
     }
 
-    async fn del(&self, key: &str,) {
-        unsafe { env::remove_var(key ); };
+    async fn del(&self, key: &str) {
+        unsafe {
+            env::remove_var(key);
+        };
         // Remove from file
         let env_path = &self.env_file;
         if let Ok(content) = fs::read_to_string(env_path) {
@@ -135,8 +138,6 @@ impl ConfigManagerType for EnvConfigManager {
     }
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MapConfigManager {
     #[schemars(with = "std::collections::HashMap<String, String>")]
@@ -145,7 +146,9 @@ pub struct MapConfigManager {
 
 impl MapConfigManager {
     pub fn new() -> Box<Self> {
-        Box::new(Self{map:DashMap::new()})
+        Box::new(Self {
+            map: DashMap::new(),
+        })
     }
 }
 
@@ -165,7 +168,7 @@ impl ConfigManagerType for MapConfigManager {
         Ok(())
     }
 
-    async fn del(&self, key: &str,) {
+    async fn del(&self, key: &str) {
         self.map.remove(key);
     }
 
@@ -180,8 +183,8 @@ impl ConfigManagerType for MapConfigManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::{tempdir, TempDir};
     use std::fs::write;
+    use tempfile::{TempDir, tempdir};
 
     #[tokio::test]
     async fn test_map_config_manager_basic() {
@@ -231,7 +234,7 @@ mod tests {
         // Save existing value (if any)
         let old_value = std::env::var(key).ok();
 
-        unsafe{std::env::set_var(key, value)};
+        unsafe { std::env::set_var(key, value) };
 
         let mgr = EnvConfigManager::new(PathBuf::from("/nonexistent.env")); // No load
 
@@ -240,9 +243,9 @@ mod tests {
 
         // Clean up
         if let Some(v) = old_value {
-            unsafe{std::env::set_var(key, v)};
+            unsafe { std::env::set_var(key, v) };
         } else {
-            unsafe{std::env::remove_var(key)};
+            unsafe { std::env::remove_var(key) };
         }
     }
 
@@ -268,7 +271,7 @@ mod tests {
 
         // Restore original value if it existed
         if let Some(v) = backup {
-            unsafe {std::env::set_var(key, v)};
+            unsafe { std::env::set_var(key, v) };
         }
     }
 

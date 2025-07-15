@@ -6,15 +6,21 @@ use chrono::{DateTime, Utc};
 use chrono_english::parse_date_string;
 use handlebars::Handlebars;
 use regex::Regex;
-use schemars::{Schema, schema_for, JsonSchema};
-use serde_json::{json,  Value as JsonValue};
+use schemars::{JsonSchema, Schema, schema_for};
 use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
     ser::SerializeMap,
-    Deserialize, Deserializer, Serialize, Serializer,
 };
+use serde_json::{Value as JsonValue, json};
 
-use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, util::render_handlebars};
+use crate::{
+    agent::manager::BuiltInAgent,
+    flow::state::StateValue,
+    message::Message,
+    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing},
+    util::render_handlebars,
+};
 /// A QA process allows asking users a series of questions and storing their answers.
 /// It supports different types of questions like text, number, choice, date, and LLM (AI-powered).
 /// Each answer type can define validation rules (like number range or regex), and some types can specify constraints (like `max_words`).
@@ -112,7 +118,7 @@ use crate::{agent::manager::BuiltInAgent, flow::state::StateValue, message::Mess
 ///
 /// ### Fallback mechanism
 /// For **text**, **number**, **choice**, and **date**, the fallback is triggered *only* when validation or constraints fail (like regex mismatch, out-of-range number, unmatched choice, etc.).
-/// 
+///
 /// The fallback agent does **not** reject the answer. Instead, it attempts to:
 /// - Clean or extract the intended meaning
 /// - Reformat the user’s response to match expected format
@@ -220,15 +226,17 @@ pub struct QAProcessNode {
 #[async_trait]
 #[typetag::serde]
 impl NodeType for QAProcessNode {
-    fn type_name(&self) -> String { "qa".into() }
-    fn schema(&self) -> Schema { schema_for!(QAProcessConfig) }
+    fn type_name(&self) -> String {
+        "qa".into()
+    }
+    fn schema(&self) -> Schema {
+        schema_for!(QAProcessConfig)
+    }
 
-    async fn process(&self, msg: Message, ctx: &mut NodeContext)
-      -> Result<NodeOut, NodeErr>
-    {
+    async fn process(&self, msg: Message, ctx: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         let session = msg.session_id();
 
-         // read (or default) our little counter
+        // read (or default) our little counter
         let idx_val = ctx
             .get_state("qa.current_question")
             .unwrap_or(StateValue::Integer(0));
@@ -244,7 +252,6 @@ impl NodeType for QAProcessNode {
             first_time = true;
         }
 
-
         // 🧠 If this is *not* the first message, we should handle the answer from last_q
         if !first_time && idx > 0 && idx <= self.config.questions.len() {
             let last_q = &self.config.questions[idx - 1];
@@ -252,33 +259,45 @@ impl NodeType for QAProcessNode {
             let text = extract_raw_text(&payload_val);
             match parse_and_validate(&text, &last_q.answer_type, last_q.validate.clone()) {
                 Ok(parsed_json) => {
-                    let state_val = StateValue::try_from(parsed_json.clone())
-                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(
-                            format!("Failed to convert answer to StateValue: {:?}", e)
-                        )))?;
+                    let state_val = StateValue::try_from(parsed_json.clone()).map_err(|e| {
+                        NodeErr::fail(NodeError::ExecutionFailed(format!(
+                            "Failed to convert answer to StateValue: {:?}",
+                            e
+                        )))
+                    })?;
                     ctx.set_state(&last_q.state_key, state_val);
                 }
                 Err(e) if e == "fallback_trigger" => {
                     let agent = self.config.fallback_agent.clone().unwrap();
-                    
+
                     // Prepare new message for the fallback agent
                     let input_msg = Message::new(
                         &msg.id(),
                         msg.payload().clone(), // or wrap it in `{ "input": ... }` if needed
                         msg.session_id(),
                     );
-                    
+
                     // Call the agent node
-                    let agent_out = agent.process(input_msg, ctx).await.map_err(|e| 
-                        NodeErr::fail(NodeError::ExecutionFailed(format!("Fallback agent error: {:?}", e)))
-                    )?;
+                    let agent_out = agent.process(input_msg, ctx).await.map_err(|e| {
+                        NodeErr::fail(NodeError::ExecutionFailed(format!(
+                            "Fallback agent error: {:?}",
+                            e
+                        )))
+                    })?;
 
                     match agent_out.routing() {
                         Routing::ReplyToOrigin => {
                             // need more information
                             return Ok(agent_out);
-                        },
-                        _ => return run_routing_rules_against_state(ctx, &msg.id(), msg.session_id(), self.config.routing.clone()),
+                        }
+                        _ => {
+                            return run_routing_rules_against_state(
+                                ctx,
+                                &msg.id(),
+                                msg.session_id(),
+                                self.config.routing.clone(),
+                            );
+                        }
                     }
                 }
                 Err(err) => {
@@ -291,36 +310,34 @@ impl NodeType for QAProcessNode {
                     );
                     return Ok(NodeOut::with_routing(out, Routing::FollowGraph));
                 }
-                
             }
         }
 
         // 🔁 Ask next question (if any)
         if idx < self.config.questions.len() {
             // prompt
-            
+
             let qcfg = self.config.questions.get(idx).unwrap();
             let welcome = render_handlebars(&self.config.welcome_template, &ctx.get_all_state());
             let prompt = render_handlebars(&qcfg.prompt, &ctx.get_all_state());
             let msg_text = match first_time {
-                true => format!("{}\n{}",welcome,prompt),
+                true => format!("{}\n{}", welcome, prompt),
                 false => prompt,
             };
-            let out = Message::new(
-                &msg.id(),
-                json!({ "text": msg_text }),
-                session.to_string(),
-            );
+            let out = Message::new(&msg.id(), json!({ "text": msg_text }), session.to_string());
             let next = (idx + 1) as i64;
             ctx.set_state("qa.current_question", StateValue::Integer(next));
 
             return Ok(NodeOut::reply(out));
         }
 
-
         // 4) All done! run routing rules against ctx.state
-        return run_routing_rules_against_state(ctx, &msg.id(), msg.session_id(), self.config.routing.clone());
-        
+        return run_routing_rules_against_state(
+            ctx,
+            &msg.id(),
+            msg.session_id(),
+            self.config.routing.clone(),
+        );
     }
 
     fn clone_box(&self) -> Box<dyn NodeType> {
@@ -328,7 +345,12 @@ impl NodeType for QAProcessNode {
     }
 }
 
-fn run_routing_rules_against_state(ctx: &mut NodeContext, msg_id: &str, session_id: String, routing: Vec<RoutingRule> ) -> Result<NodeOut, NodeErr> {
+fn run_routing_rules_against_state(
+    ctx: &mut NodeContext,
+    msg_id: &str,
+    session_id: String,
+    routing: Vec<RoutingRule>,
+) -> Result<NodeOut, NodeErr> {
     let answers = ctx.get_all_state();
 
     let mut json_answers = serde_json::Map::new();
@@ -340,39 +362,38 @@ fn run_routing_rules_against_state(ctx: &mut NodeContext, msg_id: &str, session_
         if rule.matches(&json_answers) {
             let payload = JsonValue::Object(json_answers.clone());
 
-            let out_msg = Message::new(
-                msg_id,
-                payload,
-                session_id,
-            );
+            let out_msg = Message::new(msg_id, payload, session_id);
             // reset
             ctx.delete_state("qa.current_question");
 
-            return Ok(NodeOut::with_routing(out_msg, Routing::ToNode(rule.to.clone())));
+            return Ok(NodeOut::with_routing(
+                out_msg,
+                Routing::ToNode(rule.to.clone()),
+            ));
         }
     }
 
     // reset
     ctx.delete_state("qa.current_question");
     Err(NodeErr::fail(NodeError::ExecutionFailed(
-        "no routing rule matched".into())))
+        "no routing rule matched".into(),
+    )))
 }
 
 fn extract_raw_text(value: &serde_json::Value) -> String {
     // 1. Try to parse as one or more MessageContent
     if let Ok(mc) = serde_json::from_value::<MessageContent>(value.clone()) {
-        if let MessageContent::Text{text} = mc {
+        if let MessageContent::Text { text } = mc {
             return text;
         }
     }
     if let Ok(vec) = serde_json::from_value::<Vec<MessageContent>>(value.clone()) {
         for mc in vec {
-            if let MessageContent::Text{text} = mc {
+            if let MessageContent::Text { text } = mc {
                 return text;
             }
         }
     }
-
 
     // 2. Check value["text"]
     if let Some(text_val) = value.get("text").and_then(|v| v.as_str()) {
@@ -380,25 +401,27 @@ fn extract_raw_text(value: &serde_json::Value) -> String {
     }
 
     // 3. Check value["content"]["Text"]
-    if let Some(text_val) = value.get("content")
-                                 .and_then(|c| c.get("Text"))
-                                 .and_then(|v| v.as_str()) {
+    if let Some(text_val) = value
+        .get("content")
+        .and_then(|c| c.get("Text"))
+        .and_then(|v| v.as_str())
+    {
         return text_val.to_string();
     }
 
     // 4. Fallback: if it's a JSON string, extract it
     if let Some(s) = value.as_str() {
-        return s.to_string();  // <- clean "Alice"
+        return s.to_string(); // <- clean "Alice"
     }
 
     // 5. Fallback: stringify the full JSON
     value.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, )]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionState {
-  current_question: usize,
-  answers: HashMap<String, JsonValue>,
+    current_question: usize,
+    answers: HashMap<String, JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -463,7 +486,7 @@ pub enum AnswerType {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_words: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        dialect: Option<Dialect> 
+        dialect: Option<Dialect>,
     },
     Choice {
         options: Vec<String>,
@@ -524,11 +547,8 @@ impl RoutingRule {
 impl Condition {
     pub fn matches(&self, answers: &serde_json::Map<String, JsonValue>) -> bool {
         match self {
-
             Condition::Equals { question_id, value } => {
-                answers
-                    .get(question_id)
-                    .map_or(false, |v| v == value)
+                answers.get(question_id).map_or(false, |v| v == value)
             }
 
             Condition::Custom { expr } => {
@@ -545,23 +565,24 @@ impl Condition {
                 }
             }
 
-            Condition::GreaterThan { question_id, threshold } => {
-                answers
-                    .get(question_id)
-                    .and_then(|v| v.as_f64())
-                    .map_or(false, |n| n > *threshold)
-            }
+            Condition::GreaterThan {
+                question_id,
+                threshold,
+            } => answers
+                .get(question_id)
+                .and_then(|v| v.as_f64())
+                .map_or(false, |n| n > *threshold),
 
-            Condition::LessThan { question_id, threshold } => {
-                answers
-                    .get(question_id)
-                    .and_then(|v| v.as_f64())
-                    .map_or(false, |n| n < *threshold)
-            }
+            Condition::LessThan {
+                question_id,
+                threshold,
+            } => answers
+                .get(question_id)
+                .and_then(|v| v.as_f64())
+                .map_or(false, |n| n < *threshold),
         }
     }
 }
-
 
 /// Try to parse the raw string into the given `answer_type`, then optionally
 /// apply `validate` (regex or numeric range).  On success you get back a
@@ -583,8 +604,7 @@ pub fn parse_and_validate(
             }
             // If the answer does not match the regex, fallback to LLM
             if let Some(re) = regex {
-                let regex = Regex::new(re)
-                    .map_err(|e| format!("internal regex error: {}", e))?;
+                let regex = Regex::new(re).map_err(|e| format!("internal regex error: {}", e))?;
                 if !regex.is_match(raw) {
                     return Err("fallback_trigger".into());
                 }
@@ -598,9 +618,15 @@ pub fn parse_and_validate(
                     return Err("fallback_trigger".into());
                 }
             }
-            let v: f64 = raw.trim().parse().map_err(|_| "please enter a number".to_string())?;
+            let v: f64 = raw
+                .trim()
+                .parse()
+                .map_err(|_| "please enter a number".to_string())?;
             // range check if given
-            if let Some(ValidationRule::Range { range: RangeParams{min, max }}) = validate {
+            if let Some(ValidationRule::Range {
+                range: RangeParams { min, max },
+            }) = validate
+            {
                 if v < min || v > max {
                     return Err(format!("must be between {} and {}", min, max));
                 }
@@ -615,8 +641,8 @@ pub fn parse_and_validate(
                 // 3 / 42 / -7      → integer representation
                 Number::from(
                     raw.trim()
-                    .parse::<i64>()
-                    .map_err(|_| "please enter a number")?
+                        .parse::<i64>()
+                        .map_err(|_| "please enter a number")?,
                 )
             };
 
@@ -662,11 +688,11 @@ pub fn parse_and_validate(
             {
                 return Ok(JsonValue::String(found.clone()));
             }
-             // ❌ If no match, return user-friendly error instead of fallback_trigger
+            // ❌ If no match, return user-friendly error instead of fallback_trigger
             let choices = options.join(", ");
             Err(format!("please choose one of: {}", choices))
-                }
-            }
+        }
+    }
 }
 
 fn looks_like_float(raw: &str) -> bool {
@@ -677,10 +703,21 @@ fn looks_like_float(raw: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Condition {
-    Equals { question_id: String, value: JsonValue },
-    Custom { expr: String },
-    GreaterThan { question_id: String, threshold: f64 },
-    LessThan    { question_id: String, threshold: f64 },
+    Equals {
+        question_id: String,
+        value: JsonValue,
+    },
+    Custom {
+        expr: String,
+    },
+    GreaterThan {
+        question_id: String,
+        threshold: f64,
+    },
+    LessThan {
+        question_id: String,
+        threshold: f64,
+    },
 }
 
 impl Serialize for Condition {
@@ -692,25 +729,40 @@ impl Serialize for Condition {
         let mut map = ser.serialize_map(Some(1))?;
         match self {
             Condition::Equals { question_id, value } => {
-                map.serialize_entry("equals", &json!({
-                    "question_id": question_id,
-                    "value": value
-                }))?;
+                map.serialize_entry(
+                    "equals",
+                    &json!({
+                        "question_id": question_id,
+                        "value": value
+                    }),
+                )?;
             }
             Condition::Custom { expr } => {
                 map.serialize_entry("custom", &json!({ "expr": expr }))?;
             }
-            Condition::GreaterThan { question_id, threshold } => {
-                map.serialize_entry("greater_than", &json!({
-                    "question_id": question_id,
-                    "threshold": threshold
-                }))?;
+            Condition::GreaterThan {
+                question_id,
+                threshold,
+            } => {
+                map.serialize_entry(
+                    "greater_than",
+                    &json!({
+                        "question_id": question_id,
+                        "threshold": threshold
+                    }),
+                )?;
             }
-            Condition::LessThan { question_id, threshold } => {
-                map.serialize_entry("less_than", &json!({
-                    "question_id": question_id,
-                    "threshold": threshold
-                }))?;
+            Condition::LessThan {
+                question_id,
+                threshold,
+            } => {
+                map.serialize_entry(
+                    "less_than",
+                    &json!({
+                        "question_id": question_id,
+                        "threshold": threshold
+                    }),
+                )?;
             }
         }
         map.end()
@@ -740,11 +792,13 @@ impl<'de> Deserialize<'de> for Condition {
                         // expect a map mapping question_id→…, value→…
                         let m: HashMap<String, serde_json::Value> =
                             serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
-                        let question_id = m.get("question_id")
+                        let question_id = m
+                            .get("question_id")
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| de::Error::custom("Equals.question_id must be string"))?
                             .to_string();
-                        let value = m.get("value")
+                        let value = m
+                            .get("value")
                             .cloned()
                             .ok_or_else(|| de::Error::custom("Equals.value missing"))?;
                         Ok(Condition::Equals { question_id, value })
@@ -752,7 +806,8 @@ impl<'de> Deserialize<'de> for Condition {
                     "custom" => {
                         let m: HashMap<String, String> =
                             serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
-                        let expr = m.get("expr")
+                        let expr = m
+                            .get("expr")
                             .cloned()
                             .ok_or_else(|| de::Error::custom("Custom.expr missing"))?;
                         Ok(Condition::Custom { expr })
@@ -760,30 +815,45 @@ impl<'de> Deserialize<'de> for Condition {
                     "greater_than" => {
                         let m: HashMap<String, serde_json::Value> =
                             serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
-                        let question_id = m.get("question_id")
+                        let question_id = m
+                            .get("question_id")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| de::Error::custom("GreaterThan.question_id must be string"))?
+                            .ok_or_else(|| {
+                                de::Error::custom("GreaterThan.question_id must be string")
+                            })?
                             .to_string();
-                        let threshold = m.get("threshold")
-                            .and_then(|v| v.as_f64())
-                            .ok_or_else(|| de::Error::custom("GreaterThan.threshold must be number"))?;
-                        Ok(Condition::GreaterThan { question_id, threshold })
+                        let threshold =
+                            m.get("threshold").and_then(|v| v.as_f64()).ok_or_else(|| {
+                                de::Error::custom("GreaterThan.threshold must be number")
+                            })?;
+                        Ok(Condition::GreaterThan {
+                            question_id,
+                            threshold,
+                        })
                     }
                     "less_than" => {
                         let m: HashMap<String, serde_json::Value> =
                             serde_yaml_bw::from_value(value).map_err(de::Error::custom)?;
-                        let question_id = m.get("question_id")
+                        let question_id = m
+                            .get("question_id")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| de::Error::custom("LessThan.question_id must be string"))?
+                            .ok_or_else(|| {
+                                de::Error::custom("LessThan.question_id must be string")
+                            })?
                             .to_string();
-                        let threshold = m.get("threshold")
-                            .and_then(|v| v.as_f64())
-                            .ok_or_else(|| de::Error::custom("LessThan.threshold must be number"))?;
-                        Ok(Condition::LessThan { question_id, threshold })
+                        let threshold =
+                            m.get("threshold").and_then(|v| v.as_f64()).ok_or_else(|| {
+                                de::Error::custom("LessThan.threshold must be number")
+                            })?;
+                        Ok(Condition::LessThan {
+                            question_id,
+                            threshold,
+                        })
                     }
-                    other => Err(de::Error::unknown_variant(other, &[
-                        "always", "equals", "custom", "greater_than", "less_than",
-                    ])),
+                    other => Err(de::Error::unknown_variant(
+                        other,
+                        &["always", "equals", "custom", "greater_than", "less_than"],
+                    )),
                 }
             }
         }
@@ -793,15 +863,38 @@ impl<'de> Deserialize<'de> for Condition {
 
 #[cfg(test)]
 mod tests {
-    use crate::{agent::ollama::OllamaAgent, channel::{manager::{ChannelManager, ManagedChannel}, PluginWrapper}, config::{ConfigManager, MapConfigManager}, executor::Executor, flow::{manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind}, session::InMemorySessionStore, state::InMemoryState}, logger::{LogConfig, Logger, OpenTelemetryLogger}, node::ChannelOrigin, process::{debug_process::DebugProcessNode, manager::{BuiltInProcess, ProcessManager}}, secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager}};
+    use crate::{
+        agent::ollama::OllamaAgent,
+        channel::{
+            PluginWrapper,
+            manager::{ChannelManager, ManagedChannel},
+        },
+        config::{ConfigManager, MapConfigManager},
+        executor::Executor,
+        flow::{
+            manager::{ChannelNodeConfig, Flow, NodeConfig, NodeKind},
+            session::InMemorySessionStore,
+            state::InMemoryState,
+        },
+        logger::{LogConfig, Logger, OpenTelemetryLogger},
+        node::ChannelOrigin,
+        process::{
+            debug_process::DebugProcessNode,
+            manager::{BuiltInProcess, ProcessManager},
+        },
+        secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager},
+    };
 
     use super::*;
-    use channel_plugin::{message::{LogLevel, Participant}, plugin_actor::{spawn_rpc_plugin,}};
+    use channel_plugin::{
+        message::{LogLevel, Participant},
+        plugin_actor::spawn_rpc_plugin,
+    };
+    use chrono::Utc;
     use dashmap::DashMap;
     use serde_json::json;
-    use chrono::Utc;
-    use std::{path::Path, sync::Arc};
     use serde_yaml_bw::Value as YamlValue;
+    use std::{path::Path, sync::Arc};
 
     #[test]
     fn parse_and_validate_llm() {
@@ -822,22 +915,33 @@ mod tests {
                 QuestionConfig {
                     id: "q1".into(),
                     prompt: "What's your name?".into(),
-                    answer_type: AnswerType::Text {max_words: None, regex: None},
+                    answer_type: AnswerType::Text {
+                        max_words: None,
+                        regex: None,
+                    },
                     state_key: "name".into(),
                     validate: None,
                 },
                 QuestionConfig {
                     id: "q2".into(),
                     prompt: "How old are you?".into(),
-                    answer_type: AnswerType::Number{max_words: None,},
+                    answer_type: AnswerType::Number { max_words: None },
                     state_key: "age".into(),
-                    validate: Some(ValidationRule::Range { range: RangeParams { min: 0.0, max: 130.0 }}),
+                    validate: Some(ValidationRule::Range {
+                        range: RangeParams {
+                            min: 0.0,
+                            max: 130.0,
+                        },
+                    }),
                 },
             ],
             fallback_agent: None,
             routing: vec![
                 RoutingRule {
-                    condition: Some(Condition::LessThan { question_id: "age".into(), threshold: 18.0 }),
+                    condition: Some(Condition::LessThan {
+                        question_id: "age".into(),
+                        threshold: 18.0,
+                    }),
                     to: "underage_node".into(),
                 },
                 RoutingRule {
@@ -855,9 +959,22 @@ mod tests {
         let executor = Executor::new(secrets.clone(), logger.clone());
         let config_manager = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
-        let channel_origin = ChannelOrigin::new("test_channel".into(), None, None, Participant::new("user".into(), None, None));
-        let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes")).unwrap();
-        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), LogConfig::default()).await.unwrap();
+        let channel_origin = ChannelOrigin::new(
+            "test_channel".into(),
+            None,
+            None,
+            Participant::new("user".into(), None, None),
+        );
+        let process_manager =
+            ProcessManager::new(Path::new("./greentic/plugins/processes")).unwrap();
+        let channel_manager = ChannelManager::new(
+            config_manager,
+            secrets.clone(),
+            store.clone(),
+            LogConfig::default(),
+        )
+        .await
+        .unwrap();
 
         let mut ctx = NodeContext::new(
             "sess1".into(),
@@ -874,13 +991,23 @@ mod tests {
         let incoming1 = Message::new_uuid("test", json!({}));
         let result1 = qa_node.process(incoming1.clone(), &mut ctx).await.unwrap();
         let msg1 = result1.message();
-        assert!(msg1.payload()["text"].as_str().unwrap().contains("What's your name?"));
+        assert!(
+            msg1.payload()["text"]
+                .as_str()
+                .unwrap()
+                .contains("What's your name?")
+        );
 
         // Answer to q1
         let incoming2 = Message::new_uuid("test", json!("Alice"));
         let result2 = qa_node.process(incoming2.clone(), &mut ctx).await.unwrap();
         let msg2 = result2.message();
-        assert!(msg2.payload()["text"].as_str().unwrap().contains("How old are you?"));
+        assert!(
+            msg2.payload()["text"]
+                .as_str()
+                .unwrap()
+                .contains("How old are you?")
+        );
 
         // Answer to q2
         let incoming3 = Message::new_uuid("test", json!(25));
@@ -955,11 +1082,10 @@ mod tests {
         assert_eq!(err, "fallback_trigger");
     }
 
-
     #[test]
     fn parse_and_validate_number_and_range() {
         // ✅ Basic valid number
-        let number_type = AnswerType::Number {max_words: None,};
+        let number_type = AnswerType::Number { max_words: None };
         let v = parse_and_validate("3.14", &number_type, None).unwrap();
         assert_eq!(v, json!(3.14));
 
@@ -968,9 +1094,12 @@ mod tests {
         assert_eq!(err, "please enter a number");
 
         // ✅ Number within range
-        let number_type = AnswerType::Number {max_words: None,};
+        let number_type = AnswerType::Number { max_words: None };
         let rule = ValidationRule::Range {
-            range: RangeParams { min: 0.0, max: 10.0 },
+            range: RangeParams {
+                min: 0.0,
+                max: 10.0,
+            },
         };
         let v = parse_and_validate("5", &number_type, Some(rule.clone())).unwrap();
         assert_eq!(v, json!(5));
@@ -989,12 +1118,14 @@ mod tests {
         assert_eq!(err, "fallback_trigger");
     }
 
-
     #[test]
     fn parse_and_validate_date() {
         // ✅ Valid ISO8601 date-time string
         let dt = Utc::now().to_rfc3339();
-        let date_type = AnswerType::Date {max_words: None, dialect: Some(Dialect::Uk)};
+        let date_type = AnswerType::Date {
+            max_words: None,
+            dialect: Some(Dialect::Uk),
+        };
         let v = parse_and_validate(&dt, &date_type, None).unwrap();
         assert_eq!(v, JsonValue::String(dt));
 
@@ -1022,11 +1153,13 @@ mod tests {
         );
     }
 
-
     #[test]
     fn parse_and_validate_choice() {
         let opts = vec!["Yes".into(), "No".into()];
-        let at = AnswerType::Choice { max_words:Some(1), options: opts.clone() };
+        let at = AnswerType::Choice {
+            max_words: Some(1),
+            options: opts.clone(),
+        };
 
         // ✅ Exact match
         assert_eq!(
@@ -1061,13 +1194,11 @@ mod tests {
         assert_eq!(err, "fallback_trigger");
     }
 
-
     #[test]
     fn condition_matches_basic() {
         let mut answers = serde_json::Map::new();
         answers.insert("a".to_string(), json!(42));
         answers.insert("b".to_string(), json!("foo"));
-
 
         // Equals
         let eq = Condition::Equals {
@@ -1078,15 +1209,27 @@ mod tests {
         assert!(!eq.matches(&serde_json::Map::new()));
 
         // GreaterThan
-        let gt = Condition::GreaterThan { question_id: "a".into(), threshold: 10. };
+        let gt = Condition::GreaterThan {
+            question_id: "a".into(),
+            threshold: 10.,
+        };
         assert!(gt.matches(&answers));
-        let gt2 = Condition::GreaterThan { question_id: "a".into(), threshold: 100. };
+        let gt2 = Condition::GreaterThan {
+            question_id: "a".into(),
+            threshold: 100.,
+        };
         assert!(!gt2.matches(&answers));
 
         // LessThan
-        let lt = Condition::LessThan { question_id: "a".into(), threshold: 100. };
+        let lt = Condition::LessThan {
+            question_id: "a".into(),
+            threshold: 100.,
+        };
         assert!(lt.matches(&answers));
-        let lt2 = Condition::LessThan { question_id: "a".into(), threshold: 10. };
+        let lt2 = Condition::LessThan {
+            question_id: "a".into(),
+            threshold: 10.,
+        };
         assert!(!lt2.matches(&answers));
     }
 
@@ -1097,18 +1240,22 @@ mod tests {
 
         // route to "pass" if score >= 50, else to "fail"
         let rule_pass = RoutingRule {
-            condition: Some(Condition::GreaterThan { question_id: "score".into(), threshold: 50.0 }),
+            condition: Some(Condition::GreaterThan {
+                question_id: "score".into(),
+                threshold: 50.0,
+            }),
             to: "pass".into(),
         };
         let rule_fail = RoutingRule {
-            condition: Some(Condition::LessThan { question_id: "score".into(), threshold: 50.0 }),
+            condition: Some(Condition::LessThan {
+                question_id: "score".into(),
+                threshold: 50.0,
+            }),
             to: "fail".into(),
         };
         assert!(rule_pass.matches(&answers));
         assert!(!rule_fail.matches(&answers));
     }
-
-
 
     const QA_YAML: &str = r#"
 welcome_template: "Welcome!"
@@ -1146,10 +1293,13 @@ routing:
                 QuestionConfig {
                     id: "age".into(),
                     prompt: "👉 How old are you?".into(),
-                    answer_type: AnswerType::Number {max_words: None},
+                    answer_type: AnswerType::Number { max_words: None },
                     state_key: "user_age".into(),
                     validate: Some(ValidationRule::Range {
-                        range: RangeParams { min: 0.0, max: 120.0 },
+                        range: RangeParams {
+                            min: 0.0,
+                            max: 120.0,
+                        },
                     }),
                 },
                 QuestionConfig {
@@ -1180,10 +1330,12 @@ routing:
         };
 
         // 2) Serialize manual struct → YamlValue
-        let val_manual: YamlValue = serde_yaml_bw::to_value(&cfg_manual).expect("manual to_value failed");
+        let val_manual: YamlValue =
+            serde_yaml_bw::to_value(&cfg_manual).expect("manual to_value failed");
 
         // 3) Parse literal YAML → YamlValue
-        let val_literal: YamlValue = serde_yaml_bw::from_str(QA_YAML).expect("literal from_str failed");
+        let val_literal: YamlValue =
+            serde_yaml_bw::from_str(QA_YAML).expect("literal from_str failed");
 
         // 4) Show full diff if mismatch
         if val_manual != val_literal {
@@ -1195,15 +1347,14 @@ routing:
         assert_eq!(val_manual, val_literal);
     }
 
-
     #[derive(serde::Deserialize)]
     struct QaWrapper {
         qa: QAProcessConfig,
     }
 
-   #[test]
-    fn qa_process_config_manual_vs_yaml() {  
-    let yaml = r#"
+    #[test]
+    fn qa_process_config_manual_vs_yaml() {
+        let yaml = r#"
 qa:
   welcome_template: "Welcome!"
   questions:
@@ -1238,10 +1389,13 @@ qa:
                     QuestionConfig {
                         id: "age".into(),
                         prompt: "👉 How old are you?".into(),
-                        answer_type: AnswerType::Number {max_words:None},
+                        answer_type: AnswerType::Number { max_words: None },
                         state_key: "user_age".into(),
                         validate: Some(ValidationRule::Range {
-                            range: RangeParams { min: 0.0, max: 120.0 },
+                            range: RangeParams {
+                                min: 0.0,
+                                max: 120.0,
+                            },
                         }),
                     },
                     QuestionConfig {
@@ -1285,10 +1439,9 @@ qa:
         assert_eq!(manual, from_yaml);
     }
 
-
-   #[tokio::test]
+    #[tokio::test]
     async fn test_qa_via_mock_yaml() {
-    let yaml = r#"
+        let yaml = r#"
 id: test-qa-mock
 title: Test QA
 description: Test QA via Mock
@@ -1333,8 +1486,6 @@ connections:
     - debug_node
 "#;
 
-       
-
         let expected = Flow::new(
             "test-qa-mock".to_string(),
             "Test QA".to_string(),
@@ -1371,26 +1522,35 @@ connections:
                             questions: vec![
                                 QuestionConfig {
                                     id: "q_location".into(),
-                                    prompt: "👉 What location would you like a forecast for?".into(),
-                                    answer_type: AnswerType::Text { max_words: None, regex: None },
+                                    prompt: "👉 What location would you like a forecast for?"
+                                        .into(),
+                                    answer_type: AnswerType::Text {
+                                        max_words: None,
+                                        regex: None,
+                                    },
                                     state_key: "q".into(),
                                     validate: None,
                                 },
                                 QuestionConfig {
                                     id: "q_days".into(),
                                     prompt: "👉 Over how many days? (enter a number)".into(),
-                                    answer_type: AnswerType::Number {max_words: None},
+                                    answer_type: AnswerType::Number { max_words: None },
                                     state_key: "days".into(),
                                     validate: Some(ValidationRule::Range {
-                                        range: RangeParams {
-                                            min: 0.0,
-                                            max: 7.0,
-                                        },
+                                        range: RangeParams { min: 0.0, max: 7.0 },
                                     }),
                                 },
                             ],
                             fallback_agent: Some(BuiltInAgent::Ollama(OllamaAgent::new(
-                                None, "task".into(), None, None, None, None, None, None, None,
+                                None,
+                                "task".into(),
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
                             ))),
                             routing: vec![],
                         },
@@ -1421,29 +1581,45 @@ connections:
         // Setup runtime context
         let store = InMemorySessionStore::new(10);
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
-        let secrets = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
+        let secrets = SecretsManager(EnvSecretsManager::new(Some(
+            Path::new("./greentic/secrets/").to_path_buf(),
+        )));
         let executor = Executor::new(secrets.clone(), logger.clone());
         let state = InMemoryState::new();
         let config = DashMap::<String, String>::new();
         let config_manager = ConfigManager(MapConfigManager::new());
-        let process_manager = ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
+        let process_manager =
+            ProcessManager::new(Path::new("./greentic/plugins/processes/").to_path_buf()).unwrap();
         let channel_origin = ChannelOrigin::new(
             "mock".to_string(),
             None,
             None,
             Participant::new("id".to_string(), None, None),
         );
-        let channel_manager = ChannelManager::new(config_manager, secrets.clone(), store.clone(), LogConfig::default())
-            .await
-            .expect("could not make channel manager");
+        let channel_manager = ChannelManager::new(
+            config_manager,
+            secrets.clone(),
+            store.clone(),
+            LogConfig::default(),
+        )
+        .await
+        .expect("could not make channel manager");
 
         let path = Path::new("./greentic/plugins/channels/stopped/channel_mock_inout");
 
         let plugin = spawn_rpc_plugin(path).await.expect("Could not load plugin");
 
-        let log_config = LogConfig::new(LogLevel::Info, Some(Path::new("./greentic/logs").to_path_buf()), None);
-        
-        let mock = ManagedChannel::new(PluginWrapper::new(plugin, store.clone(), log_config).await, None, None);
+        let log_config = LogConfig::new(
+            LogLevel::Info,
+            Some(Path::new("./greentic/logs").to_path_buf()),
+            None,
+        );
+
+        let mock = ManagedChannel::new(
+            PluginWrapper::new(plugin, store.clone(), log_config).await,
+            None,
+            None,
+        );
         channel_manager
             .register_channel("mock_inout".to_string(), mock)
             .await
@@ -1471,6 +1647,4 @@ connections:
         assert!(report.error.is_some());
         assert!(format!("{:?}", report.error).contains("channel `mock` not loaded"));
     }
-
 }
-

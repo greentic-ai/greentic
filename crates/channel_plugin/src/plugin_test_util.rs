@@ -1,14 +1,25 @@
-
-
-
-use std::{sync::Arc};
-use tokio::sync::{broadcast, mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender}, oneshot, Mutex};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::sync::Arc;
+use tokio::sync::{
+    Mutex, broadcast,
+    mpsc::{self, UnboundedReceiver, UnboundedSender, unbounded_channel},
+    oneshot,
+};
 
-use crate::{channel_client::{ChannelClient, ChannelClientType,}, control_client::ControlClient, jsonrpc::{Request, Response}, message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult, WaitUntilDrainedParams, WaitUntilDrainedResult}, plugin_actor::PluginHandle, plugin_runtime::{HasStore, PluginHandler}};
-
-
+use crate::{
+    channel_client::{ChannelClient, ChannelClientType},
+    control_client::ControlClient,
+    jsonrpc::{Request, Response},
+    message::{
+        CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult,
+        InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams,
+        MessageOutResult, NameResult, StateResult, StopResult, WaitUntilDrainedParams,
+        WaitUntilDrainedResult,
+    },
+    plugin_actor::PluginHandle,
+    plugin_runtime::{HasStore, PluginHandler},
+};
 
 pub struct MockChannel {
     // queue for incoming
@@ -19,7 +30,6 @@ pub struct MockChannel {
     config: DashMap<String, String>,
     secrets: DashMap<String, String>,
 }
-
 
 impl Clone for MockChannel {
     fn clone(&self) -> Self {
@@ -37,15 +47,15 @@ impl Clone for MockChannel {
 impl MockChannel {
     pub fn new() -> Self {
         let (in_tx, in_rx) = unbounded_channel();
-            Self {
-                in_tx,
-                in_rx: Arc::new(Mutex::new(Some(in_rx))),
-                outgoing: Arc::new(Mutex::new(vec![])),
-                state: Arc::new(Mutex::new(ChannelState::STOPPED)),
-                config: DashMap::new(),
-                secrets: DashMap::new(),
-            }
+        Self {
+            in_tx,
+            in_rx: Arc::new(Mutex::new(Some(in_rx))),
+            outgoing: Arc::new(Mutex::new(vec![])),
+            state: Arc::new(Mutex::new(ChannelState::STOPPED)),
+            config: DashMap::new(),
+            secrets: DashMap::new(),
         }
+    }
 
     /// Inject an incoming message and wake any pollers.
     pub async fn inject(&self, msg: ChannelMessage) {
@@ -55,7 +65,6 @@ impl MockChannel {
     pub async fn sent_messages(&self) -> Vec<ChannelMessage> {
         self.outgoing.lock().await.iter().cloned().collect()
     }
-
 }
 
 #[async_trait]
@@ -77,85 +86,120 @@ impl ChannelClientType for Arc<MockChannel> {
 }
 
 impl HasStore for Arc<MockChannel> {
-    fn config_store(&self)  -> &DashMap<String, String> { &self.config }
-    fn secret_store(&self)  -> &DashMap<String, String> { &self.secrets }
+    fn config_store(&self) -> &DashMap<String, String> {
+        &self.config
+    }
+    fn secret_store(&self) -> &DashMap<String, String> {
+        &self.secrets
+    }
 }
 
 #[async_trait]
 impl PluginHandler for Arc<MockChannel> {
     fn name(&self) -> NameResult {
-        NameResult{name:"mock".into()}
+        NameResult {
+            name: "mock".into(),
+        }
     }
 
-
     fn capabilities(&self) -> CapabilitiesResult {
-        CapabilitiesResult{capabilities:ChannelCapabilities {
-            name: "mock".to_string(),
-            supports_sending: true,
-            supports_receiving: true,
-            supports_text: true,
-            supports_files: false,
-            supports_media: false,
-            supports_events: false,
-            supports_typing: false,
-            supports_threading: false,
-            supports_routing: false,
-            supports_reactions: false,
-            supports_call: false,
-            supports_buttons: false,
-            supports_links: false,
-            supports_custom_payloads: false,
-            supported_events: vec![],
-        }}
+        CapabilitiesResult {
+            capabilities: ChannelCapabilities {
+                name: "mock".to_string(),
+                supports_sending: true,
+                supports_receiving: true,
+                supports_text: true,
+                supports_files: false,
+                supports_media: false,
+                supports_events: false,
+                supports_typing: false,
+                supports_threading: false,
+                supports_routing: false,
+                supports_reactions: false,
+                supports_call: false,
+                supports_buttons: false,
+                supports_links: false,
+                supports_custom_payloads: false,
+                supported_events: vec![],
+            },
+        }
     }
 
     fn list_config_keys(&self) -> ListKeysResult {
-        ListKeysResult { required_keys: vec![], optional_keys: vec![] }
+        ListKeysResult {
+            required_keys: vec![],
+            optional_keys: vec![],
+        }
     }
 
     fn list_secret_keys(&self) -> ListKeysResult {
-        ListKeysResult { required_keys: vec![], optional_keys: vec![] }
+        ListKeysResult {
+            required_keys: vec![],
+            optional_keys: vec![],
+        }
     }
 
     async fn state(&self) -> StateResult {
-        StateResult{state:*self.state.lock().await}
+        StateResult {
+            state: *self.state.lock().await,
+        }
     }
 
     async fn init(&mut self, _params: InitParams) -> InitResult {
         *self.state.lock().await = ChannelState::RUNNING;
-        InitResult{ success: true, error: None }
+        InitResult {
+            success: true,
+            error: None,
+        }
     }
 
     async fn drain(&mut self) -> DrainResult {
         *self.state.lock().await = ChannelState::DRAINING;
-        DrainResult{ success: true, error: None }
+        DrainResult {
+            success: true,
+            error: None,
+        }
     }
 
     async fn wait_until_drained(&self, _params: WaitUntilDrainedParams) -> WaitUntilDrainedResult {
-        WaitUntilDrainedResult{ stopped: true, error: false }
+        WaitUntilDrainedResult {
+            stopped: true,
+            error: false,
+        }
     }
 
     async fn stop(&mut self) -> StopResult {
         *self.state.lock().await = ChannelState::STOPPED;
-        StopResult{ success: true, error: None }
+        StopResult {
+            success: true,
+            error: None,
+        }
     }
-    
-    async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult{
+
+    async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult {
         self.outgoing.lock().await.push(params.message);
-        MessageOutResult{ success: true, error: None }
+        MessageOutResult {
+            success: true,
+            error: None,
+        }
     }
-    
-    async fn receive_message(&mut self) -> MessageInResult{
+
+    async fn receive_message(&mut self) -> MessageInResult {
         let mut guard = self.in_rx.lock().await;
         let rx = guard
             .as_mut()
             .expect("receive_message already taken by another instance");
         match rx.recv().await {
-            Some(msg) => MessageInResult { message: msg, error: false },
-            None => MessageInResult { message: Default::default(), error: true },
+            Some(msg) => MessageInResult {
+                message: msg,
+                error: false,
+            },
+            None => MessageInResult {
+                message: Default::default(),
+                error: true,
+            },
         }
     }
-
 }
 
 pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
@@ -163,7 +207,7 @@ pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
 
     // JSON-RPC channel for ChannelClient / ControlClient
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<(Request, oneshot::Sender<Response>)>(8);
-    
+
     // broadcast channel for inbound message events
     let (msg_tx, _) = broadcast::channel::<ChannelMessage>(8);
 
@@ -181,7 +225,6 @@ pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
             }
         });
     }
-
 
     // ── 4) outbound message listener → test subscribers
     {
@@ -203,22 +246,21 @@ pub async fn spawn_mock_handle() -> (Arc<MockChannel>, PluginHandle) {
     (mock, handle)
 }
 
-
 #[cfg(any(test))]
 mod tests {
     #[cfg(test)]
-    use chrono::Utc;
-    #[cfg(test)]
-    use crate::{message::{MessageContent, Participant}};
-    #[cfg(test)]
     use super::*;
+    #[cfg(test)]
+    use crate::message::{MessageContent, Participant};
+    #[cfg(test)]
+    use chrono::Utc;
 
     #[tokio::test]
     async fn capabilities_and_metadata() {
         let (_mock, handle) = spawn_mock_handle().await;
 
         let name = handle.name();
-        assert_eq!(name,"mock");
+        assert_eq!(name, "mock");
 
         // capabilities ----------------------------------------------------------
         let caps = handle.capabilities();
@@ -226,7 +268,7 @@ mod tests {
         assert!(caps.supports_sending && caps.supports_receiving);
 
         // listConfigKeys / listSecretKeys ---------------------------------------
-        let cfg  = handle.list_config_keys();
+        let cfg = handle.list_config_keys();
         let secr = handle.list_secret_keys();
         assert!(cfg.required_keys.is_empty() && cfg.optional_keys.is_empty());
         assert!(secr.required_keys.is_empty() && secr.optional_keys.is_empty());
@@ -279,7 +321,11 @@ mod tests {
             ..Default::default()
         };
 
-        let _ = mock.send_message(MessageOutParams { message: out_msg.clone() }).await;
+        let _ = mock
+            .send_message(MessageOutParams {
+                message: out_msg.clone(),
+            })
+            .await;
 
         // the underlying mock should have recorded it
         assert_eq!(mock.sent_messages().await, vec![out_msg]);
@@ -309,5 +355,3 @@ mod tests {
         let _ = mock.state;
     }
 }
-
-

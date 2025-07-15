@@ -1,23 +1,27 @@
+use anyhow::bail;
 use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
-    apps::{cmd_init, download, App}, config::{ConfigManager, EnvConfigManager}, flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file}, logger::{init_tracing, FileTelemetry}, schema::write_schema, secret::{EnvSecretsManager, SecretsManager}
+    apps::{App, cmd_init, download},
+    config::{ConfigManager, EnvConfigManager},
+    flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file},
+    logger::{FileTelemetry, init_tracing},
+    schema::write_schema,
+    secret::{EnvSecretsManager, SecretsManager},
 };
 use std::{env, fs, path::PathBuf, process};
 use tracing::{error, info};
-use anyhow::bail;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "greentic", 
-    about = "The Greener Digital Workers Platform", 
+    name = "greentic",
+    about = "The Greener Digital Workers Platform",
     version = "0.2.0-rc4"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 }
-
 
 #[derive(Subcommand, Debug)]
 enum Commands {
@@ -61,7 +65,7 @@ struct FlowArgs {
 #[derive(Args, Debug)]
 struct RunArgs {
     #[arg(long, default_value = "1800")]
-    session_timeout: u64,    
+    session_timeout: u64,
     /// Optional log level override (e.g. error, warn, info, debug, trace)
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -75,7 +79,7 @@ struct RunArgs {
     otel_events_endpoint: Option<String>,
 }
 
-    /// Emit JSON‐Schema for flows, tools and channels into `<root>/schemas`
+/// Emit JSON‐Schema for flows, tools and channels into `<root>/schemas`
 
 #[derive(Args, Debug)]
 struct SchemaArgs {
@@ -87,7 +91,6 @@ struct SchemaArgs {
     #[arg(long, default_value_t = true)]
     logs_enabled: bool,
 }
-
 
 #[derive(Subcommand, Debug)]
 enum FlowCommands {
@@ -125,38 +128,40 @@ pub fn resolve_root_dir() -> PathBuf {
 async fn main() -> anyhow::Result<()> {
     // config & secrets
     let root = resolve_root_dir().join("greentic");
-    let config_dir   = root.join("config");
-    let secrets_dir  = root.join("secrets");   
+    let config_dir = root.join("config");
+    let secrets_dir = root.join("secrets");
     let env_file = config_dir.join(".env");
     let config_manager = ConfigManager(EnvConfigManager::new(env_file.clone()));
     let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(secrets_dir.clone())));
 
-    let cli = Cli::parse(); 
+    let cli = Cli::parse();
     match cli.command.unwrap_or(Commands::Run(RunArgs {
         session_timeout: 1800,
         log_level: "info".to_string(),
         otel_logs_endpoint: None,
         otel_events_endpoint: None,
-        }))  {
+    })) {
         Commands::Run(args) => {
-            run(root,
+            run(
+                root,
                 args.session_timeout,
                 args.log_level,
                 args.otel_logs_endpoint,
                 args.otel_events_endpoint,
                 secrets_manager,
                 config_manager,
-            ).await?;
+            )
+            .await?;
             Ok(())
         }
         Commands::Schema(args) => {
             let out_dir = root.join("schemas");
-            let log_level     = args.log_level;
-            let log_file      = root.join("logs/greentic-schema.log");
-            let event_file      = root.join("logs/greentic-schema.json");
-            let tools_dir    = root.join("plugins").join("tools");
-            let channels_dir           = root.join("plugins").join("channels").join("running");
-            let _processes_dir= root.join("plugins").join("processes");
+            let log_level = args.log_level;
+            let log_file = root.join("logs/greentic-schema.log");
+            let event_file = root.join("logs/greentic-schema.json");
+            let tools_dir = root.join("plugins").join("tools");
+            let channels_dir = root.join("plugins").join("channels").join("running");
+            let _processes_dir = root.join("plugins").join("processes");
             fs::create_dir_all(&out_dir)?;
             write_schema(
                 out_dir.clone(),
@@ -171,13 +176,9 @@ async fn main() -> anyhow::Result<()> {
             process::exit(0);
         }
         Commands::Init => {
-            let log_file      = root.join("logs/greentic-init.log");
-            let event_file      = root.join("logs/greentic-init.json");
-            let _ = FileTelemetry::init_files(
-                "info",
-                log_file,
-                event_file,
-            );
+            let log_file = root.join("logs/greentic-init.log");
+            let event_file = root.join("logs/greentic-init.json");
+            let _ = FileTelemetry::init_files("info", log_file, event_file);
             cmd_init(root.clone()).await?;
             println!("Greentic has been initialised. You can start it with 'greentic run'");
             process::exit(0);
@@ -189,21 +190,21 @@ async fn main() -> anyhow::Result<()> {
                     Err(_) => eprintln!("❌ Secret could not be added."),
                 }
                 Ok(())
-            },
+            }
             SecretCommands::Update { key, secret } => {
                 match secrets_manager.update_secret(&key, &secret).await {
                     Ok(_) => println!("✅ Secret updated."),
                     Err(_) => eprintln!("❌ Secret could not be updated."),
                 }
                 Ok(())
-            },
+            }
             SecretCommands::Delete { key } => {
                 match secrets_manager.delete_secret(&key).await {
                     Ok(_) => println!("✅ Secret deleted."),
                     Err(_) => eprintln!("❌ Secret could not be deleted."),
                 }
                 Ok(())
-            },
+            }
         },
 
         Commands::Config(config_args) => match config_args.command {
@@ -213,99 +214,103 @@ async fn main() -> anyhow::Result<()> {
                     Err(_) => eprintln!("❌ Config could not be added."),
                 }
                 Ok(())
-            },
+            }
             ConfigCommands::Update { key, value } => {
                 match config_manager.0.set(&key, &value).await {
                     Ok(_) => println!("✅ Config updated."),
                     Err(_) => eprintln!("❌ Config could not be updated."),
                 }
                 Ok(())
-            },
+            }
             ConfigCommands::Delete { key } => {
                 config_manager.0.del(&key).await;
                 Ok(())
-            },
-        }
+            }
+        },
         Commands::Flow(flow_args) => match flow_args.command {
             FlowCommands::Validate { file } => {
-                let tools_dir    = root.join("plugins").join("tools");
-                validate_flow_file(
-                    file, 
-                    root, 
-                    tools_dir, 
-                    secrets_manager,
-                    config_manager,
-                ).await?;
+                let tools_dir = root.join("plugins").join("tools");
+                validate_flow_file(file, root, tools_dir, secrets_manager, config_manager).await?;
                 println!("✅ Flow file is valid.");
                 Ok(())
-            },
+            }
             FlowCommands::Pull { name } => {
                 let token_handle = secrets_manager.0.get("GREENTIC_TOKEN");
                 if token_handle.is_none() {
-                    println!("Please run 'greentic init' one time before calling 'greentic pull ...'");
+                    println!(
+                        "Please run 'greentic init' one time before calling 'greentic pull ...'"
+                    );
                     return Ok(());
                 }
-                let token = secrets_manager.0.reveal(token_handle.unwrap()).await.unwrap().unwrap();
+                let token = secrets_manager
+                    .0
+                    .reveal(token_handle.unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap();
                 let out_dir = root.join("flows/running");
                 let result = download(&token, "flows", &name, out_dir.clone()).await;
                 if result.is_err() {
-                    println!("Sorry we could not download {} because {:?}",name, result.err().unwrap().to_string());
+                    println!(
+                        "Sorry we could not download {} because {:?}",
+                        name,
+                        result.err().unwrap().to_string()
+                    );
                 }
-                let tools_dir    = root.join("plugins").join("tools");
+                let tools_dir = root.join("plugins").join("tools");
                 validate_flow_file(
-                    out_dir.join(name), 
-                    root, 
-                    tools_dir, 
-                    secrets_manager,
-                    config_manager,
-                ).await?;
-                
-                Ok(())
-            },
-            FlowCommands::Deploy { file } => {
-                let tools_dir    = root.join("plugins").join("tools");
-                deploy_flow_file(
-                    file, 
+                    out_dir.join(name),
                     root,
                     tools_dir,
                     secrets_manager,
                     config_manager,
-                ).await?;
+                )
+                .await?;
+
                 Ok(())
-            },
+            }
+            FlowCommands::Deploy { file } => {
+                let tools_dir = root.join("plugins").join("tools");
+                deploy_flow_file(file, root, tools_dir, secrets_manager, config_manager).await?;
+                Ok(())
+            }
             FlowCommands::Start { name } => {
                 let from = root.join("flows/stopped");
                 let to = root.join("flows/running");
                 move_flow_file(&name, &from, &to)?;
-                println!("✅ Flow `{}` started. Please make sure greentic is running, i.e. greentic run", name);
+                println!(
+                    "✅ Flow `{}` started. Please make sure greentic is running, i.e. greentic run",
+                    name
+                );
                 Ok(())
-            },
+            }
             FlowCommands::Stop { name } => {
                 let from = root.join("flows/running");
                 let to = root.join("flows/stopped");
                 move_flow_file(&name, &from, &to)?;
                 println!("✅ Flow `{}` stopped.", name);
                 Ok(())
-            },
-        }
+            }
+        },
     }
 }
 
-async fn run(root: PathBuf,
-    session_timeout: u64, 
+async fn run(
+    root: PathBuf,
+    session_timeout: u64,
     log_level: String,
     otel_logs_endpoint: Option<String>,
     otel_events_endpoint: Option<String>,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
 ) -> anyhow::Result<()> {
-    let flows_dir    = root.join("flows/running");
-    let log_file      = "logs/greentic_logs.log".to_string();
-    let log_dir= Some(root.join("logs"));
-    let event_file    = "logs/greentic_events.log".to_string();
-    let tools_dir    = root.join("plugins").join("tools");
-    let processes_dir= root.join("plugins").join("processes");
-    let channels_dir = root.join("plugins").join("channels/running");       
+    let flows_dir = root.join("flows/running");
+    let log_file = "logs/greentic_logs.log".to_string();
+    let log_dir = Some(root.join("logs"));
+    let event_file = "logs/greentic_events.log".to_string();
+    let tools_dir = root.join("plugins").join("tools");
+    let processes_dir = root.join("plugins").join("processes");
+    let channels_dir = root.join("plugins").join("channels/running");
     // tracing / logger
     let logger = init_tracing(
         root.clone(),
@@ -314,8 +319,8 @@ async fn run(root: PathBuf,
         log_level.clone(),
         otel_logs_endpoint.clone(),
         otel_events_endpoint.clone(),
-    ).expect("could not create logger");
-
+    )
+    .expect("could not create logger");
 
     info!("Greentic runtime starting up…");
     println!("Greentic runtime starting up…");
@@ -330,32 +335,33 @@ async fn run(root: PathBuf,
         bail!(err);
     }
 
-
     // bootstrap
     let mut app = App::new();
-    let result = app.bootstrap(
-        session_timeout.clone(),
-        flows_dir.clone(),
-        channels_dir.clone(),
-        tools_dir.clone(),
-        processes_dir.clone(),
-        config_manager,
-        logger,
-        convert_level(log_level),
-        log_dir,
-        otel_logs_endpoint,
-        secrets_manager,
-    )
-    .await;
-    if result.is_err()
-    {
-            error!("Failed to bootstrap greentic runtime: {:#}", result.err().unwrap());
-            process::exit(1);
+    let result = app
+        .bootstrap(
+            session_timeout.clone(),
+            flows_dir.clone(),
+            channels_dir.clone(),
+            tools_dir.clone(),
+            processes_dir.clone(),
+            config_manager,
+            logger,
+            convert_level(log_level),
+            log_dir,
+            otel_logs_endpoint,
+            secrets_manager,
+        )
+        .await;
+    if result.is_err() {
+        error!(
+            "Failed to bootstrap greentic runtime: {:#}",
+            result.err().unwrap()
+        );
+        process::exit(1);
     };
 
     println!(
-r#"
-                                            
+        r#"                       
              @%@@     @@@@         @@@@@@@  
             @%*#%##%@@%++%@   @@%##*+++*%@@ 
            @#========+++#@  @@#***++++*%@   
@@ -382,7 +388,6 @@ r#"
 "#
     );
 
-
     info!("Greentic runtime running; press Ctrl‐C to exit");
     println!("Greentic runtime running; press Ctrl‐C to exit");
 
@@ -397,18 +402,16 @@ r#"
     println!("Goodbye!");
 
     process::exit(0);
-
 }
 
 fn convert_level(level: String) -> LogLevel {
     match level.to_lowercase().as_str() {
         "trace" => LogLevel::Trace,
         "debug" => LogLevel::Debug,
-        "info"  => LogLevel::Info,
-        "warn"  => LogLevel::Warn,
+        "info" => LogLevel::Info,
+        "warn" => LogLevel::Warn,
         "error" => LogLevel::Error,
         "critical" => LogLevel::Critical,
         _ => LogLevel::Info,
     }
-
 }

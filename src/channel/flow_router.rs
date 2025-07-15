@@ -47,12 +47,15 @@ pub struct ChannelFlowRouter {
 impl ChannelFlowRouter {
     /// Construct an empty router.
     pub fn new() -> Self {
-        Self { map: HashMap::new() }
+        Self {
+            map: HashMap::new(),
+        }
     }
 
     /// Add a mapping from `channel` to `flow_name`.
     pub fn add_mapping(&mut self, channel: &str, flow_name: &str) {
-        self.map.entry(channel.into())
+        self.map
+            .entry(channel.into())
             .or_default()
             .push(flow_name.into());
     }
@@ -67,7 +70,8 @@ impl FlowRouter for ChannelFlowRouter {
             .get(&msg.channel)
             .into_iter()
             .flat_map(|flows| {
-                flows.iter()
+                flows
+                    .iter()
                     .map(move |flow| (flow.clone(), msg.channel.clone()))
             })
             .collect()
@@ -147,11 +151,7 @@ impl FlowRouter for ScriptFlowRouter {
                     .collect()
             }
             Err(e) => {
-                tracing::error!(
-                    "Flow template error for channel {}: {:?}",
-                    msg.channel,
-                    e
-                );
+                tracing::error!("Flow template error for channel {}: {:?}", msg.channel, e);
                 Vec::new()
             }
         }

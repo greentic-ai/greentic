@@ -1,21 +1,21 @@
-use async_trait::async_trait;
-use dashmap::DashMap;
-use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
-use ollama_rs::generation::parameters::{FormatType, JsonStructure};
-use ollama_rs::models::ModelOptions;
-use ollama_rs::generation::completion::request::GenerationRequest;
-use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
-use ollama_rs::Ollama;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
-use tracing::{error, info};
-use url::Url;
-use crate::agent::agent_reply_schema::{parse_state_value, AgentReply};
+use crate::agent::agent_reply_schema::{AgentReply, parse_state_value};
 use crate::node::Routing;
 use crate::{
     message::Message,
     node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, ToolNode},
 };
+use async_trait::async_trait;
+use dashmap::DashMap;
+use ollama_rs::Ollama;
+use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
+use ollama_rs::generation::completion::request::GenerationRequest;
+use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
+use ollama_rs::generation::parameters::{FormatType, JsonStructure};
+use ollama_rs::models::ModelOptions;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value as JsonValue, json};
+use tracing::{error, info};
+use url::Url;
 
 // --------------------------------------------------------------------------------
 // 1) Define OllamaAgent, which wraps ollama-rs usage
@@ -24,7 +24,7 @@ use crate::{
 /// `OllamaAgent` invokes a local Ollama server via `ollama_rs`.  
 /// It supports plain generation (`Generate`), embeddings (`Embed`), chat mode (`Chat`) and tool calls (`ToolCall`).
 
-#[derive(Debug, Clone, Serialize, Deserialize,)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaAgent {
     pub task: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,18 +52,17 @@ pub struct OllamaAgent {
     /// This field is not serialized in JSON nor included in the schema.
     #[serde(skip)]
     pub tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
-
 }
 
 impl PartialEq for OllamaAgent {
     fn eq(&self, other: &Self) -> bool {
-        self.task == other.task &&
-        self.system_prompt == other.system_prompt &&
-        self.model == other.model &&
-        self.mode == other.mode &&
-        self.ollama_url == other.ollama_url &&
-        self.use_payload == other.use_payload &&
-        self.tool_names == other.tool_names
+        self.task == other.task
+            && self.system_prompt == other.system_prompt
+            && self.model == other.model
+            && self.mode == other.mode
+            && self.ollama_url == other.ollama_url
+            && self.use_payload == other.use_payload
+            && self.tool_names == other.tool_names
         // tool_nodes and model_config are intentionally skipped from equality check
     }
 }
@@ -80,18 +79,14 @@ impl NodeType for OllamaAgent {
     }
 
     #[tracing::instrument(name = "ollama_agent_node_process", skip(self, context))]
-    async fn process(
-        &self,
-        input: Message,
-        context: &mut NodeContext,
-    ) -> Result<NodeOut, NodeErr> {
+    async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         // 1) build our client
         let mut client = if let Some(url) = &self.ollama_url {
             if let Some(port) = url.port() {
-                Ollama::new(url.clone(),port)
+                Ollama::new(url.clone(), port)
             } else {
                 Ollama::default()
-            }   
+            }
         } else {
             Ollama::default()
         };
@@ -100,20 +95,19 @@ impl NodeType for OllamaAgent {
             OllamaMode::Embed => return self.do_embed(client, &input).await,
             OllamaMode::Generate => return self.do_generate(client, &input).await,
             OllamaMode::Chat => {
-
-                let task       = &self.task;
-                let payload    = input.payload();
+                let task = &self.task;
+                let payload = input.payload();
                 let state_json = json!(context.get_all_state());
-                let conns      = context.connections().unwrap_or_default();
+                let conns = context.connections().unwrap_or_default();
                 //let tools      = self
                 //    .tool_names
                 //    .clone()
                 //    .unwrap_or_default();
 
-                let system_prompt = match  &self.system_prompt {
+                let system_prompt = match &self.system_prompt {
                     Some(prompt) => prompt,
-                    None => {
-                        &format!(r#"You are a structured AI agent inside an automation platform.
+                    None => &format!(
+                        r#"You are a structured AI agent inside an automation platform.
 
 You are given:
 - A free-text `task` written by a non-technical user.
@@ -145,13 +139,16 @@ Return JSON that matches the Rust enum `AgentReply`, either:
 - `NeedMoreInfo`: with a question in the `payload.text` field.
 
 ⚠️ Never guess or hallucinate values. Only extract what you're confident about.
-"#)
-                    },
+"#
+                    ),
                 };
-                
+
                 let user_msg = format!(
-                    "task: {}\npayload: {}\nstate: {}\nconnections: {:?}\n",//tools: {:?}",
-                    task, payload, state_json, conns, //tools
+                    "task: {}\npayload: {}\nstate: {}\nconnections: {:?}\n", //tools: {:?}",
+                    task,
+                    payload,
+                    state_json,
+                    conns, //tools
                 );
 
                 let history = vec![
@@ -162,64 +159,87 @@ Return JSON that matches the Rust enum `AgentReply`, either:
                 // 3) call the LLM
                 let model = self.model.clone().unwrap_or("llama3:latest".into());
                 let schema: schemars::Schema = schemars::schema_for!(AgentReply);
-                let format = FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema.clone())));
+                let format = FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(
+                    schema.clone(),
+                )));
                 let mut req = ChatMessageRequest::new(model, history).format(format.clone());
                 if let Some(opts) = &self.model_options {
                     req = req.options(opts.clone());
-                }              
-
-                let resp = client.send_chat_messages_with_history(&mut vec![], req).await;
-                if resp.is_err(){
-                    let err = resp.err();
-                    error!("LLM gave error: {:?}",err);
-                    return Err(NodeErr::fail(NodeError::ExecutionFailed(format!("LLM error: {:?}", err))));
                 }
-                info!("agent response: {:?}",resp);
-                let reply: AgentReply = serde_json::from_str(&resp.unwrap().message.content).expect("ollama should respond with structured reply");
+
+                let resp = client
+                    .send_chat_messages_with_history(&mut vec![], req)
+                    .await;
+                if resp.is_err() {
+                    let err = resp.err();
+                    error!("LLM gave error: {:?}", err);
+                    return Err(NodeErr::fail(NodeError::ExecutionFailed(format!(
+                        "LLM error: {:?}",
+                        err
+                    ))));
+                }
+                info!("agent response: {:?}", resp);
+                let reply: AgentReply = serde_json::from_str(&resp.unwrap().message.content)
+                    .expect("ollama should respond with structured reply");
 
                 match reply {
-                    AgentReply::Success { payload, state_add, state_update, state_delete, connections } =>{
+                    AgentReply::Success {
+                        payload,
+                        state_add,
+                        state_update,
+                        state_delete,
+                        connections,
+                    } => {
                         if let Some(states_add) = state_add {
-                            for state in states_add.iter(){
-                                context.set_state(&state.key,parse_state_value(&state.value_type, &state.value).expect("invalid state value"));
+                            for state in states_add.iter() {
+                                context.set_state(
+                                    &state.key,
+                                    parse_state_value(&state.value_type, &state.value)
+                                        .expect("invalid state value"),
+                                );
                             }
                         }
                         if let Some(states_update) = state_update {
-                            for state in states_update.iter(){
-                                context.set_state(&state.key,parse_state_value(&state.value_type, &state.value).expect("invalid state value"));
+                            for state in states_update.iter() {
+                                context.set_state(
+                                    &state.key,
+                                    parse_state_value(&state.value_type, &state.value)
+                                        .expect("invalid state value"),
+                                );
                             }
                         }
                         if let Some(states_delete) = state_delete {
-                            for state in states_delete.iter(){
+                            for state in states_delete.iter() {
                                 context.delete_state(state);
                             }
                         }
-                        
+
                         let next_conn = match connections.is_empty() {
                             true => None,
                             false => Some(connections),
                         };
 
-                        let payload_json: JsonValue = match serde_json::from_str(&payload){
+                        let payload_json: JsonValue = match serde_json::from_str(&payload) {
                             Ok(json) => json,
                             Err(_) => json!({"text":payload.clone()}),
                         };
-                        let main_msg = Message::new(&input.id(), payload_json, input.session_id().clone());
+                        let main_msg =
+                            Message::new(&input.id(), payload_json, input.session_id().clone());
                         return Ok(NodeOut::next(main_msg, next_conn));
-                        
-                    },
+                    }
                     AgentReply::NeedMoreInfo { payload } => {
                         let next_payload = json!({"text":payload.text});
-                        let main_msg = Message::new(&input.id(), next_payload, input.session_id().clone());
+                        let main_msg =
+                            Message::new(&input.id(), next_payload, input.session_id().clone());
                         return Ok(NodeOut::reply(main_msg));
-                    },
+                    }
                 }
-               
-                /* 
+
+                /*
 
                 // 1) Process “tool_calls” if present:
                 if let Some(call) = result.get("tool_call") {
-                
+
                     let name = call
                         .get("name")
                         .and_then(|v| v.as_str())
@@ -261,8 +281,6 @@ Return JSON that matches the Rust enum `AgentReply`, either:
 
                 }
                 */
-
-                
             }
         }
     }
@@ -271,7 +289,6 @@ Return JSON that matches the Rust enum `AgentReply`, either:
         Box::new(self.clone())
     }
 }
-
 
 impl OllamaAgent {
     /// Construct a new `OllamaAgent` with explicit fields.
@@ -300,22 +317,25 @@ impl OllamaAgent {
     }
 
     /// Embed branch: returns a JSON payload of embeddings.
-    async fn do_embed(
-        &self,
-        client: Ollama,
-        input: &Message
-    ) -> Result<NodeOut, NodeErr> {
+    async fn do_embed(&self, client: Ollama, input: &Message) -> Result<NodeOut, NodeErr> {
         // assume `input.payload()` is { "model": "...", "text": "..." }
-        let model = input.payload().get("model")
-            .and_then(JsonValue::as_str).unwrap_or(&self.model.as_deref().unwrap_or("default"))
+        let model = input
+            .payload()
+            .get("model")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(&self.model.as_deref().unwrap_or("default"))
             .to_string();
-        let text = input.payload().get("text")
-            .and_then(JsonValue::as_str).unwrap_or("")
+        let text = input
+            .payload()
+            .get("text")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
             .to_string();
 
         let req = GenerateEmbeddingsRequest::new(model, EmbeddingsInput::Single(text));
-        let resp = client.generate_embeddings(req).await
-            .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Embed error: {}", e))))?;
+        let resp = client.generate_embeddings(req).await.map_err(|e| {
+            NodeErr::fail(NodeError::ExecutionFailed(format!("Embed error: {}", e)))
+        })?;
 
         let out = json!({ "embeddings": resp.embeddings });
         let msg = Message::new(input.id().as_str(), out, input.session_id().clone());
@@ -323,25 +343,28 @@ impl OllamaAgent {
     }
 
     /// Generate branch: returns a JSON payload with `"generated_text"`.
-    async fn do_generate(
-        &self,
-        client: Ollama,
-        input: &Message
-    ) -> Result<NodeOut, NodeErr> {
+    async fn do_generate(&self, client: Ollama, input: &Message) -> Result<NodeOut, NodeErr> {
         // assume `input.payload()` is { "model": "...", "prompt": "..." }
-        let model = input.payload().get("model")
-            .and_then(JsonValue::as_str).unwrap_or(&self.model.as_deref().unwrap_or("default"))
+        let model = input
+            .payload()
+            .get("model")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(&self.model.as_deref().unwrap_or("default"))
             .to_string();
-        let prompt = input.payload().get("prompt")
-            .and_then(JsonValue::as_str).unwrap_or("")
+        let prompt = input
+            .payload()
+            .get("prompt")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
             .to_string();
 
         let mut req = GenerationRequest::new(model, prompt);
         if let Some(opts) = &self.model_options {
             req = req.options(opts.clone());
         }
-        let resp = client.generate(req).await
-            .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("Generate error: {}", e))))?;
+        let resp = client.generate(req).await.map_err(|e| {
+            NodeErr::fail(NodeError::ExecutionFailed(format!("Generate error: {}", e)))
+        })?;
 
         let out = json!({ "generated_text": resp.response });
         let msg = Message::new(input.id().as_str(), out, input.session_id().clone());
@@ -370,7 +393,6 @@ impl Default for OllamaMode {
         OllamaMode::Chat
     }
 }
-
 
 #[cfg(test)]
 mod ollama_agent_tests {
@@ -423,11 +445,7 @@ mod ollama_agent_tests {
             .expect("no properties in schema");
 
         for key in &["mode", "task", "model", "ollama_url", "tool_names"] {
-            assert!(
-                props.get(*key).is_some(),
-                "missing `{}` in schema",
-                key
-            );
+            assert!(props.get(*key).is_some(), "missing `{}` in schema", key);
         }
     }
 
@@ -441,7 +459,10 @@ mod ollama_agent_tests {
         let mut ctx = NodeContext::dummy();
         let err = agent.process(msg, &mut ctx).await.unwrap_err();
         let e = format!("{:?}", err);
-        assert!(e.contains("LLM error"), "expected Chat path to produce an LLM error");
+        assert!(
+            e.contains("LLM error"),
+            "expected Chat path to produce an LLM error"
+        );
     }
 
     #[tokio::test]
@@ -478,5 +499,4 @@ mod ollama_agent_tests {
         let s = format!("{:?}", err);
         assert!(s.contains("Generate error"), "expected Generate branch");
     }
-
 }

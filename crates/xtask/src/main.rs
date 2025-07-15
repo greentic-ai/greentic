@@ -1,7 +1,8 @@
 use std::{
-    env, fs, path::PathBuf, process::{exit, Command}
+    env, fs,
+    path::PathBuf,
+    process::{Command, exit},
 };
-
 
 #[derive(Debug)]
 struct Target {
@@ -83,19 +84,18 @@ fn main() {
     let crate_dir = PathBuf::from(".");
     let channels_out_dir = PathBuf::from("channels");
     let stop_dir = PathBuf::from("greentic/plugins/channels/stopped"); // or wherever you want to copy
-    
+
     // Ensure base output dirs exist
     for target in TARGETS {
         fs::create_dir_all(channels_out_dir.join(target.dir)).unwrap();
     }
-    
+
     // make sure the output directory exists
     if let Err(e) = fs::create_dir_all(&stop_dir) {
         eprintln!("Failed to create {}: {}", stop_dir.display(), e);
         exit(1);
     }
 
-    
     for pkg in &selected_channels {
         for target in TARGETS {
             println!("🔨 Building `{}` for target `{}`…", pkg, target.triple);
@@ -116,7 +116,10 @@ fn main() {
                     exit(1);
                 });
             if !status.success() {
-                eprintln!("Cargo build failed for `{}` target `{}`.", pkg, target.triple);
+                eprintln!(
+                    "Cargo build failed for `{}` target `{}`.",
+                    pkg, target.triple
+                );
                 exit(1);
             }
 
@@ -167,6 +170,7 @@ fn main() {
         println!("🚚 Host binary copied to {}", dst.display());
     }
 
-    println!("\n🎉 All plugins built and placed into `channels/*` and `greentic/plugins/channels/stopped`.");
-
+    println!(
+        "\n🎉 All plugins built and placed into `channels/*` and `greentic/plugins/channels/stopped`."
+    );
 }
