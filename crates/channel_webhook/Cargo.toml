@@ -1,0 +1,47 @@
+[package]
+name = "channel_webhook"
+version = "0.2.0"
+edition = "2024"
+
+[[bin]]
+name = "channel_webhook"
+path = "src/main.rs"
+
+[dependencies]
+channel_plugin = { version = "0.2.0", path = "../channel_plugin" }
+anyhow = "1.0.98"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tracing = "0.1.41"
+async-trait = "0.1.88"
+tokio = { version = "1.45.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time", "signal"] }
+
+# Web server and TLS
+axum = "0.8.4"
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+tower-http = { version = "0.6.6", features = ["trace"] }
+rustls = "0.23"
+lazy_static = "1.4"
+
+# OAuth and HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+url = "2.5"
+
+# JSON Web Token (used in auth.rs)
+jsonwebtoken = "9.2"
+hmac = "0.12"
+sha2 = "0.10"
+dashmap = "6.1.0"
+uuid = { version = "1.17.0", features = ["v4"] }
+hyper = "1.6.0"
+tokio-stream = {version="0.1.17", features=["net"]}
+tower = "0.5.2"
+tokio-rustls = "0.26.2"
+hyper-util = "0.1.15"
+rustls-pemfile = "2.2.0"
+openidconnect = {version="4.0.1",features = ["reqwest"]}
+
+[dev-dependencies]
+httpmock = "0.7"
+tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread"] }
+tower = "0.5.2"

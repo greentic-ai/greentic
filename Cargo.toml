@@ -27,7 +27,9 @@ exclude = [
   "crates/channel_mock_middle/*",
   "crates/channel_telegram/*",
   "crates/channel_tester/*",
-  "crates/channel_ws/*"
+  "crates/channel_ws/*",
+  "crates/channel_webhook/*",
+  "crates/channel_msgraph/*"
 ]
 
 [workspace]
@@ -38,6 +40,8 @@ members = [
     "crates/channel_mock_middle",
     "crates/channel_tester", 
     "crates/channel_ws",
+    "crates/channel_webhook",
+    "crates/channel_msgraph",
     "crates/xtask", "tests/wasm/mock_tool",
 ]
 
