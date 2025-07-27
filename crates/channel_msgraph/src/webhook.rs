@@ -4,14 +4,17 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use channel_plugin::message::ChannelMessage;
+use channel_plugin::message::{ChannelMessage, Event, MessageContent, MessageDirection, Participant};
+use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::Receiver;
-use crate::{graph_client::GraphState, utils::to_channel_message};
+use crate::{graph_client::GraphState, subscriptions::register_subscription, utils::to_channel_message};
 use crate::models::GraphWebhookPayload;
 
 #[derive(Debug)]
@@ -87,6 +90,37 @@ pub async fn handle_notification(
     StatusCode::ACCEPTED.into_response()
 }
 
+
+#[axum::debug_handler]
+pub async fn poll_incoming(
+    State(runtime): State<Arc<ChannelPluginRuntime>>,
+    Json(payload): Json<Value>,
+) -> StatusCode {
+    tracing::info!(payload = ?payload, "received graph webhook");
+
+    let msg = ChannelMessage {
+        id: Uuid::new_v4().to_string(),
+        timestamp: Utc::now().to_rfc3339(),
+        direction: MessageDirection::Incoming,
+        channel: "msgraph".to_string(),
+        from: Participant::new("microsoft-graph".to_string(), None, None),
+        to: vec![],
+        content: vec![MessageContent::Event {
+            event: Event{
+                event_type: "graph_notification".to_string(),
+                event_payload: payload,
+            }
+        }],
+        ..Default::default()
+    };
+
+    if let Err(err) = runtime.receive_message(msg).await {
+        tracing::error!(?err, "error while handling webhook");
+        StatusCode::INTERNAL_SERVER_ERROR
+    } else {
+        StatusCode::OK
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SubscribeRequest {

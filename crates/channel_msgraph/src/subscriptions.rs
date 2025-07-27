@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use anyhow::Result;
 use chrono::{Duration, Utc};
+use dashmap::DashMap;
 use serde_json::json;
 use tokio::sync::RwLock;
 use futures::future::BoxFuture;
@@ -46,12 +47,15 @@ pub async fn register_graph_subscription(
 }
 
 /// Register a named subscription function (e.g., "calendar-events", "teams-chat")
-pub fn register_subscription<F, Fut>(name: &'static str, f: F)
+pub async fn register_subscription<F, Fut>(name: &'static str, config: Arc<DashMap<String, String>>, f: F)
 where
-    F: Fn(&Arc<RwLock<GraphState>>) -> Fut + Send + Sync + 'static,
+    F: Fn(&Arc<RwLock<GraphState>>, Arc<DashMap<String, String>>) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<()>> + Send + 'static,
 {
-    let wrapper: SubscriptionFn = Arc::new(move |state| Box::pin(f(state)));
+    let wrapper: SubscriptionFn = Arc::new(move |state| {
+        let config = Arc::clone(&config);
+        Box::pin(f(state, config))
+    });
     tokio::spawn(async move {
         let mut lock = SUBSCRIPTION_REGISTRARS.write().await;
         lock.push((name, wrapper));
@@ -71,12 +75,11 @@ pub async fn register_all_subscriptions(graph_state: Arc<RwLock<GraphState>>) ->
 
 /// Renew all active subscription handlers (called in `.poll()`)
 pub async fn renew_all(state: &Arc<RwLock<GraphState>>) -> Result<()> {
-    let state = state.read().await;
     let registrars = SUBSCRIPTION_REGISTRARS.read().await;
 
     for (name, reg_fn) in registrars.iter() {
         tracing::info!("🔄 Registering: {}", name);
-        if let Err(e) = reg_fn(&state).await {
+        if let Err(e) = reg_fn(state).await {
             tracing::error!("❌ Failed to register {}: {:?}", name, e);
         }
     }

@@ -100,7 +100,16 @@ impl PluginHandler for MsGraphPlugin {
                 ("MS_GRAPH_TENANT_ID".to_string(), Some("Azure tenant ID should be set via MS_GRAPH_TENANT_ID".to_string())),
                 ("MS_GRAPH_CLIENT_ID".to_string(), Some("Azure app client ID should be set via MS_GRAPH_CLIENT_ID".to_string())),
             ],
-            optional_keys: vec![],
+            optional_keys: vec![
+                ("MS_GRAPH_EMAIL_USER_ID".to_string(), Some("Optional: override default user for email tracking".to_string())),
+                ("MS_GRAPH_SHAREPOINT_HOSTNAME".to_string(), Some("SharePoint hostname like contoso.sharepoint.com".to_string())),
+                ("MS_GRAPH_SHAREPOINT_SITE_PATH".to_string(), Some("Path like /sites/engineering".to_string())),
+                ("MS_GRAPH_SHAREPOINT_LIST_NAME".to_string(), Some("Display name of the list like 'Tasks'".to_string())),
+                ("MS_GRAPH_TEAMS_TEAM_NAME".to_string(), Some("Display name of the Microsoft Team".to_string())),
+                ("MS_GRAPH_TEAMS_CHANNEL_NAME".to_string(), Some("Display name of the channel within the team".to_string())),
+                ("MS_GRAPH_ONEDRIVE_USER_ID".to_string(), Some("Optional override to target a specific user drive instead of 'me'".to_string())),
+                ("MS_GRAPH_CALENDAR_USER_ID".to_string(), Some("Optional: override default user for calendar events tracking".to_string())),
+            ],
         }
     }
 
