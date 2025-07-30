@@ -187,7 +187,7 @@ pub struct TextMessage {
 // -----------------------------------------------------------------------------
 
 /// High‑level status values for plugins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default,)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ChannelState {
     STARTING,

@@ -3,9 +3,14 @@ use crate::message::{ChannelMessage, MessageOutParams};
 use crate::plugin_actor::Method;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 #[async_trait]
 pub trait ChannelClientType: Send + Sync {
@@ -21,7 +26,7 @@ pub trait ChannelClientType: Send + Sync {
 #[derive(Clone, Debug)]
 pub enum ChannelClient {
     Rpc(RpcChannelClient),
-    // Future: WebSocket(WebSocketChannelClient), etc.
+    WebSocket(WebSocketChannelClient),
 }
 
 impl ChannelClient {
@@ -31,6 +36,11 @@ impl ChannelClient {
     ) -> Self {
         ChannelClient::Rpc(RpcChannelClient::new(tx, rx_src))
     }
+
+    pub async fn new_ws(ws_url: &str) -> Result<Self> {
+        let client = WebSocketChannelClient::new(ws_url).await?;
+        Ok(ChannelClient::WebSocket(client))
+    }
 }
 
 #[async_trait]
@@ -38,14 +48,14 @@ impl ChannelClientType for ChannelClient {
     async fn send(&self, msg: ChannelMessage) -> Result<()> {
         match self {
             ChannelClient::Rpc(client) => client.send(msg).await,
-            // ChannelClient::WebSocket(client) => client.send(msg).await, // future variant
+            ChannelClient::WebSocket(client) => client.send(msg).await,
         }
     }
 
     async fn next_inbound(&mut self) -> Option<ChannelMessage> {
         match self {
             ChannelClient::Rpc(client) => client.next_inbound().await,
-            // ChannelClient::WebSocket(client) => client.next_inbound().await, // future variant
+            ChannelClient::WebSocket(client) => client.next_inbound().await, 
         }
     }
 }
@@ -123,6 +133,55 @@ impl ChannelClientType for RpcChannelClient {
     }
 }
 
+
+#[derive(Debug, Clone)]
+pub struct WebSocketChannelClient {
+    sender: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>>>,
+    receiver: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+}
+
+impl WebSocketChannelClient {
+    pub async fn new(ws_url: &str) -> Result<Self> {
+        let (ws_stream, _) = connect_async(ws_url).await?;
+        let (write, read) = ws_stream.split();
+
+        Ok(WebSocketChannelClient {
+            sender: Arc::new(Mutex::new(write)),
+            receiver: Arc::new(Mutex::new(read)),
+        })
+    }
+}
+
+#[async_trait]
+impl ChannelClientType for WebSocketChannelClient {
+    async fn send(&self, msg: ChannelMessage) -> Result<()> {
+        let params = MessageOutParams { message: msg };
+        let req = Request::notification(Method::MessageOut.to_string(), Some(json!(params)));
+        let serialized = serde_json::to_string(&req)?;
+
+        let mut sender = self.sender.lock().await;
+        sender.send(WsMessage::Text(serialized.into())).await?;
+        Ok(())
+    }
+
+    async fn next_inbound(&mut self) -> Option<ChannelMessage> {
+        loop {
+            let mut receiver = self.receiver.lock().await;
+            match receiver.next().await {
+                Some(Ok(WsMessage::Text(txt))) => {
+                    match serde_json::from_str::<ChannelMessage>(&txt) {
+                        Ok(msg) => return Some(msg),
+                        Err(_) => continue, // skip malformed
+                    }
+                }
+                Some(Ok(_)) => continue, // skip non-text
+                Some(Err(_)) => return None, // connection error
+                None => return None,        // closed
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,4 +242,57 @@ mod tests {
 
         assert_eq!(got, incoming);
     }
+
+    #[tokio::test]
+    async fn test_websocket_send_and_receive() {
+        use tokio_tungstenite::{accept_async, tungstenite::protocol::Message as WsMessage};
+        use tokio::net::TcpListener;
+        use std::net::SocketAddr;
+        use futures_util::{SinkExt, StreamExt};
+
+        // Bind a TCP listener for a local test server
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener = TcpListener::bind(&addr).await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+
+        // Spawn server task that receives JSON-RPC, extracts `ChannelMessage`, and echoes it back
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+
+            while let Some(Ok(WsMessage::Text(txt))) = ws.next().await {
+                // Parse as JSON-RPC request
+                if let Ok(req) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    if let Some(params) = req.get("params") {
+                        if let Some(msg) = params.get("message") {
+                            let echo_text = serde_json::to_string(msg).unwrap();
+                            ws.send(WsMessage::Text(echo_text.into())).await.unwrap();
+                        }
+                    }
+                }
+            }
+        });
+
+        // Connect WebSocket client
+        let ws_url = format!("ws://{}", local_addr);
+        let client = WebSocketChannelClient::new(&ws_url).await.unwrap();
+        let mut client = client;
+
+        // Send a test message
+        let test_message = ChannelMessage {
+            id: "test123".to_string(),
+            ..Default::default()
+        };
+
+        client.send(test_message.clone()).await.unwrap();
+
+        // Await echoed response
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), client.next_inbound())
+            .await
+            .expect("timed out")
+            .expect("stream closed");
+
+        assert_eq!(response, test_message);
+    }
+
 }

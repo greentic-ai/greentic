@@ -54,6 +54,12 @@ pub enum Method {
     WaitUntilDrained,
 }
 
+impl From<Method> for String {
+    fn from(method: Method) -> Self {
+        method.to_string()
+    }
+}
+
 #[derive(Debug)]
 pub enum Command {
     Name,
