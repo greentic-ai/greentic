@@ -129,6 +129,7 @@ impl PluginHandler for Arc<MockChannel> {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
 
@@ -136,6 +137,7 @@ impl PluginHandler for Arc<MockChannel> {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
 

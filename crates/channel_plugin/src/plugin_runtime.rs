@@ -20,6 +20,7 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
 use std::{panic, time::Instant};
 
 use crate::message::*;
@@ -491,4 +492,13 @@ where
             }
         }
     }
+}
+
+pub fn fill_dynamic_fields(template: &str, values: &HashMap<&str, &str>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in values {
+        let placeholder = format!("{{{}}}", key);
+        result = result.replace(&placeholder, value);
+    }
+    result
 }

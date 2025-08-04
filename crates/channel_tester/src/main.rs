@@ -131,6 +131,7 @@ impl PluginHandler for TesterPlugin {
                 Some("The directory where greentic is installed".to_string()),
             )],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
 
@@ -138,6 +139,7 @@ impl PluginHandler for TesterPlugin {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
     async fn state(&self) -> StateResult {

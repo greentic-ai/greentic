@@ -120,6 +120,27 @@ pub struct ChannelMessage {
     pub metadata: Value,
 }
 
+impl ChannelMessage {
+    pub fn event_type(&self) -> anyhow::Result<&str> {
+        for content in &self.content {
+            if let MessageContent::Event { event } = content {
+                return Ok(&event.event_type);
+            }
+        }
+        Err(anyhow::anyhow!("No event_type found in message"))
+    }
+
+    pub fn get_event_payload(&self) -> anyhow::Result<&serde_json::Map<String, Value>> {
+        for content in &self.content {
+            if let MessageContent::Event { event } = content {
+                return event.event_payload.as_object()
+                    .ok_or_else(|| anyhow::anyhow!("event_payload is not an object"));
+            }
+        }
+        Err(anyhow::anyhow!("No event_payload found in message"))
+    }
+}
+
 // -----------------------------------------------------------------------------
 // ChannelMessage – the core envelope exchanged with external channels
 // -----------------------------------------------------------------------------
@@ -318,10 +339,12 @@ pub struct SetSecretsParams {
 
 /// Returns the required and optional keys should be set
 /// For each key, there is also an optional description of what the key is for
+/// Dynamic keys allow for keys to be dynamically composed based on a format, e.g. <channel_id>:<tenant_id>:<user_id>:<key_name>
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListKeysResult {
     pub required_keys: Vec<(String, Option<String>)>, // key and optional description
     pub optional_keys: Vec<(String, Option<String>)>, // key and optional description
+    pub dynamic_keys: Vec<(String, Option<String>)>, // dynamic key format, and optional description but for dynamic keys
 }
 
 /// Result in an error when a required config item is not set

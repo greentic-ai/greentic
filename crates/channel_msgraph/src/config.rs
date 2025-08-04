@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use dashmap::DashMap;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -11,43 +12,37 @@ pub struct MsGraphConfig {
 
 impl MsGraphConfig {
     pub fn from_maps(
-        config_map: &dashmap::DashMap<String, String>,
-        secret_map: &dashmap::DashMap<String, String>,
+        tenant_id: &str,
+        domain: &str,
+        config_map: &DashMap<String, String>,
+        secret_map: &DashMap<String, String>,
     ) -> Result<Self> {
-        let domain = config_map
-            .get("MS_GRAPH_DOMAIN")
-            .map(|v| v.to_string())
-            .ok_or_else(|| anyhow!("Missing config key: MS_GRAPH_DOMAIN"))?;
-
-        let tenant_id = config_map
-            .get("MS_GRAPH_TENANT_ID")
-            .map(|v| v.to_string())
-            .ok_or_else(|| anyhow!("Missing config key: MS_GRAPH_TENANT_ID"))?;
+        let key_prefix = format!("msgraph:{tenant_id}:{domain}");
 
         let client_id = config_map
-            .get("MS_GRAPH_CLIENT_ID")
+            .get(&format!("{key_prefix}:client_id"))
             .map(|v| v.to_string())
-            .ok_or_else(|| anyhow!("Missing config key: MS_GRAPH_CLIENT_ID"))?;
+            .ok_or_else(|| anyhow!("Missing config: {key_prefix}:client_id"))?;
 
         let client_secret = secret_map
-            .get("MS_GRAPH_CLIENT_SECRET")
+            .get(&format!("{key_prefix}:client_secret"))
             .map(|v| v.to_string())
-            .ok_or_else(|| anyhow!("Missing secret key: MS_GRAPH_CLIENT_SECRET"))?;
+            .ok_or_else(|| anyhow!("Missing secret: {key_prefix}:client_secret"))?;
 
         Ok(MsGraphConfig {
-            domain,
-            tenant_id,
+            domain: domain.to_string(),
+            tenant_id: tenant_id.to_string(),
             client_id,
             client_secret,
         })
     }
 
+
     pub fn as_env_map(&self) -> HashMap<String, String> {
+        let prefix = format!("msgraph:{}:{}", self.tenant_id, self.domain);
         HashMap::from([
-            ("MS_GRAPH_DOMAIN".into(), self.domain.clone()),
-            ("MS_GRAPH_TENANT_ID".into(), self.tenant_id.clone()),
-            ("MS_GRAPH_CLIENT_ID".into(), self.client_id.clone()),
-            ("MS_GRAPH_CLIENT_SECRET".into(), self.client_secret.clone()),
+            (format!("{prefix}:client_id"), self.client_id.clone()),
+            (format!("{prefix}:client_secret"), self.client_secret.clone()),
         ])
     }
 }

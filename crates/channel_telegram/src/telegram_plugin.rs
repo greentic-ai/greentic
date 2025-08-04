@@ -461,6 +461,7 @@ impl PluginHandler for TelegramPlugin {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
 
@@ -470,7 +471,8 @@ impl PluginHandler for TelegramPlugin {
                 ("TELEGRAM_TOKEN".to_string(),
                 Some("The token you get from BotFather when you create a new bot. Go to https://telegram.me/botfather to get one.".to_string()))
             ],
-            optional_keys: vec![]
+            optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
 

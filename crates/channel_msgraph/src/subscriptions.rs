@@ -47,19 +47,44 @@ pub async fn register_graph_subscription(
 }
 
 /// Register a named subscription function (e.g., "calendar-events", "teams-chat")
-pub async fn register_subscription<F, Fut>(name: &'static str, config: Arc<DashMap<String, String>>, f: F)
-where
-    F: Fn(&Arc<RwLock<GraphState>>, Arc<DashMap<String, String>>) -> Fut + Send + Sync + 'static,
+pub async fn register_subscription<F, Fut>(
+    name: &'static str,
+    config: Arc<DashMap<String, String>>,
+    f: F,
+    matcher: fn(&str) -> bool, // e.g. only match keys with "calendar:user"
+) where
+    F: Fn(&Arc<RwLock<GraphState>>, Arc<DashMap<String, String>>) -> Fut
+        + Send
+        + Sync
+        + Clone
+        + 'static,
     Fut: std::future::Future<Output = Result<()>> + Send + 'static,
 {
-    let wrapper: SubscriptionFn = Arc::new(move |state| {
-        let config = Arc::clone(&config);
-        Box::pin(f(state, config))
-    });
-    tokio::spawn(async move {
-        let mut lock = SUBSCRIPTION_REGISTRARS.write().await;
-        lock.push((name, wrapper));
-    });
+    let entries: Vec<_> = config
+        .iter()
+        .filter(|kv| matcher(kv.key()))
+        .map(|kv| {
+            let filtered = DashMap::new();
+            filtered.insert(kv.key().clone(), kv.value().clone());
+            Arc::new(filtered)
+        })
+        .collect();
+
+    for conf in entries {
+        let wrapper: SubscriptionFn = Arc::new({
+            let conf = Arc::clone(&conf);
+            let f = f.clone();
+            move |state| Box::pin(f(state, conf.clone()))
+        });
+
+        tokio::spawn({
+            let wrapper = wrapper.clone();
+            async move {
+                let mut lock = SUBSCRIPTION_REGISTRARS.write().await;
+                lock.push((name, wrapper));
+            }
+        });
+    }
 }
 
 /// Run all registered subscription closures at once (e.g., during init)

@@ -174,13 +174,18 @@ impl PluginHandler for WebhookPlugin {
             optional_keys: vec![
                 ("TLS_CERT".into(),Some("The TLS certificate to run the https server.".to_string())),
                 ("TLS_KEY".into(),Some("The TLS key to run the https server.".to_string())),
-        ] }
+            ],
+            dynamic_keys: vec![],
+         }
     }
 
     fn list_secret_keys(&self) -> ListKeysResult {
         ListKeysResult { required_keys: vec![
             ("WEBHOOK_PORT".into(),Some("The port to listen to for the webhook server.".to_string())),
-        ], optional_keys: vec![] }
+        ], 
+        optional_keys: vec![],
+        dynamic_keys: vec![],
+     }
     }
 
     fn capabilities(&self) -> CapabilitiesResult {

@@ -85,6 +85,7 @@ impl PluginHandler for MockPlugin {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
 
@@ -92,6 +93,7 @@ impl PluginHandler for MockPlugin {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
 

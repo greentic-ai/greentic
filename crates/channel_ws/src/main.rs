@@ -372,6 +372,7 @@ impl PluginHandler for WsPlugin {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: keys,
+            dynamic_keys: vec![],
         }
     }
     /// List of expected secret keys
@@ -379,6 +380,7 @@ impl PluginHandler for WsPlugin {
         ListKeysResult {
             required_keys: vec![],
             optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
     /// Declares plugin capabilities (sending, receiving, text, etc.)

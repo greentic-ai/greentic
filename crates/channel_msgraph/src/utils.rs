@@ -130,7 +130,7 @@ fn infer_mime_type(file_name: &str) -> String {
     .to_string()
 }
 
-fn classify_media(mime: &str) -> Option<MediaType> {
+pub fn classify_media(mime: &str) -> Option<MediaType> {
     if mime.starts_with("image/") {
         Some(MediaType::IMAGE)
     } else if mime.starts_with("video/") {
@@ -140,4 +140,13 @@ fn classify_media(mime: &str) -> Option<MediaType> {
     } else {
         None
     }
+}
+
+pub fn extract_event_type(message: &ChannelMessage) -> Option<&str> {
+    for content in &message.content {
+        if let MessageContent::Event { event } = content {
+            return Some(event.event_type.as_str());
+        }
+    }
+    None
 }
