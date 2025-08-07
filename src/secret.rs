@@ -55,6 +55,14 @@ impl SecretsManager {
     pub async fn delete_secret(&self, key: &str) -> Result<(), SecretsError> {
         self.0.delete_secret(key).await
     }
+
+    pub async fn get_secret(&self, key: &str)  -> Result<Option<String>, SecretsError> {
+        let handle = self.0.get(key);
+        match handle {
+            Some(handle) => self.0.reveal(handle).await,
+            None => Ok(None),
+        }
+    }
 }
 
 impl Debug for EnvSecretsManager {

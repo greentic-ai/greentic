@@ -1,18 +1,14 @@
 use std::sync::Arc;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 use tokio::net::TcpStream;
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 use crate::{
-    jsonrpc::{Id, Request, Response},
-    message::{
-        CapabilitiesResult, ChannelCapabilities, ChannelState, DrainResult, HealthResult,
-        InitParams, InitResult, ListKeysResult, NameResult, StateResult, StopResult,
-        WaitUntilDrainedResult,
-    },
-    plugin_actor::Method,
+    jsonrpc::{Id, Request, Response}, message::{
+        CapabilitiesResult, ChannelCapabilities, ChannelState, DrainResult, HealthResult, InitParams, InitResult, ListKeysResult, NameResult, StateResult, StopResult, WaitUntilDrainedParams, WaitUntilDrainedResult
+    }, plugin_actor::Method, plugin_runtime::PluginHandler, pubsub_client::PubSubPlugin
 };
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -37,6 +33,7 @@ pub trait ControlClientType: Send + Sync + 'static {
 #[derive(Clone, Debug)]
 pub enum ControlClient {
     Rpc(RpcControlClient),
+    PubSub(PubSubControlClient),
     WebSocket(WebSocketControlClient),
     // Future: Grpc(GrpcControlClient), etc.
 }
@@ -50,6 +47,13 @@ impl ControlClient {
         let client = WebSocketControlClient::new(ws_url).await?;
         Ok(ControlClient::WebSocket(client))
     }
+
+    pub async fn new_pubsub(router_id: String, greentic_id: String ) -> Result<Self> {
+        let pubsub = PubSubPlugin::new(router_id, greentic_id);
+        let client = PubSubControlClient::new(pubsub);
+        Ok(ControlClient::PubSub(client))
+    }
+
 }
 
 #[async_trait]
@@ -58,6 +62,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.name().await,
             ControlClient::WebSocket(client) => client.name().await,
+            ControlClient::PubSub(client) => client.name().await,
         }
     }
 
@@ -65,6 +70,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.init(params).await,
             ControlClient::WebSocket(client) => client.init(params).await,
+            ControlClient::PubSub(client) => client.init(params).await,
         }
     }
 
@@ -72,6 +78,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.start(params).await,
             ControlClient::WebSocket(client) => client.start(params).await,
+            ControlClient::PubSub(client) => client.start(params).await,
         }
     }
 
@@ -79,6 +86,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.drain().await,
             ControlClient::WebSocket(client) => client.drain().await,
+            ControlClient::PubSub(client) => client.drain().await,
         }
     }
 
@@ -86,6 +94,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.stop().await,
             ControlClient::WebSocket(client) => client.stop().await,
+            ControlClient::PubSub(client) => client.stop().await,
         }
     }
 
@@ -93,6 +102,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.state().await,
             ControlClient::WebSocket(client) => client.state().await,
+            ControlClient::PubSub(client) => client.state().await,
         }
     }
 
@@ -100,6 +110,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.health().await,
             ControlClient::WebSocket(client) => client.health().await,
+            ControlClient::PubSub(client) => client.health().await,
         }
     }
 
@@ -107,6 +118,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.capabilities().await,
             ControlClient::WebSocket(client) => client.capabilities().await,
+            ControlClient::PubSub(client) => client.capabilities().await,
         }
     }
 
@@ -114,6 +126,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.list_config_keys().await,
             ControlClient::WebSocket(client) => client.list_config_keys().await,
+            ControlClient::PubSub(client) => client.list_config_keys().await,
         }
     }
 
@@ -121,6 +134,7 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.list_secret_keys().await,
             ControlClient::WebSocket(client) => client.list_secret_keys().await,
+            ControlClient::PubSub(client) => client.list_secret_keys().await,
         }
     }
 
@@ -128,7 +142,78 @@ impl ControlClientType for ControlClient {
         match self {
             ControlClient::Rpc(client) => client.wait_until_drained(timeout_ms).await,
             ControlClient::WebSocket(client) => client.wait_until_drained(timeout_ms).await,
+            ControlClient::PubSub(client) => client.wait_until_drained(timeout_ms).await,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PubSubControlClient {
+    plugin: Arc<RwLock<PubSubPlugin>>,
+}
+
+impl PubSubControlClient {
+    pub fn new(plugin: PubSubPlugin) -> Self {
+        Self { plugin: Arc::new(RwLock::new(plugin)) }
+    }
+}
+
+#[async_trait]
+impl ControlClientType for PubSubControlClient {
+    async fn name(&self) -> anyhow::Result<String> {
+        let plugin = self.plugin.read().await;
+        Ok(plugin.name().name)
+    }
+
+    async fn init(&self, p: InitParams) -> anyhow::Result<InitResult> {
+        let mut plugin = self.plugin.write().await;
+        Ok(plugin.init(p).await)
+    }
+
+    async fn start(&self, p: InitParams) -> anyhow::Result<InitResult> {
+        let mut plugin = self.plugin.write().await;
+        Ok(plugin.init(p).await) // reuse `init` as start
+    }
+
+    async fn drain(&self) -> anyhow::Result<DrainResult> {
+        let mut plugin = self.plugin.write().await;
+        Ok(plugin.drain().await)
+    }
+
+    async fn stop(&self) -> anyhow::Result<StopResult> {
+        let mut plugin = self.plugin.write().await;
+        Ok(plugin.stop().await)
+    }
+
+    async fn state(&self) -> anyhow::Result<ChannelState> {
+        let plugin = self.plugin.read().await;
+        Ok(plugin.state().await.state)
+    }
+
+    async fn health(&self) -> anyhow::Result<HealthResult> {
+        let plugin = self.plugin.read().await;
+        Ok(plugin.health().await)
+    }
+
+    async fn capabilities(&self) -> anyhow::Result<ChannelCapabilities> {
+        let plugin = self.plugin.read().await;
+        Ok(plugin.capabilities().capabilities)
+    }
+
+    async fn list_config_keys(&self) -> anyhow::Result<ListKeysResult> {
+        let plugin = self.plugin.read().await;
+        Ok(plugin.list_config_keys())
+    }
+
+    async fn list_secret_keys(&self) -> anyhow::Result<ListKeysResult> {
+        let plugin = self.plugin.read().await;
+        Ok(plugin.list_secret_keys())
+    }
+
+    async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<WaitUntilDrainedResult> {
+        let params = WaitUntilDrainedParams{ timeout_ms };
+        let plugin = self.plugin.read().await;
+        Ok(plugin.wait_until_drained(params).await)
     }
 }
 

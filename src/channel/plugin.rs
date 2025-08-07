@@ -42,24 +42,6 @@ impl PluginWatcher {
     pub async fn new(dir: PathBuf) -> Self {
         // pre-load everything on startup
         let plugins: DashMap<String, PluginHandle> = DashMap::new();
-        /*
-        @@@ REMOVE test - let's not load plugins here and see what happens
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let p = entry.unwrap().path();
-            if p.extension()
-                .and_then(OsStr::to_str)
-                .map(|ext| ["exe", "sh", ""].contains(&ext))
-                .unwrap_or(true) // Accept files with no extension
-            {
-                if let Ok(handle) = spawn_rpc_plugin(p.clone()).await {
-                    let name = handle.name();
-                    plugins.insert(name.to_string(), handle.clone());
-                    info!("Loaded plugin: {}",name.to_string());
-                }
-
-            }
-        }
-        */
 
         PluginWatcher {
             dir,

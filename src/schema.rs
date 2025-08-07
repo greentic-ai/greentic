@@ -48,7 +48,7 @@ pub async fn write_schema(
     let config = ConfigManager(MapConfigManager::new());
 
     let store = InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new(config, secrets, store.clone(), log_config)
+    let channel_mgr = ChannelManager::new(config, secrets, "123".to_string(),store.clone(), log_config)
         .await
         .expect("Could not start channels");
     let _ = channel_mgr.clone().start_all(channels_dir).await;

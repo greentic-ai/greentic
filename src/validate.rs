@@ -39,6 +39,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow};
 use channel_plugin::message::LogLevel;
+use dashmap::DashSet;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,7 @@ pub async fn validate(
     tools_dir: PathBuf,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
+    remote_channels: &DashSet<String>,
 ) -> Result<()> {
     // ---------------------------------------------------------------------
     // 0) Read + parse YAML / JSON
@@ -141,6 +143,7 @@ pub async fn validate(
     let channel_mgr = ChannelManager::new(
         config_manager.clone(),
         secrets_manager.clone(),
+        "123".to_string(),
         sessions,
         log_config,
     )
@@ -152,7 +155,7 @@ pub async fn validate(
     let mut used_tools: HashSet<(String, String)> = HashSet::new();
     let mut used_channels = HashSet::new();
 
-    collect_ids(&flow_value, &mut used_tools, &mut used_channels);
+    collect_ids(&flow_value, &mut used_tools, &mut used_channels, remote_channels);
 
     let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
     let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
@@ -366,6 +369,7 @@ fn collect_ids(
     value: &Value,
     tools: &mut HashSet<(String, String)>,
     channels: &mut HashSet<String>,
+    remote_channels: &DashSet<String>,
 ) {
     match value {
         Value::Object(map) => {
@@ -380,15 +384,18 @@ fn collect_ids(
                 }
             }
             if let Some(Value::String(c)) = map.get("channel") {
-                channels.insert(c.to_string());
+                let channel = c.to_string();
+                if remote_channels.get(&channel).is_none() {
+                    channels.insert(channel);
+                }
             }
             for v in map.values() {
-                collect_ids(v, tools, channels);
+                collect_ids(v, tools, channels, &remote_channels);
             }
         }
         Value::Array(arr) => {
             for v in arr {
-                collect_ids(v, tools, channels);
+                collect_ids(v, tools, channels, &remote_channels);
             }
         }
         _ => {}
@@ -450,7 +457,7 @@ connections:
         });
         let mut tools = std::collections::HashSet::new();
         let mut chs = std::collections::HashSet::new();
-        collect_ids(&doc, &mut tools, &mut chs);
+        collect_ids(&doc, &mut tools, &mut chs, &DashSet::new());
         assert!(tools.contains(&("weather".to_string(), "forecast".to_string())));
         assert!(chs.contains("telegram"));
     }
@@ -484,6 +491,7 @@ connections:
             tools_dir,
             secrets_manager,
             config_manager,
+            &DashSet::new(),
         )
         .await;
 
@@ -515,6 +523,7 @@ connections:
             tools_dir,
             secrets_manager,
             config_manager,
+            &DashSet::new(),
         )
         .await;
 

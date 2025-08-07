@@ -78,6 +78,13 @@ impl PluginWrapper {
         }
     }
 
+    pub fn remote(&self) -> bool {
+        match self.inner.clone() {
+            ControlClient::PubSub(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn session_store(&self) -> SessionStore {
         self.session_store.clone()
     }

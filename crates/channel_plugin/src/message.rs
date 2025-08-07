@@ -151,6 +151,12 @@ pub struct EventType {
     pub description: String,           // Human-readable description
     pub payload_schema: Option<Value>, // the json schema for the event_payload
 }
+
+impl EventType{
+    pub fn new(event_type:String, description: String, payload_schema: Option<Value>) -> Self{
+        Self{event_type,description,payload_schema}
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct ChannelCapabilities {
     pub name: String, // e.g. "Slack", "Email", "SMS"

@@ -1,6 +1,6 @@
 [package]
 name = "channel_plugin"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["maarten <maarten@greentic.com>"]
 description = "The fastest, most secure and extendable digital workforce platform"
@@ -26,6 +26,11 @@ strum = "0.27.1"
 strum_macros = "0.27.1"
 futures-util = "0.3.31"
 tokio-tungstenite = "0.27.0"
+async-nats = "0.42.0"
+nkeys = "0.4.5"
 
 [lib]
 crate-type = ["rlib"]
+
+[dev-dependencies]
+duct = "1.1.0"

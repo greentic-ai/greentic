@@ -1,16 +1,19 @@
 use crate::jsonrpc::{Request, Response};
 use crate::message::{ChannelMessage, MessageOutParams};
 use crate::plugin_actor::Method;
+use crate::plugin_runtime::PluginHandler;
+use crate::pubsub_client::PubSubPlugin;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 
 #[async_trait]
 pub trait ChannelClientType: Send + Sync {
@@ -26,6 +29,7 @@ pub trait ChannelClientType: Send + Sync {
 #[derive(Clone, Debug)]
 pub enum ChannelClient {
     Rpc(RpcChannelClient),
+    PubSub(PubSubChannelClient),
     WebSocket(WebSocketChannelClient),
 }
 
@@ -35,6 +39,12 @@ impl ChannelClient {
         rx_src: broadcast::Sender<ChannelMessage>,
     ) -> Self {
         ChannelClient::Rpc(RpcChannelClient::new(tx, rx_src))
+    }
+
+    pub async fn new_pubsub(router_id: String, greentic_id: String, receiver:UnboundedReceiver<ChannelMessage> ) -> Result<Self> {
+        let pubsub = PubSubPlugin::new(router_id, greentic_id);
+        let client = PubSubChannelClient::new(pubsub, receiver);
+        Ok(ChannelClient::PubSub(client))
     }
 
     pub async fn new_ws(ws_url: &str) -> Result<Self> {
@@ -48,6 +58,7 @@ impl ChannelClientType for ChannelClient {
     async fn send(&self, msg: ChannelMessage) -> Result<()> {
         match self {
             ChannelClient::Rpc(client) => client.send(msg).await,
+            ChannelClient::PubSub(client) => client.send(msg).await,
             ChannelClient::WebSocket(client) => client.send(msg).await,
         }
     }
@@ -55,8 +66,46 @@ impl ChannelClientType for ChannelClient {
     async fn next_inbound(&mut self) -> Option<ChannelMessage> {
         match self {
             ChannelClient::Rpc(client) => client.next_inbound().await,
+            ChannelClient::PubSub(client) => client.next_inbound().await,
             ChannelClient::WebSocket(client) => client.next_inbound().await, 
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PubSubChannelClient {
+    plugin: Arc<RwLock<PubSubPlugin>>,
+    receiver: Arc<RwLock<UnboundedReceiver<ChannelMessage>>>,
+}
+
+impl PubSubChannelClient {
+    pub fn new(
+        plugin: PubSubPlugin,
+        receiver: UnboundedReceiver<ChannelMessage>,
+    ) -> Self {
+        Self {
+            plugin: Arc::new(RwLock::new(plugin)),
+            receiver: Arc::new(RwLock::new(receiver)),
+        }
+    }
+}
+
+#[async_trait]
+impl ChannelClientType for PubSubChannelClient {
+    async fn send(&self, msg: ChannelMessage) -> Result<()> {
+        let params = MessageOutParams{ message: msg };
+        let mut plugin = self.plugin.write().await;
+        let result = plugin.send_message(params).await;
+        if result.success {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(result.error.unwrap_or_else(|| "Unknown error sending message".to_string())))
+        }
+    }
+
+    async fn next_inbound(&mut self) -> Option<ChannelMessage> {
+        let mut lock = self.receiver.write().await;
+        lock.recv().await
     }
 }
 
@@ -184,9 +233,13 @@ impl ChannelClientType for WebSocketChannelClient {
 
 #[cfg(test)]
 mod tests {
+    use std::{process::Command, thread::sleep};
+
+    use crate::message::{InitParams, LogLevel};
+
     use super::*;
     use serde_json::json;
-    use tokio::time::{Duration, timeout};
+    use tokio::{sync::mpsc::unbounded_channel, time::{timeout, Duration}};
 
     /// Helper that builds a RpcChannelClient wired to in-memory channels
     fn make_client() -> (
@@ -293,6 +346,63 @@ mod tests {
             .expect("stream closed");
 
         assert_eq!(response, test_message);
+    }
+
+    #[tokio::test]
+    async fn test_pubsub_send_and_receive() {
+        // Step 1: Launch NATS server subprocess
+        let mut nats_process = Command::new("nats-server")
+            .arg("--port=4223") // avoid conflicts with running NATS
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to start nats-server");
+
+        // Step 2: Give it a second to boot up
+        sleep(Duration::from_secs(1));
+        // Step 1: Dummy plugin that always returns success
+        let mut plugin = PubSubPlugin::new("test_router".into(), "test_greentic".into());
+        let config = vec![("PUBSUB_NATS_URL".to_string(),"nats://localhost:4222".to_string())];
+        let secrets = vec![
+            ("GREENTIC_NATS_SEED".to_string(),"123".to_string()),
+            ("GREENTIC_SECRETS_DIR".to_string(),"./test".to_string())];
+        let p = InitParams{
+            version: "123".to_string(),
+            config, 
+            secrets, 
+            log_level: LogLevel::Info, 
+            log_dir: Some("./test".to_string()), 
+            otel_endpoint: None 
+        };
+        let result = plugin.start(p).await;
+        assert!(result.success);
+        let (tx, rx) = unbounded_channel::<ChannelMessage>();
+
+        // Step 2: Wrap in PubSubChannelClient
+        let client = PubSubChannelClient::new(plugin.clone(), rx);
+        let mut client = client;
+
+        // Step 3: Test send
+        let outbound = ChannelMessage {
+            id: "pubsub_send".into(),
+            ..Default::default()
+        };
+        let send_result = client.send(outbound.clone()).await;
+        assert!(send_result.is_ok(), "send should succeed");
+
+        // Step 4: Simulate an inbound message by pushing into the channel
+        tx.send(outbound.clone()).expect("Failed to push inbound message");
+
+        // Step 5: Test receive
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), client.next_inbound())
+            .await
+            .expect("timed out")
+            .expect("stream closed");
+        assert_eq!(got, outbound, "received message should match sent");
+
+        // Step 6: Kill the NATS server
+        let _ = plugin.stop().await;
+        let _ = nats_process.kill();
     }
 
 }

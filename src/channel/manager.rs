@@ -3,9 +3,7 @@
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use channel_plugin::{
-    message::{ChannelMessage, ChannelState},
-    plugin_actor::PluginHandle,
-    plugin_helpers::PluginError,
+    channel_client::{ChannelClient, PubSubChannelClient}, control_client::{ControlClient, PubSubControlClient}, message::{ChannelMessage, ChannelState}, plugin_actor::PluginHandle, plugin_helpers::PluginError, pubsub_client::PubSubPlugin
 };
 use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
@@ -43,6 +41,7 @@ pub trait IncomingHandler: Send + Sync {
 pub struct ChannelManager {
     config: ConfigManager,
     secrets: SecretsManager,
+    greentic_id: String,
     store: SessionStore,
     channels: Arc<DashMap<String, ManagedChannel>>,
     log_config: LogConfig,
@@ -54,12 +53,14 @@ impl ChannelManager {
     pub async fn new(
         config: ConfigManager,
         secrets: SecretsManager,
+        greentic_id: String,
         store: SessionStore,
         log_config: LogConfig,
     ) -> Result<Arc<Self>> {
         let me = Arc::new(Self {
             config,
             secrets,
+            greentic_id,
             store,
             channels: Arc::new(DashMap::new()),
             log_config,
@@ -161,9 +162,23 @@ impl ChannelManager {
     pub async fn send_to_channel(
         &self,
         name: &str,
+        remote: bool,
         msg: ChannelMessage,
     ) -> Result<(), PluginError> {
         if let Some(mut wrapper) = self.channels.get_mut(name) {
+            wrapper.wrapper.send_message(msg).await
+        } else if remote {
+            // remote channel was not loaded yet, so let's load it
+            let session_store = self.session_store();
+            let log_config = self.log_config;
+            let greentic_id = self.greentic_id;
+            let plugin = PubSubPlugin::new(name.to_string(), greentic_id);
+            let client = PubSubChannelClient::new(plugin, receiver);
+            let control = PubSubControlClient::new(plugin);
+            let plugin = PluginHandle::new(ChannelClient::PubSub(client), ControlClient::PubSub(control)).await;
+            let plugin_wrapper = PluginWrapper::new(plugin, session_store, log_config).await;
+            let wrapper = ManagedChannel::new(plugin_wrapper, None, None);
+            self.register_channel(name.to_string(), wrapper);
             wrapper.wrapper.send_message(msg).await
         } else {
             Err(PluginError::Other(format!("channel `{}` not loaded", name)))
@@ -463,6 +478,7 @@ pub mod tests {
     impl ChannelManager {
         pub fn dummy() -> Arc<Self> {
             Arc::new(ChannelManager {
+                greentic_id: "123".to_string(),
                 config: ConfigManager(MapConfigManager::new()),
                 secrets: SecretsManager(EmptySecretsManager::new()),
                 store: InMemorySessionStore::new(10),
@@ -479,7 +495,7 @@ pub mod tests {
         let config = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
 
-        let mgr = ChannelManager::new(config, secrets, store.clone(), LogConfig::default())
+        let mgr = ChannelManager::new(config, secrets, "123".to_string(), store.clone(), LogConfig::default())
             .await
             .unwrap();
 

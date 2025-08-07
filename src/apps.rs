@@ -1,12 +1,16 @@
 // src/app.rs
 use anyhow::{Context, Error, bail};
+use dashmap::DashSet;
 use std::{
     fs::{self, File},
     io::{Write, stdin, stdout},
     path::{Path, PathBuf},
     sync::Arc,
 };
-
+use data_encoding::BASE32_NOPAD;
+use sha2::{Sha256, Digest};
+use nkeys::KeyPair;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use crate::{
     channel::{
         manager::{ChannelManager, IncomingHandler},
@@ -97,6 +101,7 @@ impl App {
         otel_endpoint: Option<String>,
         secrets: SecretsManager,
     ) -> Result<(), Error> {
+        let greentic_id = secrets.get_secret("GREENTIC_ID").await.unwrap().expect("Your GREENTIC_ID is not set. Please run 'greentic init' first.");
         // 1) Flow manager & initial load + watcher
         let store = InMemorySessionStore::new(session_timeout);
         // Process Manager
@@ -138,7 +143,7 @@ impl App {
         // Channel manager (internally starts its own PluginWatcher over channels_dir)
         let log_config = LogConfig::new(log_level, log_dir, otel_endpoint);
         let channel_manager =
-            ChannelManager::new(config, secrets.clone(), store.clone(), log_config).await?;
+            ChannelManager::new(config, secrets.clone(), greentic_id, store.clone(), log_config).await?;
         self.channel_manager = Some(channel_manager.clone());
 
         // flow manager
@@ -164,7 +169,7 @@ impl App {
         }));
 
         // Register the ChannelsRegistry with the flow and channel manager
-        let registry = ChannelsRegistry::new(flow_mgr.clone(), channel_manager.clone()).await;
+        let registry = ChannelsRegistry::new(flow_mgr.clone(), channel_manager.clone(), remote_channels_list(greentic_id).await).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
 
         // then start watching
@@ -203,6 +208,16 @@ impl App {
             .shutdown_all(true, 2000);
         self.flow_manager.clone().unwrap().shutdown_all().await;
     }
+}
+/// TODO implement a great way to get all the channels available for the greentic_id
+pub async fn remote_channels_list(_greentic_id: String) -> DashSet<String> {
+    let channels: DashSet<String> = DashSet::new();
+    channels.insert("ms_email".into());
+    channels.insert("ms_calendar".into());
+    channels.insert("ms_teams".into());
+    channels.insert("ms_onedrive".into());
+    channels.insert("ms_sharepoint".into());
+    channels
 }
 /// Called when user runs `greentic init --root <dir>`
 pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
@@ -352,7 +367,6 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     };
 
     let token = &verified.user_token;
-
     let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
         Path::new("greentic/secrets").to_path_buf(),
     )));
@@ -362,6 +376,82 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
         bail!(
             "Could not add the GREENTIC_TOKEN={} to the secrets. Please add the token manually. Not doing so will not enable you to download from the Greentic store.",
             token
+        );
+    }
+
+    // make the greentic_id
+    let hash = Sha256::digest(token);
+    let short_hash = &hash[..8];
+    let greentic_id = BASE32_NOPAD.encode(short_hash).to_lowercase();
+    let result = secrets_manager.add_secret("GREENTIC_ID", &greentic_id).await;
+    if result.is_err() {
+        bail!(
+            "Could not add the GREENTIC_ID={} to the secrets. Please add the token manually. Not doing so will not enable you to connect to Greentic remote plugins.",
+            greentic_id
+        );
+    }
+
+    let user_kp = KeyPair::new_user();
+    let public_key = user_kp.public_key(); // e.g., "UXXXXXX..."
+    let seed = user_kp.seed()?;
+    let result = secrets_manager.add_secret("GREENTIC_NATS_SEED", &seed).await; 
+    if result.is_err() {
+        bail!(
+            "Could not add the GREENTIC_NATS_SEED={} to the secrets. Please add the token manually. Not doing so will not enable you to connect to Greentic remote plugins.",
+            seed
+        );
+    }
+
+    let to_hash = format!("{greentic_id}{token}");
+    let mut hasher = Sha256::new();
+    hasher.update(to_hash.as_bytes());
+    let expected_digest = hasher.finalize();
+    let result = user_kp.sign(&expected_digest);
+
+    let signature = URL_SAFE_NO_PAD.encode(result.unwrap());
+    let proof_json = ProofJson {
+        token: &token,
+        signature,
+    };
+
+    let body = JwtRequest {
+        greentic_id: &greentic_id,
+        public_key: &public_key,
+        proof_json,
+    };
+
+    let res = client
+        .post("https://greenticstore.com/jwt")
+        .json(&body)
+        .send()
+        .await?;
+
+    let jwt_response = match res.json::<JwtResponse>().await {
+        Ok(response) => {
+            info!("JWT success: {}", response.success);
+            response
+        }
+        Err(err) => {
+            error!("Error getting jwt token: {:?}", err);
+            bail!(
+                "Could not get the jwt pre-signed token because {:?}",
+                err.to_string()
+            );
+        }
+    };
+
+    if !jwt_response.success {
+        bail!("Could not generate the GREENTIC_NATS_JWT. Please rerun greentic init later and if the problem persists please contact support at support@greentic.ai.");
+    }
+
+    let jwt_token = jwt_response.jwt_token.unwrap();
+    let secrets_dir = root.join("secrets");
+    let jwt_path = secrets_dir.join("greentic_presigned.jwt");
+    // Write JWT token to file
+    if let Err(e) = fs::write(&jwt_path, jwt_token) {
+        bail!(
+            "Could not write greentic_presigned.jwt to secrets directory: {}",
+            e
         );
     }
 
@@ -392,12 +482,14 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     println!(
         "Given this is the first time you download tools and channels, you likely need to add secrets before they work"
     );
+    let remote_channels = remote_channels_list(greentic_id).await;
     let result = validate(
         out_flows_dir.join("weather_bot_telegram.ygtc"),
         root.clone(),
         out_tools_dir.clone(),
         secrets_manager.clone(),
         config_manager.clone(),
+        &remote_channels,
     )
     .await;
     if result.is_err() {
@@ -412,6 +504,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
         out_tools_dir,
         secrets_manager,
         config_manager,
+        &remote_channels,
     )
     .await;
     if result.is_err() {
@@ -501,4 +594,24 @@ struct VerifyRequest<'a> {
 struct Verified {
     status: String,
     user_token: String,
+}
+
+#[derive(Serialize)]
+struct ProofJson<'a> {
+    token: &'a str,
+    signature: String,
+}
+
+
+#[derive(Serialize)]
+struct JwtRequest<'a> {
+    greentic_id: &'a str,
+    public_key: &'a str,
+    proof_json: ProofJson<'a>,
+}
+
+#[derive(Deserialize, Debug)]
+struct JwtResponse {
+    success: bool,
+    jwt_token: Option<String>,
 }

@@ -29,7 +29,7 @@ exclude = [
   "crates/channel_tester/*",
   "crates/channel_ws/*",
   "crates/channel_webhook/*",
-  "crates/channel_msgraph/*"
+  "crates/channel_msgraph/*",
 ]
 
 [workspace]
@@ -90,6 +90,10 @@ moka = { version = "0.12.10", features = ["future"] }
 chrono-english = "0.1.7"
 reqwest = {version="0.12.22",default-features = false,features=["rustls-tls","json"]}
 async-trait = "0.1.88"
+data-encoding = "2.9.0"
+sha2 = "0.10.9"
+nkeys = "0.4.5"
+base64 = "0.22.1"
 
 [dev-dependencies]
 url = "2.5.4"

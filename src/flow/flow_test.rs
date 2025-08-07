@@ -22,7 +22,7 @@ mod tests {
     use crate::secret::{EmptySecretsManager, SecretsManager};
     use async_trait::async_trait;
     use channel_plugin::message::{MessageContent, MessageDirection, Participant};
-    use dashmap::DashMap;
+    use dashmap::{DashMap, DashSet};
     use petgraph::visit::Topo;
     use schemars::{JsonSchema, Schema, schema_for};
     use serde::{Deserialize, Serialize};
@@ -602,6 +602,7 @@ mod tests {
                     channel_name: "mock".into(),
                     channel_in: false,
                     channel_out: true,
+                    channel_remote: false,
                     from: None,
                     to: Some(vec![ValueOrTemplate::Value(Participant::new(
                         "dbg".into(),
@@ -684,7 +685,7 @@ mod tests {
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
         let channel_mgr =
-            ChannelManager::new(cfg_mgr, secrets.clone(), store, LogConfig::default())
+            ChannelManager::new(cfg_mgr, secrets.clone(), "123".to_string(), store, LogConfig::default())
                 .await
                 .expect("channel manager");
         let tempdir = TempDir::new().unwrap();
@@ -704,6 +705,7 @@ mod tests {
             channel_name: "test".into(),
             channel_in: false,
             channel_out: true,
+            channel_remote: false,
             from: None,
             to: None,
             content: None,
@@ -730,7 +732,7 @@ mod tests {
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
         let channel_mgr =
-            ChannelManager::new(cfg_mgr, secrets.clone(), store, LogConfig::default())
+            ChannelManager::new(cfg_mgr, secrets.clone(),"123".to_string(), store, LogConfig::default())
                 .await
                 .expect("channel manager");
         let state = InMemoryState::new();
@@ -755,6 +757,7 @@ mod tests {
             channel_name: "ch".into(),
             channel_in: false,
             channel_out: true,
+            channel_remote: false,
             from: None,
             to: Some(vec![ValueOrTemplate::Template("{{recipient.id}}".into())]),
             content: Some(ValueOrTemplate::Value(MessageContent::Text {
@@ -795,6 +798,7 @@ mod tests {
                     channel_name: "mock".to_string(),
                     channel_in: true,
                     channel_out: false,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -811,6 +815,7 @@ mod tests {
                     channel_name: "mock".to_string(),
                     channel_in: true,
                     channel_out: true,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -827,6 +832,7 @@ mod tests {
                     channel_name: "mock".to_string(),
                     channel_in: false,
                     channel_out: true,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -988,6 +994,7 @@ mod tests {
                     channel_name: "slack".to_string(),
                     channel_in: true,
                     channel_out: false,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -1006,6 +1013,7 @@ mod tests {
                     channel_name: "slack".to_string(),
                     channel_in: false,
                     channel_out: true,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -1056,6 +1064,7 @@ mod tests {
                     channel_name: "c".to_string(),
                     channel_in: true,
                     channel_out: false,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -1074,6 +1083,7 @@ mod tests {
                     channel_name: "c".to_string(),
                     channel_in: false,
                     channel_out: true,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -1103,6 +1113,7 @@ mod tests {
                     channel_name: "mock".to_string(),
                     channel_in: true,
                     channel_out: false,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -1121,6 +1132,7 @@ mod tests {
                     channel_name: "mock".to_string(),
                     channel_in: false,
                     channel_out: true,
+                    channel_remote: false,
                     from: None,
                     to: None,
                     content: None,
@@ -1151,6 +1163,7 @@ mod tests {
         let channel_manager = ChannelManager::new(
             config_mgr,
             secrets.clone(),
+            "123".to_string(),
             store.clone(),
             LogConfig::default(),
         )
@@ -1167,7 +1180,7 @@ mod tests {
             Arc::new(process_mgr.clone()),
             secrets.clone(),
         );
-        let registry = ChannelsRegistry::new(fm.clone(), channel_manager.clone()).await;
+        let registry = ChannelsRegistry::new(fm.clone(), channel_manager.clone(), DashSet::new()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
         let wrapper = make_wrapper().await;
         channel_manager
@@ -1183,7 +1196,7 @@ mod tests {
             display_name: None,
             channel_specific_id: None,
         };
-        let co = ChannelOrigin::new("channel".to_string(), None, None, participant);
+        let co = ChannelOrigin::new("channel".to_string(), None, None, participant, false);
         let mut ctx = NodeContext::new(
             "123".to_string(),
             store.get_or_create("123").await,

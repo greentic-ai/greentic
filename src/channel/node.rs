@@ -8,7 +8,7 @@ use crate::message::Message;
 use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing};
 use async_trait::async_trait;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use schemars::Schema;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ pub struct ChannelNode {
     pub poll_messages: bool,
     /// allow sending messages
     pub send_messages: bool,
+    /// is a remote channel
+    pub remote: bool,
     /// how to route incoming messages into flows
     #[serde(rename = "router")]
     pub router_config: FlowRouterConfig,
@@ -48,6 +50,7 @@ pub enum FlowRouterConfig {
 pub async fn handle_message(
     flow_name: &str,
     node_id: &str,
+    remote: bool,
     msg: &ChannelMessage,
     fm: &Arc<FlowManager>,
 ) {
@@ -65,6 +68,7 @@ pub async fn handle_message(
         msg.reply_to_id.clone(),
         msg.thread_id.clone(),
         msg.from.clone(),
+        remote,
     );
     if let Some(report) = fm
         .process_message(flow_name, node_id, input, Some(channel_origin))
@@ -86,8 +90,8 @@ pub async fn handle_message(
 impl ChannelNode {
     /// When an actual plugin yields an incoming ChannelMessage,
     /// this helper will route it into one or more flows.
-    pub async fn handle_message(&self, msg: &ChannelMessage, fm: &Arc<FlowManager>) {
-        handle_message(&self.flow_name, &self.node_id, msg, fm).await;
+    pub async fn handle_message(&self, remote: bool, msg: &ChannelMessage, fm: &Arc<FlowManager>) {
+        handle_message(&self.flow_name, &self.node_id, remote, msg, fm).await;
     }
 }
 
@@ -98,16 +102,19 @@ impl ChannelNode {
 pub struct ChannelsRegistry {
     map: Arc<DashMap<String, Vec<ChannelNode>>>,
     flow_manager: Arc<FlowManager>,
+    remote_channels: DashSet<String>,
 }
 
 impl ChannelsRegistry {
     pub async fn new(
         flow_manager: Arc<FlowManager>,
         _channel_manager: Arc<ChannelManager>,
+        remote_channels: DashSet<String>,
     ) -> Arc<Self> {
         let me = Arc::new(Self {
             map: Arc::new(DashMap::new()),
             flow_manager: flow_manager.clone(),
+            remote_channels,
         });
 
         // subscribe to *all* new flows and auto‐register their Channel nodes
@@ -127,6 +134,7 @@ impl ChannelsRegistry {
                         // Only register the ChannelNode if it is not a target of any connection
                         if !incoming_targets.contains(node_name.as_str()) {
                             registry.register(ChannelNode {
+                                remote: cfg.channel_remote,
                                 channel_name: cfg.channel_name.clone(),
                                 flow_name: flow_id.to_string(),
                                 node_id: node_name.clone(),
@@ -165,7 +173,7 @@ impl ChannelsRegistry {
 
 #[async_trait]
 impl IncomingHandler for ChannelsRegistry {
-    async fn handle_incoming(&self, mut msg: ChannelMessage, session_store: SessionStore) {
+    async fn handle_incoming(&self, mut msg: ChannelMessage,  session_store: SessionStore) {
         // exactly your old `handle_incoming` logic:
         if let Some(nodes) = self.map.get(&msg.channel) {
             if nodes.is_empty() {
@@ -192,7 +200,7 @@ impl IncomingHandler for ChannelsRegistry {
                         for flow in session_flows.iter() {
                             for node in session_nodes.iter() {
                                 if self.find_if_node_in_flow(flow, node) {
-                                    handle_message(flow, node, &msg, &self.flow_manager).await;
+                                    handle_message(flow, node, self.remote_channels.contains(node), &msg, &self.flow_manager).await;
                                     routed = true;
                                 }
                             }
@@ -204,7 +212,7 @@ impl IncomingHandler for ChannelsRegistry {
                                 session_flows, session_nodes
                             );
                             for node in nodes.iter().cloned() {
-                                node.handle_message(&msg, &self.flow_manager).await;
+                                node.handle_message(node.remote, &msg, &self.flow_manager).await;
                             }
                         }
                     } else {
@@ -213,7 +221,7 @@ impl IncomingHandler for ChannelsRegistry {
                             msg.channel
                         );
                         for node in nodes.iter().cloned() {
-                            node.handle_message(&msg, &self.flow_manager).await;
+                            node.handle_message(node.remote, &msg, &self.flow_manager).await;
                         }
                     }
                 } else {
@@ -340,12 +348,12 @@ mod tests {
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let exec = Executor::new(secrets.clone(), logger);
         let config = ConfigManager(MapConfigManager::new());
-        let cm = ChannelManager::new(config, secrets.clone(), store.clone(), LogConfig::default())
+        let cm = ChannelManager::new(config, secrets.clone(), "123".to_string(), store.clone(), LogConfig::default())
             .await
             .expect("could not create channel manager");
         let pm = ProcessManager::dummy();
         let fm = FlowManager::new(store.clone(), exec, cm.clone(), pm.clone(), secrets);
-        let reg = ChannelsRegistry::new(fm, cm).await;
+        let reg = ChannelsRegistry::new(fm, cm, DashSet::new()).await;
 
         // no panic if nothing registered
         let mut msg = ChannelMessage::default();
@@ -358,6 +366,7 @@ mod tests {
             channel_name: "foo".into(),
             flow_name: "flow_x".into(),
             node_id: "node_id".into(),
+            remote: false,
             poll_messages: true,
             send_messages: false,
             router_config: FlowRouterConfig::Channel(ChannelFlowRouter::default()),

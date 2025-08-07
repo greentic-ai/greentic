@@ -1,15 +1,7 @@
 use crate::{
-    channel::manager::ChannelManager,
-    executor::{
-        Executor,
-        exports::wasix::mcp::router::{Content, ResourceContents},
-    },
-    flow::manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate},
-    mapper::Mapper,
-    message::Message,
-    process::manager::ProcessManager,
-    secret::SecretsManager,
-    util::extension_from_mime,
+    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::{
+        exports::wasix::mcp::router::{Content, ResourceContents}, Executor
+    }, flow::manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate}, mapper::Mapper, message::Message, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, util::extension_from_mime
 };
 use crate::{
     channel::node::ChannelNode,
@@ -299,6 +291,8 @@ impl JsonSchema for Node {
         //---------------------------------------------------------------
         generate.subschema_for::<ToolNode>();
         generate.subschema_for::<ChannelNode>();
+        generate.subschema_for::<BuiltInAgent>();
+        generate.subschema_for::<BuiltInProcess>();
         // Add more variants here with `gen.subschema_for::<T>();`
 
         //---------------------------------------------------------------
@@ -308,7 +302,9 @@ impl JsonSchema for Node {
         json_schema!({
             "anyOf": [
                 { "$ref": "#/definitions/ToolNode" },
-                { "$ref": "#/definitions/ChannelNode" }
+                { "$ref": "#/definitions/ChannelNode" },
+                { "$ref": "#/definitions/BuiltInProcess" },
+                { "$ref": "#/definitions/BuiltInAgent" }
                 // { "$ref": "#/definitions/MyOtherNode" }
             ]
         })
@@ -321,6 +317,7 @@ pub struct ChannelOrigin {
     reply_to: Option<String>,
     thread_id: Option<String>,
     participant: Participant,
+    remote: bool,
 }
 
 impl ChannelOrigin {
@@ -329,12 +326,14 @@ impl ChannelOrigin {
         reply_to: Option<String>,
         thread_id: Option<String>,
         participant: Participant,
+        remote: bool,
     ) -> Self {
         Self {
             channel,
             reply_to,
             thread_id,
             participant,
+            remote,
         }
     }
 
@@ -354,6 +353,10 @@ impl ChannelOrigin {
         self.thread_id.clone()
     }
 
+    pub fn remote(&self) -> bool {
+        self.remote.clone()
+    }
+
     /// Build a ChannelMessage that “replies” with `payload` to the original sender.
     pub fn reply(
         &self,
@@ -368,6 +371,7 @@ impl ChannelOrigin {
             channel_name: self.channel.clone(),
             channel_in: false,
             channel_out: true,
+            channel_remote: self.remote(),
             from: None, // defaults to `greentic` platform
             to: Some(vec![ValueOrTemplate::Value(self.participant.clone())]),
             content: None, // so that create_out_msg falls back to payload
@@ -1180,6 +1184,7 @@ pub mod tests {
         let channel_manager = ChannelManager::new(
             config_mgr,
             secrets.clone(),
+            "123".to_string(),
             store.clone(),
             LogConfig::default(),
         )
@@ -1242,6 +1247,7 @@ pub mod tests {
         let channel_manager = ChannelManager::new(
             config_mgr,
             secrets.clone(),
+            "123".to_string(),
             store.clone(),
             LogConfig::default(),
         )
@@ -1297,6 +1303,7 @@ pub mod tests {
         let channel_manager = ChannelManager::new(
             config_mgr,
             secrets.clone(),
+            "123".to_string(),
             store.clone(),
             LogConfig::default(),
         )

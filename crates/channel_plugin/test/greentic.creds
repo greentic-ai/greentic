@@ -1,0 +1,11 @@
+-----BEGIN NATS USER JWT-----
+test_file
+------END NATS USER JWT------
+
+************************* IMPORTANT *************************
+NKEY Seed printed below can be used to sign and prove identity.
+NKEYs are sensitive and should be treated as secrets.
+
+-----BEGIN USER NKEY SEED-----
+SUAERFEPEPLTNFANHTGYBKUM3LVDHZOLX3T4EDKKSYMV2627CPDVHWROYA
+------END USER NKEY SEED------

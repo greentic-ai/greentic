@@ -964,12 +964,14 @@ mod tests {
             None,
             None,
             Participant::new("user".into(), None, None),
+            false,
         );
         let process_manager =
             ProcessManager::new(Path::new("./greentic/plugins/processes")).unwrap();
         let channel_manager = ChannelManager::new(
             config_manager,
             secrets.clone(),
+            "123".to_string(),
             store.clone(),
             LogConfig::default(),
         )
@@ -1501,6 +1503,7 @@ connections:
                         channel_name: "mock_inout".to_string(),
                         channel_in: true,
                         channel_out: false,
+                        channel_remote: false,
                         from: None,
                         to: None,
                         content: None,
@@ -1595,10 +1598,12 @@ connections:
             None,
             None,
             Participant::new("id".to_string(), None, None),
+            false,
         );
         let channel_manager = ChannelManager::new(
             config_manager,
             secrets.clone(),
+            "123".to_string(),
             store.clone(),
             LogConfig::default(),
         )

@@ -296,6 +296,7 @@ impl Flow {
             let mut pub_cfg = base.clone();
             pub_cfg.channel_in = false;
             pub_cfg.channel_out = true;
+            pub_cfg.channel_remote = base.channel_remote;
             // **this is key**: send somewhere *else*
             pub_cfg.channel_name = format!("{}_out", base.channel_name);
 
@@ -464,7 +465,7 @@ impl Flow {
                                 match cm {
                                     Ok(msg) => ctx
                                         .channel_manager()
-                                        .send_to_channel(&cfg.channel_name, msg)
+                                        .send_to_channel(&cfg.channel_name, cfg.channel_remote, msg)
                                         .await
                                         .map(|_| NodeOut::all(input.clone()))
                                         .map_err(|e| {
@@ -576,7 +577,7 @@ impl Flow {
                                             // Trying to remove ctx.add_node(node_id.clone());
                                             if let Err(e) = ctx
                                                 .channel_manager()
-                                                .send_to_channel(&origin.channel(), cm)
+                                                .send_to_channel(&origin.channel(), origin.remote(), cm)
                                                 .await
                                             {
                                                 early_err = Some((
@@ -640,7 +641,7 @@ impl Flow {
                                         Ok(cm) => {
                                             if let Err(e) = ctx
                                                 .channel_manager()
-                                                .send_to_channel(&origin.channel(), cm)
+                                                .send_to_channel(&origin.channel(), origin.remote(), cm)
                                                 .await
                                             {
                                                 early_err = Some((
@@ -783,6 +784,13 @@ pub struct ChannelNodeConfig {
     // Skip if `false`
     #[serde(rename = "out", default, skip_serializing_if = "std::ops::Not::not")]
     pub channel_out: bool,
+
+    /// Whether this node is a remote node or local
+    // Skip if `false`
+    #[serde(rename = "remote", default, skip_serializing_if = "std::ops::Not::not")]
+    pub channel_remote: bool,
+
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<ValueOrTemplate<Participant>>, // Sender info
     #[serde(default, skip_serializing_if = "Option::is_none")]
