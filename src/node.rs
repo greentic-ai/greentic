@@ -964,7 +964,7 @@ pub mod tests {
     use crate::flow::state::{InMemoryState, StateValue};
     use crate::logger::{LogConfig, Logger, OpenTelemetryLogger};
     use crate::message::Message;
-    use crate::secret::{EmptySecretsManager, SecretsManager};
+    use crate::secret::{TestSecretsManager, SecretsManager};
     use serde_json::json;
     use std::path::Path;
     use tempfile::TempDir;
@@ -979,7 +979,7 @@ pub mod tests {
                 executor: Executor::dummy(),
                 channel_manager: ChannelManager::dummy(),
                 process_manager: ProcessManager::dummy(),
-                secrets: SecretsManager(EmptySecretsManager::new()),
+                secrets: SecretsManager(TestSecretsManager::new()),
                 channel_origin: None,
                 connections: None,
                 hb,
@@ -995,7 +995,7 @@ pub mod tests {
                 executor: Arc::new(Executor::mock(result)),
                 channel_manager: ChannelManager::dummy(),
                 process_manager: ProcessManager::dummy(),
-                secrets: SecretsManager(EmptySecretsManager::new()),
+                secrets: SecretsManager(TestSecretsManager::new()),
                 channel_origin: None,
                 connections: None,
                 hb,
@@ -1176,7 +1176,7 @@ pub mod tests {
             temp_dir.path().to_string_lossy().to_string(),
         );
 
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(), logging);
         let config_mgr = ConfigManager(MapConfigManager::new());
@@ -1235,7 +1235,7 @@ pub mod tests {
             temp_dir.path().to_string_lossy().to_string(),
         );
 
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(), logging);
         let watcher = executor
@@ -1291,7 +1291,7 @@ pub mod tests {
             temp_dir.path().to_string_lossy().to_string(),
         );
 
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(), logging);
         let watcher = executor

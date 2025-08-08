@@ -167,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
                 out_dir.clone(),
                 tools_dir.clone(),
                 channels_dir.clone(),
+                vec![],
                 log_level,
                 log_file.clone(),
                 event_file.clone(),

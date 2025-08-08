@@ -39,7 +39,6 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow};
 use channel_plugin::message::LogLevel;
-use dashmap::DashSet;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
@@ -78,8 +77,8 @@ pub async fn validate(
     tools_dir: PathBuf,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
-    remote_channels: &DashSet<String>,
 ) -> Result<()> {
+    let greentic_id = secrets_manager.get_secret("GREENTIC_ID").await.unwrap().expect("GREENTIC_ID was not set in secrets. Please run 'greentic init' first.");
     // ---------------------------------------------------------------------
     // 0) Read + parse YAML / JSON
     // ---------------------------------------------------------------------
@@ -143,11 +142,12 @@ pub async fn validate(
     let channel_mgr = ChannelManager::new(
         config_manager.clone(),
         secrets_manager.clone(),
-        "123".to_string(),
+        greentic_id,
         sessions,
         log_config,
     )
     .await?;
+    
 
     // ---------------------------------------------------------------------
     // 3) Inspect flow JSON to collect all tool & channel IDs ---------------
@@ -155,7 +155,7 @@ pub async fn validate(
     let mut used_tools: HashSet<(String, String)> = HashSet::new();
     let mut used_channels = HashSet::new();
 
-    collect_ids(&flow_value, &mut used_tools, &mut used_channels, remote_channels);
+    collect_ids(&flow_value, &mut used_tools, &mut used_channels, &channel_mgr);
 
     let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
     let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
@@ -215,7 +215,15 @@ pub async fn validate(
 
     // 3c) channel required keys --------------------------------------------
     // then start watching
-    let plugin_watcher = channel_mgr.clone().start_all(running_path.clone()).await?;
+    let remote_channels = flow_value.get("remote_channels")            // Option<&Value>
+        .and_then(|v| v.as_array())              // Option<&Vec<Value>>
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let plugin_watcher = channel_mgr.clone().start_all(running_path.clone(), remote_channels).await?;
     for c in &used_channels {
         if let Some(wrapper) = channel_mgr.channel(c) {
             let req_cfg = wrapper.list_config_keys().await.required_keys;
@@ -369,7 +377,7 @@ fn collect_ids(
     value: &Value,
     tools: &mut HashSet<(String, String)>,
     channels: &mut HashSet<String>,
-    remote_channels: &DashSet<String>,
+    channel_manager: &ChannelManager,
 ) {
     match value {
         Value::Object(map) => {
@@ -385,17 +393,15 @@ fn collect_ids(
             }
             if let Some(Value::String(c)) = map.get("channel") {
                 let channel = c.to_string();
-                if remote_channels.get(&channel).is_none() {
-                    channels.insert(channel);
-                }
+                channels.insert(channel);
             }
             for v in map.values() {
-                collect_ids(v, tools, channels, &remote_channels);
+                collect_ids(v, tools, channels, &channel_manager);
             }
         }
         Value::Array(arr) => {
             for v in arr {
-                collect_ids(v, tools, channels, &remote_channels);
+                collect_ids(v, tools, channels, &channel_manager);
             }
         }
         _ => {}
@@ -406,7 +412,7 @@ fn collect_ids(
 mod tests {
     use crate::{
         config::MapConfigManager,
-        secret::{EmptySecretsManager, EnvSecretsManager},
+        secret::{TestSecretsManager, EnvSecretsManager},
     };
 
     use super::*;
@@ -457,7 +463,8 @@ connections:
         });
         let mut tools = std::collections::HashSet::new();
         let mut chs = std::collections::HashSet::new();
-        collect_ids(&doc, &mut tools, &mut chs, &DashSet::new());
+        let channel_manager = ChannelManager::dummy();
+        collect_ids(&doc, &mut tools, &mut chs, &channel_manager);
         assert!(tools.contains(&("weather".to_string(), "forecast".to_string())));
         assert!(chs.contains("telegram"));
     }
@@ -481,9 +488,9 @@ connections:
         )
         .unwrap();
 
-        let secrets_manager = SecretsManager(EmptySecretsManager::new());
+        let secrets_manager = SecretsManager(TestSecretsManager::new());
+        let _ = secrets_manager.add_secret("GREENTIC_ID", "123").await;
         let config_manager = ConfigManager(MapConfigManager::new());
-
         // run validator – expect an Err because nothing is installed
         let res = validate(
             flow_file,
@@ -491,7 +498,6 @@ connections:
             tools_dir,
             secrets_manager,
             config_manager,
-            &DashSet::new(),
         )
         .await;
 
@@ -514,16 +520,15 @@ connections:
         let flow_file = root_dir.join("bad.ygtc");
         fs::write(&flow_file, "this is : not : yaml").unwrap();
 
-        let secrets_manager = SecretsManager(EmptySecretsManager::new());
+        let secrets_manager = SecretsManager(TestSecretsManager::new());
+        let _ = secrets_manager.add_secret("GREENTIC_ID", "123").await;
         let config_manager = ConfigManager(MapConfigManager::new());
-
         let res = validate(
             flow_file,
             root_dir.clone(),
             tools_dir,
             secrets_manager,
             config_manager,
-            &DashSet::new(),
         )
         .await;
 

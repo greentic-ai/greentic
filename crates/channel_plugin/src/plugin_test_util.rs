@@ -69,7 +69,7 @@ impl MockChannel {
 
 #[async_trait]
 impl ChannelClientType for Arc<MockChannel> {
-    async fn send(&self, msg: ChannelMessage) -> anyhow::Result<()> {
+    async fn send(&mut self, msg: ChannelMessage) -> anyhow::Result<()> {
         // behave exactly like real plugins: push to `outgoing`
         self.outgoing.lock().await.push(msg);
         Ok(())

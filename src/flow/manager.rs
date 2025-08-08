@@ -140,6 +140,8 @@ pub struct Flow {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_channels: Vec<String>,
 
     /// node_id → node configuration
     #[serde(
@@ -168,6 +170,7 @@ impl PartialEq for Flow {
             && self.title == other.title
             && self.description == other.description
             && self.channels == other.channels
+            && self.remote_channels == other.remote_channels
             && self.nodes == other.nodes
             && self.connections == other.connections
         // graph, index_of, plans are skipped
@@ -255,6 +258,7 @@ impl Flow {
             title: title.into(),
             description: description.into(),
             channels: Vec::new(),
+            remote_channels: Vec::new(),
             nodes: HashMap::new(),
             connections: HashMap::new(),
             graph: StableDiGraph::new(),
@@ -267,6 +271,9 @@ impl Flow {
     }
     pub fn description(&self) -> String {
         self.description.clone()
+    }
+    pub fn remote_channels(&self) -> Vec<String> {
+        self.remote_channels.clone()
     }
     /// Deserialize + build the internal graph
     pub fn build(mut self) -> Self {
@@ -465,7 +472,7 @@ impl Flow {
                                 match cm {
                                     Ok(msg) => ctx
                                         .channel_manager()
-                                        .send_to_channel(&cfg.channel_name, cfg.channel_remote, msg)
+                                        .send_to_channel(&cfg.channel_name, msg)
                                         .await
                                         .map(|_| NodeOut::all(input.clone()))
                                         .map_err(|e| {
@@ -577,7 +584,7 @@ impl Flow {
                                             // Trying to remove ctx.add_node(node_id.clone());
                                             if let Err(e) = ctx
                                                 .channel_manager()
-                                                .send_to_channel(&origin.channel(), origin.remote(), cm)
+                                                .send_to_channel(&origin.channel(), cm)
                                                 .await
                                             {
                                                 early_err = Some((
@@ -641,7 +648,7 @@ impl Flow {
                                         Ok(cm) => {
                                             if let Err(e) = ctx
                                                 .channel_manager()
-                                                .send_to_channel(&origin.channel(), origin.remote(), cm)
+                                                .send_to_channel(&origin.channel(), cm)
                                                 .await
                                             {
                                                 early_err = Some((
@@ -722,6 +729,13 @@ impl Flow {
         let name = name.into();
         if !self.channels.contains(&name) {
             self.channels.push(name);
+        }
+        self
+    }
+    pub fn add_remote_channel(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        if !self.remote_channels.contains(&name) {
+            self.remote_channels.push(name);
         }
         self
     }
@@ -1061,6 +1075,16 @@ impl FlowManager {
         })
     }
 
+    pub fn remote_channels(&self) -> Vec<String> {
+        let mut all_remote_channels = HashSet::new();
+        for (_,flow) in self.flows.clone(){
+            for channel in flow.remote_channels(){
+                all_remote_channels.insert(channel);
+            }
+        }
+        all_remote_channels.into_iter().collect()
+    }
+
     pub async fn subscribe_flow_added(&self, h: FlowAddedHandler) {
         let mut guard = self.on_added.lock().await;
         guard.push(h);
@@ -1299,7 +1323,7 @@ pub trait TemplateContext {
 #[cfg(test)]
 impl FlowManager {
     pub fn new_test(session_store: SessionStore) -> Self {
-        use crate::secret::EmptySecretsManager;
+        use crate::secret::TestSecretsManager;
 
         Self {
             flows: DashMap::new(),
@@ -1307,7 +1331,7 @@ impl FlowManager {
             executor: Executor::dummy(),
             channel_manager: ChannelManager::dummy(),
             process_manager: ProcessManager::dummy(),
-            secrets: SecretsManager(EmptySecretsManager::new()),
+            secrets: SecretsManager(TestSecretsManager::new()),
             on_added: Arc::new(Mutex::new(Vec::new())),
         }
     }

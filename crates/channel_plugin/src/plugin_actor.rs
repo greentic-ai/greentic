@@ -149,7 +149,7 @@ impl PluginHandle {
         self.control.state().await
     }
 
-    pub async fn send_message(&self, msg: ChannelMessage) -> anyhow::Result<()> {
+    pub async fn send_message(&mut self, msg: ChannelMessage) -> anyhow::Result<()> {
         self.client.send(msg).await
     }
 
@@ -485,7 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_handle_send_message() {
-        let (plugin, _ev_rx) = PluginHandle::in_process(MockChannel::new()).await.unwrap();
+        let (mut plugin, _ev_rx) = PluginHandle::in_process(MockChannel::new()).await.unwrap();
 
         let msg = MessageOutParams {
             message: ChannelMessage {

@@ -882,7 +882,7 @@ mod tests {
             debug_process::DebugProcessNode,
             manager::{BuiltInProcess, ProcessManager},
         },
-        secret::{EmptySecretsManager, EnvSecretsManager, SecretsManager},
+        secret::{TestSecretsManager, EnvSecretsManager, SecretsManager},
     };
 
     use super::*;
@@ -954,7 +954,7 @@ mod tests {
         let qa_node = QAProcessNode { config };
         let state = InMemoryState::new();
         let ctx_config = DashMap::new();
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(), logger.clone());
         let config_manager = ConfigManager(MapConfigManager::new());

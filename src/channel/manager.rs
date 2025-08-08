@@ -3,7 +3,7 @@
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use channel_plugin::{
-    channel_client::{ChannelClient, PubSubChannelClient}, control_client::{ControlClient, PubSubControlClient}, message::{ChannelMessage, ChannelState}, plugin_actor::PluginHandle, plugin_helpers::PluginError, pubsub_client::PubSubPlugin
+    channel_client::ChannelClient, control_client::ControlClient, message::{ChannelMessage, ChannelState}, plugin_actor::PluginHandle, plugin_helpers::PluginError,
 };
 use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
@@ -162,24 +162,10 @@ impl ChannelManager {
     pub async fn send_to_channel(
         &self,
         name: &str,
-        remote: bool,
         msg: ChannelMessage,
     ) -> Result<(), PluginError> {
         if let Some(mut wrapper) = self.channels.get_mut(name) {
-            wrapper.wrapper.send_message(msg).await
-        } else if remote {
-            // remote channel was not loaded yet, so let's load it
-            let session_store = self.session_store();
-            let log_config = self.log_config;
-            let greentic_id = self.greentic_id;
-            let plugin = PubSubPlugin::new(name.to_string(), greentic_id);
-            let client = PubSubChannelClient::new(plugin, receiver);
-            let control = PubSubControlClient::new(plugin);
-            let plugin = PluginHandle::new(ChannelClient::PubSub(client), ControlClient::PubSub(control)).await;
-            let plugin_wrapper = PluginWrapper::new(plugin, session_store, log_config).await;
-            let wrapper = ManagedChannel::new(plugin_wrapper, None, None);
-            self.register_channel(name.to_string(), wrapper);
-            wrapper.wrapper.send_message(msg).await
+            wrapper.wrapper.send_message(msg).await            
         } else {
             Err(PluginError::Other(format!("channel `{}` not loaded", name)))
         }
@@ -202,7 +188,33 @@ impl ChannelManager {
     pub async fn start_all(
         self: Arc<Self>,
         plugins_dir: PathBuf,
+        remote_channels: Vec<String>,
     ) -> Result<DirectoryWatcher, Error> {
+        // Load all the remote channels
+        for channel in remote_channels
+        {
+            // remote channel was not loaded yet, so let's load it
+            let session_store = self.session_store();
+            let log_config = self.log_config.clone();
+            let greentic_id = self.greentic_id.clone();
+            let client = ChannelClient::new_pubsub(channel.clone(), greentic_id.clone()).await;
+            let control = ControlClient::new_pubsub(channel.clone(),greentic_id).await;
+            if client.is_err() {
+                let err = client.unwrap_err();
+                error!("Cannot create remote channel `{}` because {}", channel, err.to_string());
+                return Err(err);
+            } else if control.is_err() {
+                let err = control.unwrap_err();
+                error!("Cannot create remote channel `{}` because {}", channel, err.to_string());
+                return Err(err);
+            } else {
+                let plugin = PluginHandle::new(client.unwrap(), control.unwrap()).await;
+                let plugin_wrapper = PluginWrapper::new(plugin, session_store, log_config).await;
+                let wrapper = ManagedChannel::new(plugin_wrapper.clone(), None, None);
+                let _ = self.register_channel(channel, wrapper).await;
+            }
+
+        }
         // 1) build the watcher
         let watcher = Arc::new(PluginWatcher::new(plugins_dir.clone()).await);
         // 2) subscribe us to get add/remove events
@@ -403,7 +415,7 @@ impl PluginEventHandler for ChannelManager {
         Ok(())
     }
 }
-#[derive(Debug)]
+#[derive(Debug,)]
 pub struct ManagedChannel {
     wrapper: PluginWrapper,
     cancel: Option<CancellationToken>,
@@ -470,7 +482,7 @@ pub mod tests {
     use channel_plugin::plugin_test_util::spawn_mock_handle;
 
     use crate::{
-        config::MapConfigManager, flow::session::InMemorySessionStore, secret::EmptySecretsManager,
+        config::MapConfigManager, flow::session::InMemorySessionStore, secret::TestSecretsManager,
     };
 
     use super::*;
@@ -480,7 +492,7 @@ pub mod tests {
             Arc::new(ChannelManager {
                 greentic_id: "123".to_string(),
                 config: ConfigManager(MapConfigManager::new()),
-                secrets: SecretsManager(EmptySecretsManager::new()),
+                secrets: SecretsManager(TestSecretsManager::new()),
                 store: InMemorySessionStore::new(10),
                 channels: Arc::new(DashMap::new()),
                 log_config: LogConfig::default(),
@@ -491,7 +503,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_register_and_unload() {
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let config = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
 

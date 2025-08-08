@@ -19,10 +19,10 @@ mod tests {
     use crate::process::debug_process::DebugProcessNode;
     use crate::process::manager::{BuiltInProcess, ProcessManager};
     use crate::process::script_process::ScriptProcessNode;
-    use crate::secret::{EmptySecretsManager, SecretsManager};
+    use crate::secret::{TestSecretsManager, SecretsManager};
     use async_trait::async_trait;
     use channel_plugin::message::{MessageContent, MessageDirection, Participant};
-    use dashmap::{DashMap, DashSet};
+    use dashmap::DashMap;
     use petgraph::visit::Topo;
     use schemars::{JsonSchema, Schema, schema_for};
     use serde::{Deserialize, Serialize};
@@ -73,7 +73,7 @@ mod tests {
 
     /// Helper to build a dummy `Executor` for NodeContext
     fn make_executor() -> Arc<Executor> {
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         Executor::new(secrets, logger)
     }
@@ -96,7 +96,7 @@ mod tests {
             Executor::dummy(),
             ChannelManager::dummy(),
             ProcessManager::dummy(),
-            SecretsManager(EmptySecretsManager::new()),
+            SecretsManager(TestSecretsManager::new()),
             None, // no channel_origin
         )
     }
@@ -681,7 +681,7 @@ mod tests {
     async fn create_out_msg_error_on_missing_to_and_no_origin() {
         // Build a minimal NodeContext with no channel_origin
         let executor = make_executor();
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
         let channel_mgr =
@@ -728,7 +728,7 @@ mod tests {
     async fn create_out_msg_uses_template_for_to_and_content() {
         // Prepare context and variables
         let executor = make_executor();
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
         let channel_mgr =
@@ -1158,7 +1158,7 @@ mod tests {
         let store = InMemorySessionStore::new(10);
         // dummy context
         let executor = make_executor();
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let config_mgr = ConfigManager(MapConfigManager::new());
         let channel_manager = ChannelManager::new(
             config_mgr,
@@ -1180,7 +1180,7 @@ mod tests {
             Arc::new(process_mgr.clone()),
             secrets.clone(),
         );
-        let registry = ChannelsRegistry::new(fm.clone(), channel_manager.clone(), DashSet::new()).await;
+        let registry = ChannelsRegistry::new(fm.clone(), channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
         let wrapper = make_wrapper().await;
         channel_manager

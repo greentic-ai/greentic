@@ -1,7 +1,7 @@
 use crate::executor::exports::wasix::mcp::router::{Annotations, Content, ResourceContents, Role};
 use crate::executor::wasix::mcp::secrets_store;
 use crate::logger::Logger;
-use crate::secret::{EmptySecretsManager, SecretsManager};
+use crate::secret::{TestSecretsManager, SecretsManager};
 use crate::watcher::{DirectoryWatcher, WatchedType};
 use anyhow::{Context, Error, Result, bail};
 use async_trait::async_trait;
@@ -49,7 +49,7 @@ struct MyState {
 
 impl HostSecret for MyState {
     fn drop(&mut self, _rep: wasmtime::component::Resource<Secret>) -> wasmtime::Result<()> {
-        self.secrets_manager.0 = EmptySecretsManager::new(); // Or however you create a fresh one
+        self.secrets_manager.0 = TestSecretsManager::new(); // Or however you create a fresh one
         Ok(())
     }
 }
@@ -661,7 +661,7 @@ pub mod tests {
     use super::*;
     use crate::executor::exports::wasix::mcp::router::{self, Content, TextContent};
     use crate::logger::OpenTelemetryLogger;
-    use crate::secret::{EmptySecretsManager, EnvSecretsManager};
+    use crate::secret::{TestSecretsManager, EnvSecretsManager};
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
@@ -727,7 +727,7 @@ pub mod tests {
         }
 
         fn secrets_manager(&self) -> SecretsManager {
-            SecretsManager(EmptySecretsManager::new())
+            SecretsManager(TestSecretsManager::new())
         }
 
         fn logger(&self) -> Logger {
@@ -767,7 +767,7 @@ pub mod tests {
             fs::remove_file(test_wasm.clone()).expect("could not remove test wasm");
         }
 
-        let secrets_manager = SecretsManager(EmptySecretsManager::new());
+        let secrets_manager = SecretsManager(TestSecretsManager::new());
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets_manager, logging);
 

@@ -8,7 +8,7 @@ use crate::message::Message;
 use crate::node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing};
 use async_trait::async_trait;
 use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection};
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use schemars::Schema;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -102,19 +102,18 @@ impl ChannelNode {
 pub struct ChannelsRegistry {
     map: Arc<DashMap<String, Vec<ChannelNode>>>,
     flow_manager: Arc<FlowManager>,
-    remote_channels: DashSet<String>,
+    channel_manager: Arc<ChannelManager>,
 }
 
 impl ChannelsRegistry {
     pub async fn new(
         flow_manager: Arc<FlowManager>,
-        _channel_manager: Arc<ChannelManager>,
-        remote_channels: DashSet<String>,
+        channel_manager: Arc<ChannelManager>,
     ) -> Arc<Self> {
         let me = Arc::new(Self {
             map: Arc::new(DashMap::new()),
             flow_manager: flow_manager.clone(),
-            remote_channels,
+            channel_manager,
         });
 
         // subscribe to *all* new flows and auto‐register their Channel nodes
@@ -200,8 +199,10 @@ impl IncomingHandler for ChannelsRegistry {
                         for flow in session_flows.iter() {
                             for node in session_nodes.iter() {
                                 if self.find_if_node_in_flow(flow, node) {
-                                    handle_message(flow, node, self.remote_channels.contains(node), &msg, &self.flow_manager).await;
-                                    routed = true;
+                                    if let Some(channel) = self.channel_manager.channel(&msg.channel) {
+                                        handle_message(flow, node, channel.remote(), &msg, &self.flow_manager).await;
+                                        routed = true;
+                                    }
                                 }
                             }
                         }
@@ -337,14 +338,14 @@ mod tests {
     use crate::secret::SecretsManager;
     use crate::{
         executor::Executor, flow::manager::FlowManager, logger::OpenTelemetryLogger,
-        secret::EmptySecretsManager,
+        secret::TestSecretsManager,
     };
     use channel_plugin::message::{ChannelMessage, MessageDirection};
 
     #[tokio::test]
     async fn test_registry_dispatches_safely() {
         let store = InMemorySessionStore::new(10);
-        let secrets = SecretsManager(EmptySecretsManager::new());
+        let secrets = SecretsManager(TestSecretsManager::new());
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let exec = Executor::new(secrets.clone(), logger);
         let config = ConfigManager(MapConfigManager::new());
@@ -353,7 +354,7 @@ mod tests {
             .expect("could not create channel manager");
         let pm = ProcessManager::dummy();
         let fm = FlowManager::new(store.clone(), exec, cm.clone(), pm.clone(), secrets);
-        let reg = ChannelsRegistry::new(fm, cm, DashSet::new()).await;
+        let reg = ChannelsRegistry::new(fm, cm).await;
 
         // no panic if nothing registered
         let mut msg = ChannelMessage::default();

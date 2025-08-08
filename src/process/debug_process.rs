@@ -79,7 +79,7 @@ mod debug_tests {
     use crate::flow::state::InMemoryState;
     use crate::node::Routing;
     use crate::process::manager::{BuiltInProcess, ProcessManager};
-    use crate::secret::{EmptySecretsManager, SecretsManager};
+    use crate::secret::{TestSecretsManager, SecretsManager};
 
     #[tokio::test]
     async fn serde_roundtrip_json_and_yaml() {
@@ -129,7 +129,7 @@ mod debug_tests {
             Executor::dummy(),
             ChannelManager::dummy(),
             ProcessManager::dummy(),
-            SecretsManager(EmptySecretsManager::new()),
+            SecretsManager(TestSecretsManager::new()),
             None,
         );
 

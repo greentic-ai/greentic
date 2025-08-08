@@ -7,7 +7,7 @@ use std::{
 };
 use tracing::info;
 
-use crate::{apps::remote_channels_list, config::ConfigManager, secret::SecretsManager, validate::validate};
+use crate::{config::ConfigManager, secret::SecretsManager, validate::validate};
 
 /// Validate that the provided file is a valid YAML or JSON flow definition.
 pub async fn validate_flow_file(
@@ -16,7 +16,6 @@ pub async fn validate_flow_file(
     tools_dir: PathBuf,
     secrets_maanger: SecretsManager,
     config_manager: ConfigManager,
-    greentic_id: String,
 ) -> Result<()> {
     if !flow_file.exists() {
         bail!("File does not exist: {}", flow_file.display());
@@ -37,15 +36,12 @@ pub async fn validate_flow_file(
         bail!("Unsupported file extension for: {}", flow_file.display());
     }
 
-    let remote_channels = remote_channels_list(greentic_id).await;
-
     let result = validate(
         flow_file,
         root_dir,
         tools_dir,
         secrets_maanger,
         config_manager,
-        &remote_channels,
     )
     .await;
     if result.is_err() {
@@ -63,14 +59,12 @@ pub async fn deploy_flow_file(
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
 ) -> Result<()> {
-    let greentic_id = secrets_manager.get_secret("GREENTIC_ID").await.unwrap().expect("GREENTIC_ID was not set in secrets. Please run 'greentic init' first.");
     validate_flow_file(
         path.clone(),
         root.clone(),
         tools_dir,
         secrets_manager,
         config_manager,
-        greentic_id,
     )
     .await?;
 

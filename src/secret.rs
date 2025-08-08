@@ -7,9 +7,10 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{error, info};
-
+use dashmap::DashMap;
 use crate::watcher::{DirectoryWatcher, WatchedType};
 
 #[async_trait::async_trait]
@@ -335,41 +336,99 @@ impl SecretsManagerType for EnvSecretsManager {
     }
 }
 
-/// Used to reset the secrets member
-#[derive(Clone)]
-pub struct EmptySecretsManager;
+pub struct TestSecretsManager {
+    // key -> handle
+    handles: DashMap<String, u32>,
+    // key -> secret
+    secrets: DashMap<String, String>,
+    next_handle: AtomicU32,
+}
 
-impl EmptySecretsManager {
+impl TestSecretsManager {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self)
+        Arc::new(Self {
+            handles: DashMap::new(),
+            secrets: DashMap::new(),
+            next_handle: AtomicU32::new(1),
+        })
     }
 }
 
+impl Clone for TestSecretsManager {
+    fn clone(&self) -> Self {
+        let cloned_handles = DashMap::new();
+        for kv in self.handles.iter() {
+            cloned_handles.insert(kv.key().clone(), *kv.value());
+        }
+
+        let cloned_secrets = DashMap::new();
+        for kv in self.secrets.iter() {
+            cloned_secrets.insert(kv.key().clone(), kv.value().clone());
+        }
+
+        Self {
+            handles: cloned_handles,
+            secrets: cloned_secrets,
+            next_handle: AtomicU32::new(self.next_handle.load(Ordering::Relaxed)),
+        }
+    }
+}
+    
+
 #[async_trait::async_trait]
-impl SecretsManagerType for EmptySecretsManager {
-    fn get(&self, _key: &str) -> Option<u32> {
-        None
+impl SecretsManagerType for TestSecretsManager {
+    fn get(&self, key: &str) -> Option<u32> {
+        self.handles.get(key).map(|v| *v)
     }
 
     fn keys(&self) -> Vec<String> {
-        vec![]
-    }
-    async fn add_secret(&self, _key: &str, _secret: &str) -> Result<(), SecretsError> {
-        Err(SecretsError::NotFound)
-    }
-    async fn update_secret(&self, _key: &str, _secret: &str) -> Result<(), SecretsError> {
-        Err(SecretsError::NotFound)
-    }
-    async fn delete_secret(&self, _key: &str) -> Result<(), SecretsError> {
-        Err(SecretsError::NotFound)
+        self.handles.iter().map(|kv| kv.key().clone()).collect()
     }
 
-    async fn reveal(&self, _handle: u32) -> Result<Option<String>, SecretsError> {
-        Err(SecretsError::NotFound)
+    async fn add_secret(&self, key: &str, secret: &str) -> Result<(), SecretsError> {
+        // If key is new, mint a handle; otherwise keep existing handle
+        self.handles
+            .entry(key.to_string())
+            .or_insert_with(|| self.next_handle.fetch_add(1, Ordering::Relaxed));
+        self.secrets.insert(key.to_string(), secret.to_string());
+        Ok(())
+    }
+
+    async fn update_secret(&self, key: &str, secret: &str) -> Result<(), SecretsError> {
+        if !self.handles.contains_key(key) {
+            return Err(SecretsError::NotFound);
+        }
+        self.secrets.insert(key.to_string(), secret.to_string());
+        Ok(())
+    }
+
+    async fn delete_secret(&self, key: &str) -> Result<(), SecretsError> {
+        let existed_h = self.handles.remove(key).is_some();
+        let existed_s = self.secrets.remove(key).is_some();
+        if existed_h || existed_s {
+            Ok(())
+        } else {
+            Err(SecretsError::NotFound)
+        }
+    }
+
+    async fn reveal(&self, handle: u32) -> Result<Option<String>, SecretsError> {
+        // Find key by handle (linear scan is fine for tests)
+        let key_opt = self
+            .handles
+            .iter()
+            .find(|kv| *kv.value() == handle)
+            .map(|kv| kv.key().clone());
+
+        if let Some(key) = key_opt {
+            Ok(self.secrets.get(&key).map(|v| v.clone()))
+        } else {
+            Ok(None)
+        }
     }
 
     fn name(&self) -> &'static str {
-        ""
+        "TestSecretsManager"
     }
 
     fn clone_box(&self) -> Arc<dyn SecretsManagerType> {
@@ -377,7 +436,11 @@ impl SecretsManagerType for EmptySecretsManager {
     }
 
     fn debug_box(&self) -> String {
-        "".to_string()
+        format!(
+            "TestSecretsManager {{ handles: {}, secrets: {} }}",
+            self.handles.len(),
+            self.secrets.len()
+        )
     }
 }
 

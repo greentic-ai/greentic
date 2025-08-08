@@ -11,9 +11,9 @@ use crate::{
     channel::manager::ChannelManager,
     config::{ConfigManager, MapConfigManager},
     executor::Executor,
-    flow::{manager::Flow, session::InMemorySessionStore},
+    flow::{manager::Flow, session::{InMemorySessionStore}},
     logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger},
-    secret::{EmptySecretsManager, SecretsManager},
+    secret::{TestSecretsManager, SecretsManager},
 };
 
 /// The entry point invoked by `main.rs` for `Commands::Schema`.
@@ -21,6 +21,7 @@ pub async fn write_schema(
     out_dir: PathBuf,
     tools_dir: PathBuf,
     channels_dir: PathBuf,
+    remote_channels: Vec<String>,
     log_level: String,
     log_dir: PathBuf,
     event_dir: PathBuf,
@@ -36,7 +37,7 @@ pub async fn write_schema(
     let _ = FileTelemetry::init_files(log_level.as_str(), log_dir.join("schema.log"), event_dir);
     let log_config = LogConfig::new(LogLevel::Info, Some(log_dir), None);
     let logger = Logger(Box::new(OpenTelemetryLogger::new()));
-    let secrets = SecretsManager(EmptySecretsManager::new());
+    let secrets = SecretsManager(TestSecretsManager::new());
     let executor = Executor::new(secrets.clone(), logger);
     executor
         .watch_tool_dir(tools_dir)
@@ -46,12 +47,11 @@ pub async fn write_schema(
 
     // 4) channel schemas
     let config = ConfigManager(MapConfigManager::new());
-
     let store = InMemorySessionStore::new(10);
     let channel_mgr = ChannelManager::new(config, secrets, "123".to_string(),store.clone(), log_config)
         .await
         .expect("Could not start channels");
-    let _ = channel_mgr.clone().start_all(channels_dir).await;
+    let _ = channel_mgr.clone().start_all(channels_dir, remote_channels).await;
 
     for wrapper in channel_mgr.channels().iter() {
         let (name, schema) = wrapper

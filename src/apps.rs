@@ -1,6 +1,5 @@
 // src/app.rs
 use anyhow::{Context, Error, bail};
-use dashmap::DashSet;
 use std::{
     fs::{self, File},
     io::{Write, stdin, stdout},
@@ -169,14 +168,14 @@ impl App {
         }));
 
         // Register the ChannelsRegistry with the flow and channel manager
-        let registry = ChannelsRegistry::new(flow_mgr.clone(), channel_manager.clone(), remote_channels_list(greentic_id).await).await;
+        let registry = ChannelsRegistry::new(flow_mgr.clone(), channel_manager.clone()).await;
         channel_manager.subscribe_incoming(registry.clone() as Arc<dyn IncomingHandler>);
 
         // then start watching
         self.channel_manager
             .clone()
             .unwrap()
-            .start_all(channels_dir.clone())
+            .start_all(channels_dir.clone(), flow_mgr.remote_channels())
             .await?;
 
         // We don’t need to manually `start()` each channel here; ChannelManager::new()
@@ -209,16 +208,7 @@ impl App {
         self.flow_manager.clone().unwrap().shutdown_all().await;
     }
 }
-/// TODO implement a great way to get all the channels available for the greentic_id
-pub async fn remote_channels_list(_greentic_id: String) -> DashSet<String> {
-    let channels: DashSet<String> = DashSet::new();
-    channels.insert("ms_email".into());
-    channels.insert("ms_calendar".into());
-    channels.insert("ms_teams".into());
-    channels.insert("ms_onedrive".into());
-    channels.insert("ms_sharepoint".into());
-    channels
-}
+
 /// Called when user runs `greentic init --root <dir>`
 pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     // 1) create all the directories we need
@@ -482,14 +472,12 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     println!(
         "Given this is the first time you download tools and channels, you likely need to add secrets before they work"
     );
-    let remote_channels = remote_channels_list(greentic_id).await;
     let result = validate(
         out_flows_dir.join("weather_bot_telegram.ygtc"),
         root.clone(),
         out_tools_dir.clone(),
         secrets_manager.clone(),
         config_manager.clone(),
-        &remote_channels,
     )
     .await;
     if result.is_err() {
@@ -504,7 +492,6 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
         out_tools_dir,
         secrets_manager,
         config_manager,
-        &remote_channels,
     )
     .await;
     if result.is_err() {
