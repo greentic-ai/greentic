@@ -388,6 +388,7 @@ impl PluginHandler for WsPlugin {
         CapabilitiesResult {
             capabilities: ChannelCapabilities {
                 name: "ws".into(),
+                version: PLUGIN_VERSION.to_string(),
                 supports_sending: true,
                 supports_receiving: true,
                 supports_text: true,

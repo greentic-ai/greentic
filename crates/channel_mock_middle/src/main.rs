@@ -8,9 +8,9 @@ use channel_plugin::{
     message::{
         CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult,
         InitParams, InitResult, ListKeysResult, MessageInResult, MessageOutParams,
-        MessageOutResult, NameResult, StateResult, StopResult,
+        MessageOutResult, NameResult, StateResult, StopResult, PLUGIN_VERSION,
     },
-    plugin_runtime::{HasStore, PluginHandler, run},
+    plugin_runtime::{run, HasStore, PluginHandler},
 };
 use dashmap::DashMap;
 use tracing::info;
@@ -52,6 +52,7 @@ impl PluginHandler for MockPlugin {
         CapabilitiesResult {
             capabilities: ChannelCapabilities {
                 name: "mock_middle".into(),
+                version: PLUGIN_VERSION.to_string(),
                 supports_sending: true,
                 supports_receiving: true,
                 supports_text: true,

@@ -3,11 +3,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use channel_plugin::{
     message::{
-        CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, Event,
-        EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata,
-        MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams,
-        MessageOutResult, NameResult, Participant, StateResult, StopResult, TextMessage,
-        make_session_key,
+        make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, StopResult, TextMessage, PLUGIN_VERSION
     },
     plugin_helpers::{build_user_joined_event, get_user_joined_left_events},
     plugin_runtime::{HasStore, PluginHandler},
@@ -331,6 +327,7 @@ impl TelegramPlugin {
 
                             let cm = ChannelMessage {
                                 channel: "telegram".into(),
+                                channel_data: json![{}],
                                 session_id: Some(session_id.clone()),
                                 direction: MessageDirection::Incoming,
                                 from: Participant {
@@ -438,6 +435,7 @@ impl PluginHandler for TelegramPlugin {
         CapabilitiesResult {
             capabilities: ChannelCapabilities {
                 name: "telegram".into(),
+                version: PLUGIN_VERSION.to_string(),
                 supports_sending: true,
                 supports_receiving: true,
                 supports_text: true,
@@ -452,6 +450,8 @@ impl PluginHandler for TelegramPlugin {
                 supports_buttons: false,
                 supports_links: true,
                 supports_custom_payloads: false,
+                channel_data_schema: None,
+                channel_data_schema_id: None,
                 supported_events: events,
             },
         }
@@ -842,6 +842,7 @@ mod tests {
             direction: MessageDirection::Incoming,
             timestamp: Utc::now().to_rfc3339(),
             channel: "telegram".into(),
+            channel_data: json!({}),
             from: Participant {
                 id: "chat42".into(),
                 display_name: None,
@@ -876,6 +877,7 @@ mod tests {
             direction: MessageDirection::Outgoing,
             timestamp: Utc::now().to_rfc3339(),
             channel: "telegram".into(),
+            channel_data: json!({}),
             from: Participant {
                 id: "bot".into(),
                 display_name: None,

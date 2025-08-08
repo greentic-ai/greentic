@@ -28,6 +28,8 @@ futures-util = "0.3.31"
 tokio-tungstenite = "0.27.0"
 async-nats = "0.42.0"
 nkeys = "0.4.5"
+jsonschema = "0.32.1"
+sha2 = "0.10.9"
 
 [lib]
 crate-type = ["rlib"]

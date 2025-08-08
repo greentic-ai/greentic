@@ -106,6 +106,7 @@ impl PluginHandler for Arc<MockChannel> {
         CapabilitiesResult {
             capabilities: ChannelCapabilities {
                 name: "mock".to_string(),
+                version: "1".to_string(),
                 supports_sending: true,
                 supports_receiving: true,
                 supports_text: true,
@@ -120,6 +121,8 @@ impl PluginHandler for Arc<MockChannel> {
                 supports_buttons: false,
                 supports_links: false,
                 supports_custom_payloads: false,
+                channel_data_schema_id: None,
+                channel_data_schema: None,
                 supported_events: vec![],
             },
         }

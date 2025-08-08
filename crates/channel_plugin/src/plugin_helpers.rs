@@ -28,6 +28,7 @@ pub fn build_user_joined_event(
         id: Uuid::new_v4().to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         channel: channel.into(),
+        channel_data: json!({}),
         direction: MessageDirection::Incoming,
         session_id,
         from: Participant {
@@ -58,6 +59,7 @@ pub fn build_user_left_event(
         timestamp: chrono::Utc::now().to_rfc3339(),
         direction: MessageDirection::Incoming,
         channel: channel.into(),
+        channel_data: json!({}),
         session_id,
         from: Participant {
             id: user_id.into(),
@@ -125,6 +127,7 @@ pub fn build_text_message(
         id: Uuid::new_v4().to_string(),
         session_id,
         channel: channel.to_string(),
+        channel_data: json!({}),
         direction: MessageDirection::Incoming,
         from: Participant {
             id: from.to_string(),

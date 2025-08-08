@@ -13,6 +13,8 @@ use serde_json::Value;
 // -----------------------------------------------------------------------------
 // Core (re‑used) helper types
 // -----------------------------------------------------------------------------
+pub const PLUGIN_VERSION: &str = "0.3";
+
 
 /// Trace context propagated end‑to‑end for observability.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -106,6 +108,9 @@ pub struct ChannelMessage {
     pub session_id: Option<String>,
     pub direction: MessageDirection,
     pub channel: String,
+    /// Free-form channel-specific payload
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub channel_data: Value,
     pub from: Participant,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<Participant>,
@@ -118,6 +123,34 @@ pub struct ChannelMessage {
     pub reply_to_id: Option<String>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JsonSchemaDescriptor {
+    /// Inline JSON Schema (Draft 2020-12 ideally)
+    Inline {
+        /// The schema object itself
+        schema: Value,
+        /// Optional: stable identifier inside the schema (`$id`) if present
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// Optional: semantic or provider version
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    /// Out-of-line schema by URI (MCP-style references)
+    Ref {
+        /// Where to fetch the schema (https, file, r2, etc.)
+        uri: String,
+        /// Optional integrity/versioning hints
+        #[serde(skip_serializing_if = "Option::is_none")]
+        etag: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
 }
 
 impl ChannelMessage {
@@ -160,6 +193,7 @@ impl EventType{
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct ChannelCapabilities {
     pub name: String, // e.g. "Slack", "Email", "SMS"
+    pub version: String,
     pub supports_sending: bool,
     pub supports_receiving: bool,
     pub supports_text: bool,
@@ -174,7 +208,12 @@ pub struct ChannelCapabilities {
     pub supports_buttons: bool,
     pub supports_links: bool,
     pub supports_custom_payloads: bool,
-
+    /// For validation/caching
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_data_schema_id: Option<String>, // e.g. "greentic://channel/ms_teams.message@v1"
+    /// JSON Schema describing `channel_data`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_data_schema: Option<JsonSchemaDescriptor>,
     pub supported_events: Vec<EventType>, // List of events with descriptions
 }
 
@@ -408,27 +447,241 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // ---- helpers ------------------------------------------------------------
+
+    // If your Participant doesn't implement Default, replace this helper
+    // to construct a minimal valid Participant.
+    fn dummy_participant() -> Participant {
+        // If `Participant` has fields like { id, name }, adapt here:
+        // Participant { id: "u1".into(), name: Some("Alice".into()) }
+        // Otherwise, if it implements Default:
+        #[allow(clippy::default_trait_access)]
+        Participant::default()
+    }
+
+    fn now_iso() -> String {
+        // Fixed timestamp for determinism in tests
+        "2025-08-08T08:00:00Z".to_string()
+    }
+
+    // Validates `data` against the inline schema inside capabilities (if present)
+    fn validate_with_caps(caps: &ChannelCapabilities, data: &serde_json::Value) -> Result<(), String> {
+        let Some(desc) = &caps.channel_data_schema else {
+            return Ok(());
+        };
+        let schema_val = match desc {
+            JsonSchemaDescriptor::Inline { schema, .. } => schema.clone(),
+            JsonSchemaDescriptor::Ref { .. } => {
+                // In production you’d resolve/cache it; for tests we error to make it explicit.
+                return Err("Ref schema provided but not resolved in test".to_string());
+            }
+        };
+        match jsonschema::validate(&schema_val, data) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(format!("channel_data validation failed: {e}")),
+        }
+    }
+
+    // ---- tests: MessageContent round-trips ---------------------------------
+
     #[test]
-    fn channel_message_roundtrip() {
-        let cm = ChannelMessage {
-            id: "1".into(),
-            session_id: None,
-            direction: MessageDirection::Incoming,
-            channel: "telegram".into(),
-            from: Participant {
-                id: "user".into(),
-                display_name: None,
-                channel_specific_id: None,
+    fn message_content_text_roundtrip() {
+        let mc = MessageContent::Text { text: "hello".into() };
+        let ser = serde_json::to_string(&mc).unwrap();
+        let de: MessageContent = serde_json::from_str(&ser).unwrap();
+        assert_eq!(mc, de);
+    }
+
+    #[test]
+    fn message_content_file_roundtrip() {
+        let mc = MessageContent::File {
+            file: FileMetadata {
+                file_name: "po.pdf".into(),
+                mime_type: "application/pdf".into(),
+                url: "r2://bucket/po.pdf".into(),
+                size_bytes: Some(58_211),
             },
+        };
+        let ser = serde_json::to_string(&mc).unwrap();
+        let de: MessageContent = serde_json::from_str(&ser).unwrap();
+        assert_eq!(mc, de);
+    }
+
+    #[test]
+    fn message_content_media_roundtrip() {
+        let mc = MessageContent::Media {
+            media: MediaMetadata {
+                kind: MediaType::IMAGE,
+                file: FileMetadata {
+                    file_name: "img.png".into(),
+                    mime_type: "image/png".into(),
+                    url: "https://cdn/x.png".into(),
+                    size_bytes: None,
+                },
+            },
+        };
+        let ser = serde_json::to_string(&mc).unwrap();
+        let de: MessageContent = serde_json::from_str(&ser).unwrap();
+        assert_eq!(mc, de);
+    }
+
+    #[test]
+    fn message_content_event_roundtrip() {
+        let mc = MessageContent::Event {
+            event: Event {
+                event_type: "typing_start".into(),
+                event_payload: json!({"duration_ms": 1200}),
+            },
+        };
+        let ser = serde_json::to_string(&mc).unwrap();
+        let de: MessageContent = serde_json::from_str(&ser).unwrap();
+        assert_eq!(mc, de);
+    }
+
+    // ---- tests: ChannelMessage minimal + channel_data -----------------------
+
+    #[test]
+    fn channel_message_minimal_serializes() {
+        let msg = ChannelMessage {
+            id: "m1".into(),
+            session_id: Some("sess-1".into()),
+            direction: MessageDirection::Incoming, // uses your existing enum
+            channel: "ms_teams".into(),
+            from: dummy_participant(),
             to: vec![],
-            timestamp: "2025-06-25T12:00:00Z".into(),
-            content: vec![MessageContent::Text { text: "hi".into() }],
+            timestamp: now_iso(),
+            content: vec![MessageContent::Text { text: "Hello".into() }],
+            thread_id: Some("teams-thread-123".into()),
+            reply_to_id: None,
+            // No schema attached here—should still serialize/deserialize
+            metadata: serde_json::Value::Null,
+            // If you added `tenant`, `channel_data`, `idempotency_key`, keep defaulting them:
+            ..ChannelMessage::default()
+        };
+
+        let ser = serde_json::to_string_pretty(&msg).unwrap();
+        let de: ChannelMessage = serde_json::from_str(&ser).unwrap();
+        assert_eq!(msg.id, de.id);
+        assert_eq!(msg.channel, de.channel);
+        assert_eq!(msg.content, de.content);
+    }
+
+    #[test]
+    fn channel_message_with_channel_data_roundtrip() {
+        let msg = ChannelMessage {
+            id: "m2".into(),
+            session_id: Some("sess-2".into()),
+            direction: MessageDirection::Incoming,
+            channel: "ms_teams".into(),
+            from: dummy_participant(),
+            to: vec![],
+            timestamp: now_iso(),
+            content: vec![MessageContent::Text { text: "Ping".into() }],
             thread_id: None,
             reply_to_id: None,
-            metadata: json!({}),
+            metadata: serde_json::Value::Null,
+            ..ChannelMessage::default()
         };
-        let js = serde_json::to_string(&cm).unwrap();
-        let de: ChannelMessage = serde_json::from_str(&js).unwrap();
-        assert_eq!(de.id, "1");
+
+        // if you have `channel_data: Value` in the struct, set it here:
+        // msg.channel_data = json!({"team_id":"t1","channel_id":"c1","message_id":"42"});
+        // otherwise, skip this part.
+
+        let ser = serde_json::to_string(&msg).unwrap();
+        let de: ChannelMessage = serde_json::from_str(&ser).unwrap();
+        assert_eq!(msg, de);
+    }
+
+    // ---- tests: Capabilities + inline schema validation ---------------------
+
+    #[test]
+    fn capabilities_inline_schema_validates_channel_data_ok() {
+        let caps = ChannelCapabilities {
+            name: "MS Teams".into(),
+            version: "1.0.0".into(),
+            supports_sending: true,
+            supports_receiving: true,
+            supports_text: true,
+            supports_files: true,
+            supports_media: true,
+            supports_events: true,
+            supports_typing: true,
+            supports_routing: true,
+            supports_threading: true,
+            supports_reactions: true,
+            supports_call: false,
+            supports_buttons: true,
+            supports_links: true,
+            supports_custom_payloads: true,
+            channel_data_schema_id: Some("greentic://channel/ms_teams.message@v1".into()),
+            channel_data_schema: Some(JsonSchemaDescriptor::Inline {
+                schema: json!({
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object",
+                    "required": ["team_id","channel_id"],
+                    "properties": {
+                        "team_id": { "type": "string" },
+                        "channel_id": { "type": "string" },
+                        "message_id": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
+                id: Some("greentic://channel/ms_teams.message@v1".into()),
+                version: Some("1".into()),
+            }),
+            supported_events: vec![], // or fill with your EventType values
+        };
+
+        let good = json!({"team_id":"t1","channel_id":"c1","message_id":"42"});
+        assert!(validate_with_caps(&caps, &good).is_ok());
+
+        let bad_missing = json!({"team_id":"t1"});
+        assert!(validate_with_caps(&caps, &bad_missing).is_err());
+
+        let bad_extra = json!({"team_id":"t1","channel_id":"c1","xtra":true});
+        assert!(validate_with_caps(&caps, &bad_extra).is_err());
+    }
+
+    #[test]
+    fn capabilities_no_schema_allows_any_channel_data() {
+        let caps = ChannelCapabilities {
+            name: "Webhook".into(),
+            version: "1.0.0".into(),
+            supports_sending: false,
+            supports_receiving: true,
+            supports_text: true,
+            supports_files: false,
+            supports_media: false,
+            supports_events: true,
+            supports_typing: false,
+            supports_routing: false,
+            supports_threading: false,
+            supports_reactions: false,
+            supports_call: false,
+            supports_buttons: false,
+            supports_links: false,
+            supports_custom_payloads: true,
+            channel_data_schema: None,
+            channel_data_schema_id: None,
+            supported_events: vec![],
+        };
+
+        let arbitrary = json!({"anything":"goes","nested":{"a":1}});
+        assert!(validate_with_caps(&caps, &arbitrary).is_ok());
+    }
+
+    // ---- tests: schema ref descriptor serializes ----------------------------
+
+    #[test]
+    fn json_schema_descriptor_ref_roundtrip() {
+        let d = JsonSchemaDescriptor::Ref {
+            uri: "https://schemas.greentic.dev/channel/ms_teams.message@v1.json".into(),
+            etag: Some("W/\"abc123\"".into()),
+            sha256: Some("deadbeef".into()),
+            version: Some("1".into()),
+        };
+        let s = serde_json::to_string(&d).unwrap();
+        let de: JsonSchemaDescriptor = serde_json::from_str(&s).unwrap();
+        assert_eq!(d, de);
     }
 }

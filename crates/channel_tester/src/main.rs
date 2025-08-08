@@ -114,6 +114,7 @@ impl PluginHandler for TesterPlugin {
         CapabilitiesResult {
             capabilities: ChannelCapabilities {
                 name: "tester".into(),
+                version: PLUGIN_VERSION.to_string(),
                 supports_sending: true,
                 supports_receiving: true,
                 supports_text: true,
