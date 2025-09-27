@@ -1,13 +1,13 @@
-use std::sync::Mutex;
-use std::{sync::Arc};
-use dashmap::DashMap;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use tokio::sync::broadcast;
+use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
+use std::sync::Arc;
+use std::sync::Mutex;
+use tokio::sync::broadcast;
 
 pub type SessionState = Arc<dyn SessionStateType + Send + Sync + 'static>;
 
@@ -46,7 +46,6 @@ pub trait SessionStateType: Send + Sync + Debug {
     fn all(&self) -> Vec<(String, StateValue)>;
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum StateValue {
@@ -71,8 +70,14 @@ impl PartialEq for StateValue {
             (List(a), List(b)) => a == b,
             (Null, Null) => true,
             (Map(a), Map(b)) => {
-                let a_map: HashMap<_, _> = a.iter().map(|r| (r.key().clone(), r.value().clone())).collect();
-                let b_map: HashMap<_, _> = b.iter().map(|r| (r.key().clone(), r.value().clone())).collect();
+                let a_map: HashMap<_, _> = a
+                    .iter()
+                    .map(|r| (r.key().clone(), r.value().clone()))
+                    .collect();
+                let b_map: HashMap<_, _> = b
+                    .iter()
+                    .map(|r| (r.key().clone(), r.value().clone()))
+                    .collect();
                 a_map == b_map
             }
             _ => false,
@@ -154,7 +159,7 @@ impl TryFrom<Value> for StateValue {
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::String(s) => Ok(StateValue::String(s)),
-            Value::Number(n) =>{
+            Value::Number(n) => {
                 if n.is_i64() {
                     Ok(StateValue::Integer(n.as_i64().ok_or(())?))
                 } else if n.is_f64() {
@@ -162,10 +167,12 @@ impl TryFrom<Value> for StateValue {
                 } else {
                     Err(()) // unlikely unless it's u64 and you don’t support it
                 }
-            },
+            }
             Value::Bool(b) => Ok(StateValue::Boolean(b)),
             Value::Array(a) => Ok(StateValue::List(
-                a.into_iter().filter_map(|v| StateValue::try_from(v).ok()).collect(),
+                a.into_iter()
+                    .filter_map(|v| StateValue::try_from(v).ok())
+                    .collect(),
             )),
             Value::Object(o) => Ok(StateValue::Map(
                 o.into_iter()
@@ -177,7 +184,6 @@ impl TryFrom<Value> for StateValue {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct InMemoryState {
     store: Arc<DashMap<String, StateValue>>,
@@ -187,7 +193,7 @@ pub struct InMemoryState {
 
 impl InMemoryState {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { 
+        Arc::new(Self {
             store: Arc::new(DashMap::new()),
             nodes: Arc::new(Mutex::new(VecDeque::new())),
             flows: Arc::new(Mutex::new(VecDeque::new())),
@@ -231,12 +237,14 @@ impl SessionStateType for InMemoryState {
     }
 
     fn flows(&self) -> Option<Vec<String>> {
-        let flows = self.flows.lock().unwrap().iter().cloned().collect::<Vec<String>>();
-        if flows.is_empty() {
-            None
-        } else {
-            Some(flows)
-        }
+        let flows = self
+            .flows
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>();
+        if flows.is_empty() { None } else { Some(flows) }
     }
 
     fn add_flow(&self, flow: String) {
@@ -261,12 +269,14 @@ impl SessionStateType for InMemoryState {
     }
 
     fn nodes(&self) -> Option<Vec<String>> {
-        let nodes = self.nodes.lock().unwrap().iter().cloned().collect::<Vec<String>>();
-        let all_nodes = if nodes.is_empty() {
-            None
-        } else {
-            Some(nodes)
-        };
+        let nodes = self
+            .nodes
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>();
+        let all_nodes = if nodes.is_empty() { None } else { Some(nodes) };
         all_nodes
     }
 
@@ -308,7 +318,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[test]
     fn test_state_value_accessors() {
@@ -341,7 +351,10 @@ mod tests {
         let map_data: DashMap<String, StateValue> = DashMap::new();
         map_data.insert("k".into(), StateValue::Null);
 
-        let map: HashMap<_, _> = map_data.iter().map(|r| (r.key().clone(), r.value().clone())).collect();
+        let map: HashMap<_, _> = map_data
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect();
         assert_eq!(map, expected);
 
         assert_eq!(StateValue::Null.as_string(), None);
@@ -352,9 +365,7 @@ mod tests {
         let store = InMemoryState::new();
 
         // Prepare a Vec of (String, StateValue)
-        let state = vec![
-            ("test".to_string(), StateValue::Boolean(true))
-        ];
+        let state = vec![("test".to_string(), StateValue::Boolean(true))];
 
         // Save the state using StateSaver
         store.save(state);
@@ -388,9 +399,7 @@ mod tests {
     async fn test_state_store_trait_object_usage() {
         let store = InMemoryState::new();
 
-        let state = vec![
-            ("x".to_string(), StateValue::Float(3.14))
-        ];
+        let state = vec![("x".to_string(), StateValue::Float(3.14))];
 
         store.save(state);
 

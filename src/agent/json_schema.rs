@@ -1,8 +1,5 @@
 //! src/ollama_schema.rs
-use schemars::{
-
-    json_schema, JsonSchema, Schema, SchemaGenerator
-};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use std::borrow::Cow;
 
 use super::ollama::{OllamaAgent, OllamaMode};
@@ -45,7 +42,6 @@ impl JsonSchema for OllamaAgent {
     }
 }
 
-
 impl JsonSchema for OllamaMode {
     fn schema_name() -> Cow<'static, str> {
         Cow::Borrowed("OllamaMode")
@@ -70,8 +66,8 @@ impl JsonSchema for OllamaMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schemars::{Schema};
-    use serde_json::{json, Value};
+    use schemars::Schema;
+    use serde_json::{Value, json};
 
     #[test]
     fn generates_expected_schema() {

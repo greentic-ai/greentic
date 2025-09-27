@@ -1,11 +1,21 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
-use notify::{event::{CreateKind, ModifyKind}, Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
-use std::{path::{Path, PathBuf}, sync::Arc};
-use tokio::{sync::mpsc::UnboundedReceiver, task::JoinHandle, time::{sleep, Duration}};
-use tracing::{error, warn};
+use notify::{
+    Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher,
+    event::{CreateKind, ModifyKind},
+};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::{
+    sync::mpsc::UnboundedReceiver,
+    task::JoinHandle,
+    time::{Duration, sleep},
+};
+use tracing::{error, warn};
 
 /// A global list of every watcher JoinHandle that has been spawned.
 /// We keep it behind a `Mutex<Vec<JoinHandle<()>>>` so we can push new handles
@@ -26,7 +36,6 @@ pub trait WatchedType: Send + Sync + 'static {
         self.on_create_or_modify(path).await
     }
 }
-
 
 pub struct Watched(pub Box<dyn WatchedType>);
 
@@ -99,7 +108,8 @@ impl DirectoryWatcher {
             while let Some(res) = rx.recv().await {
                 match res {
                     Ok(Event {
-                        kind: EventKind::Create(CreateKind::Any) | EventKind::Modify(ModifyKind::Data(_)),
+                        kind:
+                            EventKind::Create(CreateKind::Any) | EventKind::Modify(ModifyKind::Data(_)),
                         paths,
                         ..
                     }) => {
@@ -141,20 +151,20 @@ impl DirectoryWatcher {
                                 if let Err(e) = watcher_inner.on_remove(&path_clone).await {
                                     warn!(?path_clone, ?e, "Failed to handle removal");
                                 }
-                               // });
+                                // });
                             }
                         }
                     }
                     Err(e) => {
                         warn!(?e, "Watcher error");
                     }
-                 
+
                     _ => {}
                 }
             }
         });
         let mut guard = GLOBAL_WATCHER_HANDLES.lock().unwrap();
-        guard.append(&mut vec![handle_dispatch,handle_watcher]);
+        guard.append(&mut vec![handle_dispatch, handle_watcher]);
         // 5) Return a DirectoryWatcher holding both handles.
         Ok(DirectoryWatcher {})
     }
@@ -168,7 +178,6 @@ impl DirectoryWatcher {
         }
     }
 }
-
 
 fn is_valid_extension(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
@@ -188,7 +197,11 @@ async fn try_reload(watched: &Arc<dyn WatchedType>, path: &Path, retry: bool) {
                     error!("Failed to reload {:?}: {e:?}", path);
                     return;
                 } else {
-                    warn!("Retrying reload {:?} (attempt {}): {e:?}", path, attempt + 1);
+                    warn!(
+                        "Retrying reload {:?} (attempt {}): {e:?}",
+                        path,
+                        attempt + 1
+                    );
                     sleep(Duration::from_millis(100)).await;
                 }
             }
@@ -196,12 +209,11 @@ async fn try_reload(watched: &Arc<dyn WatchedType>, path: &Path, retry: bool) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct DummyWatcher {
         created: Arc<AtomicUsize>,
@@ -244,15 +256,9 @@ mod tests {
 
         //let handle = tokio::spawn(watch_dir(dir.clone(), Arc::new(watcher), &["txt"], false));
         let watcher_arc: Arc<dyn WatchedType> = Arc::new(watcher);
-        let dir_watcher = DirectoryWatcher::new(
-            dir.clone(),
-            watcher_arc.clone(),
-            &["txt"],
-            false,
-        )
-        .await
-        .unwrap();
-
+        let dir_watcher = DirectoryWatcher::new(dir.clone(), watcher_arc.clone(), &["txt"], false)
+            .await
+            .unwrap();
 
         // Give time for watcher to process
         sleep(Duration::from_millis(300)).await;

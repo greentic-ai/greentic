@@ -20,21 +20,28 @@
 //! }
 //! ```
 
-use std::{panic, time::{Instant}};
+use std::collections::HashMap;
+use std::{panic, time::Instant};
 
-use async_trait::async_trait;
-use anyhow::Result;
-use dashmap::DashMap;
-use tracing::{dispatcher, error, level_filters::LevelFilter, Dispatch};
-use tracing_appender::rolling::daily;
-use tracing_subscriber::{fmt, Registry};
-use crate::{jsonrpc::{Id, Message, Request, Response}, plugin_actor::Method};
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-use tracing_subscriber::Layer;
-use serde_json::{json, Value};
-use tokio::{io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter}, sync::{mpsc::{self, UnboundedSender}}, time::sleep};
 use crate::message::*;
-
+use crate::{
+    jsonrpc::{Id, Message, Request, Response},
+    plugin_actor::Method,
+};
+use anyhow::Result;
+use async_trait::async_trait;
+use dashmap::DashMap;
+use serde_json::{Value, json};
+use tokio::{
+    io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
+    sync::mpsc::{self, UnboundedSender},
+    time::sleep,
+};
+use tracing::{Dispatch, dispatcher, error, level_filters::LevelFilter};
+use tracing_appender::rolling::daily;
+use tracing_subscriber::Layer;
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+use tracing_subscriber::{Registry, fmt};
 
 // -----------------------------------------------------------------------------
 // PluginHandler trait – implement this in your plugin code
@@ -72,11 +79,17 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
             let state = self.state().await.state;
 
             if state == ChannelState::STOPPED {
-                return WaitUntilDrainedResult{stopped: true, error: false};
+                return WaitUntilDrainedResult {
+                    stopped: true,
+                    error: false,
+                };
             }
 
             if Instant::now() >= deadline {
-                return WaitUntilDrainedResult{stopped: false, error: true};
+                return WaitUntilDrainedResult {
+                    stopped: false,
+                    error: true,
+                };
             }
 
             sleep(std::time::Duration::from_millis(100)).await;
@@ -90,10 +103,15 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
     async fn receive_message(&mut self) -> MessageInResult;
     /// Check the health of the plugin
     async fn health(&self) -> HealthResult {
-        HealthResult { healthy: true, reason: None }
+        HealthResult {
+            healthy: true,
+            reason: None,
+        }
     }
-    async fn version(&self) -> VersionResult{
-        VersionResult{version: VERSION.to_string()}
+    async fn version(&self) -> VersionResult {
+        VersionResult {
+            version: VERSION.to_string(),
+        }
     }
     /// Request the current status
     async fn state(&self) -> StateResult;
@@ -104,20 +122,30 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
             self.config_store().insert(k, v);
         }
         // 2. gather the list of required keys
-        let required: std::collections::HashSet<_> =
-            self.list_config_keys().required_keys.into_iter().map(|(k, _)| k).collect();
+        let required: std::collections::HashSet<_> = self
+            .list_config_keys()
+            .required_keys
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
 
-         // 3. check which of them are still missing
+        // 3. check which of them are still missing
         let missing: Vec<_> = required
             .into_iter()
             .filter(|k| !self.config_store().contains_key(k))
             .collect();
 
         if missing.is_empty() {
-            SetConfigResult { success: true, error: None }
+            SetConfigResult {
+                success: true,
+                error: None,
+            }
         } else {
             let msg = format!("missing required config keys: {}", missing.join(", "));
-            SetConfigResult { success: false, error: Some(msg) }
+            SetConfigResult {
+                success: false,
+                error: Some(msg),
+            }
         }
     }
     /// Set the secrets
@@ -125,8 +153,12 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
         for (k, v) in p.secrets {
             self.secret_store().insert(k, v);
         }
-        let required: std::collections::HashSet<_> =
-        self.list_secret_keys().required_keys.into_iter().map(|(k, _)| k).collect();
+        let required: std::collections::HashSet<_> = self
+            .list_secret_keys()
+            .required_keys
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
 
         let missing: Vec<_> = required
             .into_iter()
@@ -134,24 +166,30 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
             .collect();
 
         if missing.is_empty() {
-            SetSecretsResult { success: true, error: None }
+            SetSecretsResult {
+                success: true,
+                error: None,
+            }
         } else {
             let msg = format!("missing required secret keys: {}", missing.join(", "));
-            SetSecretsResult { success: false, error: Some(msg) }
+            SetSecretsResult {
+                success: false,
+                error: Some(msg),
+            }
         }
     }
 
     /// Gets a config value from the config store
     fn get_config(&self, key: &str) -> Option<String> {
-        self.config_store()            // &DashMap<String, String>
-        .get(key)                  // Option< Ref<'_, String, String> >
-        .map(|guard| guard.value().clone())
+        self.config_store() // &DashMap<String, String>
+            .get(key) // Option< Ref<'_, String, String> >
+            .map(|guard| guard.value().clone())
     }
     /// Gets a secret from the secret store
     fn get_secret(&self, key: &str) -> Option<String> {
-        self.secret_store()            // &DashMap<String, String>
-        .get(key)                  // Option< Ref<'_, String, String> >
-        .map(|guard| guard.value().clone())
+        self.secret_store() // &DashMap<String, String>
+            .get(key) // Option< Ref<'_, String, String> >
+            .map(|guard| guard.value().clone())
     }
     /// Returns the plugin name, e.g., "telegram", "ws", etc.
     fn name(&self) -> NameResult;
@@ -163,34 +201,33 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
     fn capabilities(&self) -> CapabilitiesResult;
 
     /// initialise logging, config and secrets so plugins don't have to
-    async fn init_from_params(&mut self, params: &InitParams) -> InitResult{
+    async fn init_from_params(&mut self, params: &InitParams) -> InitResult {
         static LOG_INIT: std::sync::Once = std::sync::Once::new();
         LOG_INIT.call_once(|| {
             let result = panic::catch_unwind(|| {
                 // ── level ───────────────────────────────────────────────
                 let level = match params.log_level {
-                    LogLevel::Trace    => LevelFilter::TRACE,
-                    LogLevel::Debug    => LevelFilter::DEBUG,
-                    LogLevel::Info     => LevelFilter::INFO,
-                    LogLevel::Warn     => LevelFilter::WARN,
-                    LogLevel::Error    => LevelFilter::ERROR,
+                    LogLevel::Trace => LevelFilter::TRACE,
+                    LogLevel::Debug => LevelFilter::DEBUG,
+                    LogLevel::Info => LevelFilter::INFO,
+                    LogLevel::Warn => LevelFilter::WARN,
+                    LogLevel::Error => LevelFilter::ERROR,
                     LogLevel::Critical => LevelFilter::ERROR,
                 };
 
                 // ── optional file layer  ────────────────────────────────
                 let subscriber_dispatch: Dispatch = if let Some(dir) = &params.log_dir {
-                    std::fs::create_dir_all(dir).ok();               // ignore error, best-effort
+                    std::fs::create_dir_all(dir).ok(); // ignore error, best-effort
                     let file_app = daily(dir, "plugin.log");
 
                     Dispatch::new(
-                        Registry::default()
-                            .with(
-                                fmt::layer()
-                                    .with_ansi(false)
-                                    .with_target(false)
-                                    .with_writer(file_app)
-                                    .with_filter(level),
-                            ),
+                        Registry::default().with(
+                            fmt::layer()
+                                .with_ansi(false)
+                                .with_target(false)
+                                .with_writer(file_app)
+                                .with_filter(level),
+                        ),
                     )
                 } else {
                     panic!("❌ Logging requires a `log_dir`. None was provided.");
@@ -213,21 +250,35 @@ pub trait PluginHandler: HasStore + Send + Sync + Clone + 'static {
         });
 
         let res = self
-            .set_config(SetConfigParams { config: params.config.clone() })
+            .set_config(SetConfigParams {
+                config: params.config.clone(),
+            })
             .await;
         if !res.success {
-            return InitResult{ success: false, error: res.error }
+            return InitResult {
+                success: false,
+                error: res.error,
+            };
         }
 
-        let res = self.set_secrets(SetSecretsParams{secrets:params.secrets.clone()}).await;
+        let res = self
+            .set_secrets(SetSecretsParams {
+                secrets: params.secrets.clone(),
+            })
+            .await;
         if !res.success {
-            return InitResult{ success: false, error: res.error }
+            return InitResult {
+                success: false,
+                error: res.error,
+            };
         }
 
-        InitResult{ success: true, error: None }
+        InitResult {
+            success: true,
+            error: None,
+        }
     }
 }
-
 
 // -----------------------------------------------------------------------------
 // Runtime function – spawn read / write loops
@@ -241,7 +292,7 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
         while let Some(line) = rx.recv().await {
             if let Err(e) = w.write_all(line.as_bytes()).await {
                 error!("stdout write error: {e}");
-                break;              // abort writer task → plugin will exit
+                break; // abort writer task → plugin will exit
             }
             // avoid tight loop when channel is empty
             if w.flush().await.is_err() {
@@ -281,20 +332,21 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
     });
     // ── 3. read stdin, dispatch requests, send responses via the same tx ─────
     let mut reader = BufReader::new(io::stdin());
-    let mut line   = String::new();
+    let mut line = String::new();
 
     while reader.read_line(&mut line).await? != 0 {
         trim_newlines(&mut line);
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         match serde_json::from_str::<Message>(&line) {
-            Ok(Message::Request(req)) => {
-                handle_request(&mut plugin, req, &tx.clone()).await
-            }
+            Ok(Message::Request(req)) => handle_request(&mut plugin, req, &tx.clone()).await,
             Ok(_) => { /* ignore stray Response/Notif from stdin */ }
             Err(e) => {
-                let err = Response::fail(Id::Null, -32700, "Parse error", Some(json!(e.to_string())));
-                let _  = tx.send(format!("{}\n", serde_json::to_string(&err).unwrap()));
+                let err =
+                    Response::fail(Id::Null, -32700, "Parse error", Some(json!(e.to_string())));
+                let _ = tx.send(format!("{}\n", serde_json::to_string(&err).unwrap()));
             }
         }
         line.clear();
@@ -304,14 +356,12 @@ pub async fn run<P: PluginHandler>(mut plugin: P) -> Result<()> {
 }
 
 fn trim_newlines(s: &mut String) {
-    while matches!(s.chars().last(), Some('\n' | '\r')) { s.pop(); }
+    while matches!(s.chars().last(), Some('\n' | '\r')) {
+        s.pop();
+    }
 }
 
-async fn handle_request<P>(
-    plugin: &mut P,
-    req: Request,
-    tx: &UnboundedSender<String>,
-) 
+async fn handle_request<P>(plugin: &mut P, req: Request, tx: &UnboundedSender<String>)
 where
     P: PluginHandler,
 {
@@ -320,11 +370,10 @@ where
         let _ = tx.send(format!("{}\n", serde_json::to_string(&resp).unwrap()));
     }
 
-
     match req.method.parse::<Method>() {
         Ok(Method::Init) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<InitParams>(v) { 
+                if let Ok(p) = serde_json::from_value::<InitParams>(v) {
                     if let Some(id) = req.id {
                         enqueue(tx, Response::success(id, json!(plugin.init(p).await)));
                     }
@@ -333,7 +382,7 @@ where
         }
         Ok(Method::Start) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<InitParams>(v) { 
+                if let Ok(p) = serde_json::from_value::<InitParams>(v) {
                     if let Some(id) = req.id {
                         enqueue(tx, Response::success(id, json!(plugin.start(p).await)));
                     }
@@ -341,13 +390,13 @@ where
             }
         }
         Ok(Method::Drain) => {
-            if let Some(id) = req.id { 
-                 enqueue(tx, Response::success(id, json!(plugin.drain().await)));
+            if let Some(id) = req.id {
+                enqueue(tx, Response::success(id, json!(plugin.drain().await)));
             }
         }
         Ok(Method::Stop) => {
-            if let Some(id) = req.id { 
-                 enqueue(tx, Response::success(id, json!(plugin.stop().await)));
+            if let Some(id) = req.id {
+                enqueue(tx, Response::success(id, json!(plugin.stop().await)));
             }
         }
         Ok(Method::MessageOut) => {
@@ -360,8 +409,14 @@ where
                 }
                 Err(e) => {
                     if let Some(id) = req.id {
-                        enqueue(tx,
-                            Response::fail(id, -32602, "Invalid params", Some(json!(e.to_string())))
+                        enqueue(
+                            tx,
+                            Response::fail(
+                                id,
+                                -32602,
+                                "Invalid params",
+                                Some(json!(e.to_string())),
+                            ),
                         );
                     }
                 }
@@ -369,12 +424,12 @@ where
         }
         Ok(Method::Name) => {
             if let Some(id) = req.id {
-               enqueue(tx, Response::success(id, json!(plugin.name())));
+                enqueue(tx, Response::success(id, json!(plugin.name())));
             }
         }
         Ok(Method::Health) => {
             if let Some(id) = req.id {
-               enqueue(tx, Response::success(id, json!(plugin.health().await)));
+                enqueue(tx, Response::success(id, json!(plugin.health().await)));
             }
         }
         Ok(Method::State) => {
@@ -401,14 +456,17 @@ where
             if let Some(v) = req.params {
                 if let Some(id) = req.id {
                     if let Ok(p) = serde_json::from_value::<WaitUntilDrainedParams>(v) {
-                        enqueue(tx, Response::success(id, json!(plugin.wait_until_drained(p).await))); 
+                        enqueue(
+                            tx,
+                            Response::success(id, json!(plugin.wait_until_drained(p).await)),
+                        );
                     }
                 }
             }
         }
         Ok(Method::SetConfig) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<SetConfigParams>(v) { 
+                if let Ok(p) = serde_json::from_value::<SetConfigParams>(v) {
                     if let Some(id) = req.id {
                         enqueue(tx, Response::success(id, json!(plugin.set_config(p).await)));
                     }
@@ -417,20 +475,30 @@ where
         }
         Ok(Method::SetSecrets) => {
             if let Some(v) = req.params {
-                if let Ok(p) = serde_json::from_value::<SetSecretsParams>(v) { 
+                if let Ok(p) = serde_json::from_value::<SetSecretsParams>(v) {
                     if let Some(id) = req.id {
-                        enqueue(tx, Response::success(id, json!(plugin.set_secrets(p).await)));
+                        enqueue(
+                            tx,
+                            Response::success(id, json!(plugin.set_secrets(p).await)),
+                        );
                     }
                 }
             }
         }
         method => {
-            error!("Failed to implement method {:?} in handle_request",method);
+            error!("Failed to implement method {:?} in handle_request", method);
             if let Some(id) = req.id {
-               enqueue(tx, Response::fail(id, -32601, "Method not found", None));
+                enqueue(tx, Response::fail(id, -32601, "Method not found", None));
             }
         }
     }
 }
 
-
+pub fn fill_dynamic_fields(template: &str, values: &HashMap<&str, &str>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in values {
+        let placeholder = format!("{{{}}}", key);
+        result = result.replace(&placeholder, value);
+    }
+    result
+}

@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize, PartialEq)]
@@ -23,7 +23,7 @@ impl Message {
         }
     }
 
-    pub fn new_uuid(id: &str, payload: Value, ) -> Self {
+    pub fn new_uuid(id: &str, payload: Value) -> Self {
         Self {
             id: id.to_string(),
             session_id: Uuid::new_v4().to_string(),
@@ -64,11 +64,11 @@ impl Message {
         self.metadata.get(name)
     }
 
-    pub fn add(&mut self, name: String, value:String ) {
+    pub fn add(&mut self, name: String, value: String) {
         self.metadata.insert(name, value);
     }
 
-    pub fn remove(&mut self, name: &str ) {
+    pub fn remove(&mut self, name: &str) {
         self.metadata.remove(name);
     }
 }
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_message_creation() {
-        let msg = Message::new("abc123", json!({"key": "value"}),"123".to_string());
+        let msg = Message::new("abc123", json!({"key": "value"}), "123".to_string());
         assert_eq!(msg.id(), "abc123");
         assert_eq!(msg.payload(), json!({"key": "value"}));
         assert!(msg.metadata.is_empty());
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_add_and_get_metadata() {
-        let mut msg = Message::new("id", json!(null),"123".to_string());
+        let mut msg = Message::new("id", json!(null), "123".to_string());
         msg.add("foo".to_string(), "bar".to_string());
 
         assert_eq!(msg.get("foo"), Some(&"bar".to_string()));
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_remove_metadata() {
-        let mut msg = Message::new("id", json!(null),"123".to_string());
+        let mut msg = Message::new("id", json!(null), "123".to_string());
         msg.add("to_remove".to_string(), "bye".to_string());
 
         assert!(msg.get("to_remove").is_some());
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_metadata_overwrite() {
-        let mut msg = Message::new("id", json!(null),"123".to_string());
+        let mut msg = Message::new("id", json!(null), "123".to_string());
         msg.add("key".to_string(), "first".to_string());
         msg.add("key".to_string(), "second".to_string());
 

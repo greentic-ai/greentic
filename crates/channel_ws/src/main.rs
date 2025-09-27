@@ -1,37 +1,58 @@
 // crates/ws_plugin/src/main.rs
-use std::{net::SocketAddr, sync::{Arc, Mutex as SMutex}, time::Duration};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex as SMutex},
+    time::Duration,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{broadcast, mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}, task::JoinHandle,
+    sync::{
+        Mutex, broadcast,
+        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    },
+    task::JoinHandle,
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 
 use channel_plugin::{
     message::{
-        make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult 
-    }, plugin_helpers::{ build_text_message, build_user_joined_event, build_user_left_event, get_user_joined_left_events}, plugin_runtime::{run, HasStore, PluginHandler}
+        make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult, PLUGIN_VERSION
+    },
+    plugin_helpers::{
+        build_text_message, build_user_joined_event, build_user_left_event,
+        get_user_joined_left_events,
+    },
+    plugin_runtime::{run, HasStore, PluginHandler},
 };
 use tracing::{debug, error, info};
 
 /// Internal manager commands
 enum Command {
-    Register { peer: String, tx: UnboundedSender<WsMsg> },
-    Unregister { peer: String },
-    Send { peer: String, msg: WsMsg },
+    Register {
+        peer: String,
+        tx: UnboundedSender<WsMsg>,
+    },
+    Unregister {
+        peer: String,
+    },
+    Send {
+        peer: String,
+        msg: WsMsg,
+    },
 }
 
 /// WebSocket channel plugin
 #[derive(Debug, Clone)]
 pub struct WsPlugin {
-    addr:      String,
-    conn_handle:    Option<Arc<JoinHandle<()>>>,
-    manager_handle:    Option<Arc<JoinHandle<()>>>,
-    state:     Arc<SMutex<ChannelState>>,
-    cmd_tx:    Option<UnboundedSender<Command>>,
-    inbound_tx:UnboundedSender<ChannelMessage>, // to Greentic
+    addr: String,
+    conn_handle: Option<Arc<JoinHandle<()>>>,
+    manager_handle: Option<Arc<JoinHandle<()>>>,
+    state: Arc<SMutex<ChannelState>>,
+    cmd_tx: Option<UnboundedSender<Command>>,
+    inbound_tx: UnboundedSender<ChannelMessage>, // to Greentic
     inbound_rx: Arc<Mutex<UnboundedReceiver<ChannelMessage>>>,
     shutdown_tx: Option<broadcast::Sender<()>>,
     cfg: DashMap<String, String>,
@@ -61,7 +82,7 @@ impl Default for WsPlugin {
 async fn manager_loop(
     name: String,
     mut cmd_rx: UnboundedReceiver<Command>,
-    inbound:   UnboundedSender<ChannelMessage>,
+    inbound: UnboundedSender<ChannelMessage>,
     mut shutdown: broadcast::Receiver<()>,
 ) {
     let peers = DashMap::<String, UnboundedSender<WsMsg>>::new();
@@ -69,25 +90,25 @@ async fn manager_loop(
         tokio::select! {
             _ = shutdown.recv() => break,
             Some(cmd) = cmd_rx.recv() => match cmd {
-                Command::Register{peer,tx} => { 
+                Command::Register{peer,tx} => {
                     info!("[ws] New connection: {:?}",peer);
-                    peers.insert(peer.clone(), tx); 
+                    peers.insert(peer.clone(), tx);
                     let session = make_session_key(&name, &peer);
                     let join_msg = build_user_joined_event(&name, &peer, Some(session));
                     let _ = inbound.send(join_msg);
 
                 }
-                Command::Unregister{peer}  => { 
+                Command::Unregister{peer}  => {
                     info!("[ws] Disconnected: {:?}",peer.clone());
-                    peers.remove(&peer); 
+                    peers.remove(&peer);
                     let session = make_session_key(&name, &peer);
                     let leave_msg = build_user_left_event(&name, &peer, Some(session));
                     let _ = inbound.send(leave_msg);
 
                 }
                 Command::Send{peer,msg}    => {
-                    if let Some(tx) = peers.get(&peer) { 
-                        let _ = tx.send(msg); 
+                    if let Some(tx) = peers.get(&peer) {
+                        let _ = tx.send(msg);
                     }
                 }
             }
@@ -97,7 +118,7 @@ async fn manager_loop(
 
 fn spawn_conn(
     stream: TcpStream,
-    peer:   SocketAddr,
+    peer: SocketAddr,
     cmd_tx: UnboundedSender<Command>,
     msg_tx: UnboundedSender<ChannelMessage>,
     mut shutdown: broadcast::Receiver<()>,
@@ -105,22 +126,28 @@ fn spawn_conn(
     tokio::spawn(async move {
         let peer_id = peer.to_string();
         let (mut ws_tx, mut ws_rx) = match accept_async(stream).await {
-                Ok(ws) => ws.split(),
-                Err(e) => { error!("[ws] handshake error: {e}"); return; }
+            Ok(ws) => ws.split(),
+            Err(e) => {
+                error!("[ws] handshake error: {e}");
+                return;
+            }
         };
         let (out_tx, mut out_rx) = unbounded_channel::<WsMsg>();
 
-        let _ = cmd_tx.send(Command::Register { peer: peer_id.clone(), tx: out_tx });
+        let _ = cmd_tx.send(Command::Register {
+            peer: peer_id.clone(),
+            tx: out_tx,
+        });
 
         loop {
             tokio::select! {
                 _ = shutdown.recv() => {
-                    info!("[ws] Shutting down peer {}",peer_id);    
+                    info!("[ws] Shutting down peer {}",peer_id);
                     break;
                 },
                 Some(frame) = ws_rx.next() => match frame {
                     Ok(WsMsg::Text(txt)) => {
-                        info!("[ws] received {:?}", txt.as_str()); 
+                        info!("[ws] received {:?}", txt.as_str());
                         // Build a messageIn JSON-RPC request and emit
                         let msg = build_text_message(
                             &peer_id,    // from
@@ -132,8 +159,8 @@ fn spawn_conn(
                     }
                     _ => break,
                 },
-                Some(out) = out_rx.recv() => { 
-                    let _ = ws_tx.send(out.clone()).await; 
+                Some(out) = out_rx.recv() => {
+                    let _ = ws_tx.send(out.clone()).await;
                     info!("[ws] received out {:?}", out);
                 }
             }
@@ -146,32 +173,37 @@ fn spawn_conn(
 // ---------------- PluginHandler implementation ----------------
 
 impl HasStore for WsPlugin {
-    fn config_store(&self)  -> &DashMap<String, String> { &self.cfg }
-    fn secret_store(&self)  -> &DashMap<String, String> { &self.secrets }
+    fn config_store(&self) -> &DashMap<String, String> {
+        &self.cfg
+    }
+    fn secret_store(&self) -> &DashMap<String, String> {
+        &self.secrets
+    }
 }
 
 #[async_trait]
 impl PluginHandler for WsPlugin {
     async fn init(&mut self, _p: channel_plugin::message::InitParams) -> InitResult {
         let (cmd_tx, cmd_rx) = unbounded_channel::<Command>();
-        self.cmd_tx = Some(cmd_tx.clone()); 
+        self.cmd_tx = Some(cmd_tx.clone());
 
-        let address = self.get_config("WS_ADDRESS") 
+        let address = self
+            .get_config("WS_ADDRESS")
             .unwrap_or_else(|| "0.0.0.0".to_string());
 
-        let port = self.get_config("WS_PORT")
+        let port = self
+            .get_config("WS_PORT")
             .unwrap_or_else(|| "8888".to_string());
 
         self.addr = format!("{}:{}", address, port);
-        
 
         // manager loop for fan-out
         let listener = match TcpListener::bind(&self.addr).await {
             Ok(l) => l,
             Err(e) => {
-                return InitResult{
-                    success:false,
-                    error:Some(format!("cannot bind {}: {e}", self.addr))
+                return InitResult {
+                    success: false,
+                    error: Some(format!("cannot bind {}: {e}", self.addr)),
                 };
             }
         };
@@ -179,47 +211,69 @@ impl PluginHandler for WsPlugin {
         let inbound_tx = self.inbound_tx.clone();
         self.shutdown_tx = Some(shutdown_tx.clone());
         let name = self.name().clone();
-        let manager = tokio::spawn(manager_loop(name.name,cmd_rx, inbound_tx.clone(), shutdown_tx.subscribe()));
+        let manager = tokio::spawn(manager_loop(
+            name.name,
+            cmd_rx,
+            inbound_tx.clone(),
+            shutdown_tx.subscribe(),
+        ));
 
         self.manager_handle = Some(Arc::new(manager));
-        info!("[ws] listening on {}",self.addr);
+        info!("[ws] listening on {}", self.addr);
         // Start accept loop once
         let this = self.clone();
-    
-        let handle = tokio::spawn(async move { 
-             loop {
+
+        let handle = tokio::spawn(async move {
+            loop {
                 let cmd_tx_clone = this.cmd_tx.clone().expect("cmd_tx should have been set");
                 let inbound_tx_clone = this.inbound_tx.clone();
                 let (stream, peer) = listener.accept().await.expect("accept");
-                spawn_conn(stream, peer, cmd_tx_clone, inbound_tx_clone, shutdown_tx.subscribe());
+                spawn_conn(
+                    stream,
+                    peer,
+                    cmd_tx_clone,
+                    inbound_tx_clone,
+                    shutdown_tx.subscribe(),
+                );
             }
-         });
+        });
 
         self.conn_handle = Some(Arc::new(handle));
         *self.state.lock().unwrap() = ChannelState::RUNNING;
 
-        InitResult { success: true, error: None }
+        InitResult {
+            success: true,
+            error: None,
+        }
     }
 
     // Greentic → Plugin : deliver outbound
     async fn send_message(&mut self, p: MessageOutParams) -> MessageOutResult {
         if let Some(MessageContent::Text { text }) = p.message.content.get(0) {
-            let peer = p.message
-                    .to
-                    .get(0)                       // first recipient
-                    .map(|rcpt| rcpt.id.clone())
-                    .or_else(|| Some(p.message.from.id.clone())) // fallback
-                    .unwrap();
+            let peer = p
+                .message
+                .to
+                .get(0) // first recipient
+                .map(|rcpt| rcpt.id.clone())
+                .or_else(|| Some(p.message.from.id.clone())) // fallback
+                .unwrap();
             if let Some(sender) = &self.cmd_tx {
                 info!("[ws] send {:?}", text);
                 let _ = sender.send(Command::Send {
-                peer: peer.clone(),
-                msg:  WsMsg::Text(text.into())});
+                    peer: peer.clone(),
+                    msg: WsMsg::Text(text.into()),
+                });
             } else {
-                return MessageOutResult { success: false, error: Some("plugin not initialised".into()) };
+                return MessageOutResult {
+                    success: false,
+                    error: Some("plugin not initialised".into()),
+                };
             }
         }
-        MessageOutResult { success: true, error: None }
+        MessageOutResult {
+            success: true,
+            error: None,
+        }
     }
 
     // Plugin → Greentic : inbound from channel
@@ -227,7 +281,10 @@ impl PluginHandler for WsPlugin {
         let mut inbound = self.inbound_rx.lock().await;
         match inbound.recv().await {
             Some(msg) => {
-                info!("[ws] message_in {} for session {:?}", msg.id, msg.session_id);
+                info!(
+                    "[ws] message_in {} for session {:?}",
+                    msg.id, msg.session_id
+                );
                 MessageInResult {
                     message: msg,
                     error: false,
@@ -258,65 +315,86 @@ impl PluginHandler for WsPlugin {
         if let Some(handle) = &self.manager_handle {
             debug!("[ws] manager_handle");
             handle.abort();
-
         }
-       if let Some(handle) = &self.conn_handle {
+        if let Some(handle) = &self.conn_handle {
             debug!("[ws] conn_handle");
             handle.abort();
         }
 
-
         *self.state.lock().unwrap() = ChannelState::STOPPED;
-        DrainResult{ success: true, error: None }
+        DrainResult {
+            success: true,
+            error: None,
+        }
     }
     /// Stop the plugin
-    async fn stop(&mut self) -> StopResult{
+    async fn stop(&mut self) -> StopResult {
         info!("[ws] Stop called");
         self.drain().await;
-        StopResult{ success: true, error: None }
+        StopResult {
+            success: true,
+            error: None,
+        }
     }
 
     /// Check the health of the plugin
     async fn health(&self) -> HealthResult {
-        HealthResult { healthy: true, reason: None }
+        HealthResult {
+            healthy: true,
+            reason: None,
+        }
     }
     /// Request the current status
-    async fn state(&self) -> StateResult{
-        StateResult{ state: self.state.lock().unwrap().clone() }
+    async fn state(&self) -> StateResult {
+        StateResult {
+            state: self.state.lock().unwrap().clone(),
+        }
     }
-   
+
     /// Returns the plugin name, e.g., "telegram", "ws", etc.
-    fn name(&self) -> NameResult{
-        NameResult{name:"ws".into()}
+    fn name(&self) -> NameResult {
+        NameResult { name: "ws".into() }
     }
     /// List of expected config keys (like `API_KEY`, `WS_PORT`, etc.)
-    fn list_config_keys(&self) -> ListKeysResult{
+    fn list_config_keys(&self) -> ListKeysResult {
         let keys = vec![
-            ("WS_ADDRESS".into(), Some("websocket address to list on. If not set '0.0.0.0' will be used.".into())), 
-            ("WS_PORT".into(),Some("websocket port to list on. If not set '8888' will be used.".into()))];
-        ListKeysResult{ 
-            required_keys: vec![], 
-            optional_keys: keys, 
+            (
+                "WS_ADDRESS".into(),
+                Some("websocket address to list on. If not set '0.0.0.0' will be used.".into()),
+            ),
+            (
+                "WS_PORT".into(),
+                Some("websocket port to list on. If not set '8888' will be used.".into()),
+            ),
+        ];
+        ListKeysResult {
+            required_keys: vec![],
+            optional_keys: keys,
+            dynamic_keys: vec![],
         }
     }
     /// List of expected secret keys
-    fn list_secret_keys(&self) -> ListKeysResult{
-        ListKeysResult{ 
-            required_keys: vec![], 
-            optional_keys:vec![], 
+    fn list_secret_keys(&self) -> ListKeysResult {
+        ListKeysResult {
+            required_keys: vec![],
+            optional_keys: vec![],
+            dynamic_keys: vec![],
         }
     }
     /// Declares plugin capabilities (sending, receiving, text, etc.)
-    fn capabilities(&self) -> CapabilitiesResult{
-        CapabilitiesResult { capabilities: ChannelCapabilities {
-            name: "ws".into(),
-            supports_sending: true,
-            supports_receiving: true,
-            supports_text: true,
-            supports_routing: true,
-            supported_events: get_user_joined_left_events(),
-            ..Default::default()
-        }}
+    fn capabilities(&self) -> CapabilitiesResult {
+        CapabilitiesResult {
+            capabilities: ChannelCapabilities {
+                name: "ws".into(),
+                version: PLUGIN_VERSION.to_string(),
+                supports_sending: true,
+                supports_receiving: true,
+                supports_text: true,
+                supports_routing: true,
+                supported_events: get_user_joined_left_events(),
+                ..Default::default()
+            },
+        }
     }
 }
 
@@ -326,7 +404,7 @@ impl PluginHandler for WsPlugin {
 async fn main() -> anyhow::Result<()> {
     run(WsPlugin::default()).await
 }
-/* 
+/*
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut plugin = WsPlugin::default();
@@ -344,16 +422,16 @@ async fn main() -> anyhow::Result<()> {
     plugin.start(params).await;
     run(plugin).await
 }
-    
+
 */
 
-    #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{Duration};
-    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
     use channel_plugin::message::*;
-    
+    use tokio::time::Duration;
+    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
+
     fn free_port() -> u16 {
         std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -382,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn test_bind_and_accept() {
         let port = free_port();
-        info!("Test port: {}",port);
+        info!("Test port: {}", port);
         let _plugin = start_ws_plugin(port).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -403,16 +481,18 @@ mod tests {
         let (mut ws_stream, _) = connect_async(&url).await.unwrap();
 
         let input_text = "test message";
-        ws_stream.send(WsMessage::Text(input_text.into())).await.unwrap();
+        ws_stream
+            .send(WsMessage::Text(input_text.into()))
+            .await
+            .unwrap();
 
-        
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let time_left = deadline.saturating_duration_since(tokio::time::Instant::now());
 
             if time_left == std::time::Duration::ZERO {
                 // ✅ Shutdown plugin after test
-                plugin.drain().await;   
+                plugin.drain().await;
                 panic!("Timed out waiting for text message");
             }
 
@@ -429,14 +509,14 @@ mod tests {
                     }
                 }
                 Err(_) => {
-                    plugin.drain().await;   
+                    plugin.drain().await;
                     panic!("Timed out waiting for plugin message")
-                },
+                }
             }
         }
 
         // ✅ Shutdown plugin after test
-        plugin.drain().await;   
+        plugin.drain().await;
     }
 
     #[tokio::test]
@@ -446,6 +526,9 @@ mod tests {
         plugin.stop().await;
 
         let result = tokio::net::TcpStream::connect(("127.0.0.1", port)).await;
-        assert!(result.is_err(), "Port should be released after plugin stops");
+        assert!(
+            result.is_err(),
+            "Port should be released after plugin stops"
+        );
     }
 }

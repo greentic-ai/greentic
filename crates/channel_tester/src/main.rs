@@ -9,17 +9,28 @@ use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use notify::{
-    event::{CreateKind, ModifyKind},
     Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher,
+    event::{CreateKind, ModifyKind},
 };
 use serde::{Deserialize, Serialize};
 use serde_yaml_bw;
-use tokio::{fs, sync::{mpsc, Mutex, Notify}, task, time};
+use std::sync::Mutex as SMutex;
+use tokio::{
+    fs,
+    sync::{Mutex, Notify, mpsc},
+    task, time,
+};
 use tracing::{error, info};
 use uuid::Uuid;
-use std::sync::Mutex as SMutex;
 
-use channel_plugin::{message::{CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult}, plugin_runtime::{run, HasStore, PluginHandler}};
+use channel_plugin::{
+    message::{
+        CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult,
+        InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams,
+        MessageOutResult, NameResult, StateResult, StopResult, PLUGIN_VERSION,
+    },
+    plugin_runtime::{run, HasStore, PluginHandler},
+};
 
 #[derive(Deserialize, Serialize)]
 struct TestFile {
@@ -83,40 +94,60 @@ impl Default for TesterPlugin {
 }
 
 impl HasStore for TesterPlugin {
-    fn config_store(&self)  -> &DashMap<String, String> { &self.config}
-    fn secret_store(&self)  -> &DashMap<String, String> { &self.secrets }
+    fn config_store(&self) -> &DashMap<String, String> {
+        &self.config
+    }
+    fn secret_store(&self) -> &DashMap<String, String> {
+        &self.secrets
+    }
 }
-
 
 #[async_trait]
 impl PluginHandler for TesterPlugin {
-
     fn name(&self) -> NameResult {
-        NameResult{name:"tester".to_string()}
+        NameResult {
+            name: "tester".to_string(),
+        }
     }
 
     fn capabilities(&self) -> CapabilitiesResult {
-        CapabilitiesResult { capabilities: ChannelCapabilities {
-            name: "tester".into(),
-            supports_sending: true,
-            supports_receiving: true,
-            supports_text: true,
-            supports_routing: true,
-            /* … */
-            ..Default::default()
-        }}
+        CapabilitiesResult {
+            capabilities: ChannelCapabilities {
+                name: "tester".into(),
+                version: PLUGIN_VERSION.to_string(),
+                supports_sending: true,
+                supports_receiving: true,
+                supports_text: true,
+                supports_routing: true,
+                /* … */
+                ..Default::default()
+            },
+        }
     }
 
-    fn list_config_keys(&self) -> ListKeysResult{
-        ListKeysResult{ required_keys: 
-            vec![("GREENTIC_DIR".to_string(),Some("The directory where greentic is installed".to_string()))], 
-            optional_keys: vec![] }
-    }   
+    fn list_config_keys(&self) -> ListKeysResult {
+        ListKeysResult {
+            required_keys: vec![(
+                "GREENTIC_DIR".to_string(),
+                Some("The directory where greentic is installed".to_string()),
+            )],
+            optional_keys: vec![],
+            dynamic_keys: vec![],
+        }
+    }
 
     fn list_secret_keys(&self) -> ListKeysResult {
-        ListKeysResult{ required_keys: vec![], optional_keys: vec![] }
+        ListKeysResult {
+            required_keys: vec![],
+            optional_keys: vec![],
+            dynamic_keys: vec![],
+        }
     }
-    async fn state(&self) -> StateResult { StateResult{state:self.state.lock().unwrap().clone()} }
+    async fn state(&self) -> StateResult {
+        StateResult {
+            state: self.state.lock().unwrap().clone(),
+        }
+    }
 
     async fn init(&mut self, _params: InitParams) -> InitResult {
         let shutdown = Arc::new(Notify::new());
@@ -142,7 +173,10 @@ impl PluginHandler for TesterPlugin {
         let mut watcher = PollWatcher::new(
             move |res: notify::Result<Event>| {
                 if let Ok(event) = res {
-                    if matches!(event.kind, EventKind::Create(CreateKind::Any) | EventKind::Modify(ModifyKind::Data(_))) {
+                    if matches!(
+                        event.kind,
+                        EventKind::Create(CreateKind::Any) | EventKind::Modify(ModifyKind::Data(_))
+                    ) {
                         for path in event.paths {
                             if path.extension().and_then(|s| s.to_str()) == Some("test") {
                                 let _ = tx.send(path.clone());
@@ -150,10 +184,14 @@ impl PluginHandler for TesterPlugin {
                         }
                     }
                 }
-            }, cfg
-        ).expect("failed to initialize notify");
+            },
+            cfg,
+        )
+        .expect("failed to initialize notify");
 
-        watcher.watch(&tests_dir, RecursiveMode::NonRecursive).expect("failed to watch ./greentic/tests");
+        watcher
+            .watch(&tests_dir, RecursiveMode::NonRecursive)
+            .expect("failed to watch ./greentic/tests");
         self.watcher = Some(watcher);
 
         *self.state.lock().unwrap() = ChannelState::RUNNING;
@@ -161,31 +199,30 @@ impl PluginHandler for TesterPlugin {
 
         let shutdown_clone = shutdown.clone();
         task::spawn(async move {
-                loop {
-                    tokio::select! {
-                        maybe_path = rx.recv() => { 
-                            let plugin = plugin.clone();
-                            task::spawn(async move {
-                                let guard = plugin.clone();
-                                if let Some(path_buf) = maybe_path {
-                                    let path = Path::new(&path_buf);
-                                    if let Err(e) = guard.run_test_file(&path).await {
-                                        error!("{}: {e:#}", path.display());
-                                    }
+            loop {
+                tokio::select! {
+                    maybe_path = rx.recv() => {
+                        let plugin = plugin.clone();
+                        task::spawn(async move {
+                            let guard = plugin.clone();
+                            if let Some(path_buf) = maybe_path {
+                                let path = Path::new(&path_buf);
+                                if let Err(e) = guard.run_test_file(&path).await {
+                                    error!("{}: {e:#}", path.display());
                                 }
-                            });
-                        }
-                        _ = shutdown_clone.notified() => {
-                            info!("✅ Shutting down watcher receive loop");
-                            return;
-                        }
+                            }
+                        });
+                    }
+                    _ = shutdown_clone.notified() => {
+                        info!("✅ Shutting down watcher receive loop");
+                        return;
                     }
                 }
+            }
         });
 
         #[cfg(test)]
         {
-
             let echo_rx = self.incoming_rx.clone();
             let echo_plugin = self.clone();
 
@@ -212,10 +249,12 @@ impl PluginHandler for TesterPlugin {
                     }
                 }
             });
-
         }
 
-        InitResult{ success: true, error: None }
+        InitResult {
+            success: true,
+            error: None,
+        }
     }
 
     async fn drain(&mut self) -> DrainResult {
@@ -226,8 +265,10 @@ impl PluginHandler for TesterPlugin {
             shutdown.notify_waiters();
         }
         *self.state.lock().unwrap() = ChannelState::STOPPED;
-        DrainResult{ success: true, error: None }
-
+        DrainResult {
+            success: true,
+            error: None,
+        }
     }
 
     async fn stop(&mut self) -> StopResult {
@@ -238,27 +279,39 @@ impl PluginHandler for TesterPlugin {
             shutdown.notify_waiters();
         }
         *self.state.lock().unwrap() = ChannelState::STOPPED;
-        StopResult{ success: true, error: None }
+        StopResult {
+            success: true,
+            error: None,
+        }
     }
 
-    async fn send_message(&mut self,  params: MessageOutParams) -> MessageOutResult {
+    async fn send_message(&mut self, params: MessageOutParams) -> MessageOutResult {
         for content in &params.message.content {
             if let MessageContent::Text { text: t } = content {
                 let _ = self.reply_tx.send(t.to_string());
             }
         }
-        info!("got a new message {:?}",params.message);
-        MessageOutResult{ success: true, error: None }
+        info!("got a new message {:?}", params.message);
+        MessageOutResult {
+            success: true,
+            error: None,
+        }
     }
 
     async fn receive_message(&mut self) -> MessageInResult {
         info!("receive_message");
         let mut rx = self.incoming_rx.lock().await;
         match rx.recv().await {
-            Some(msg) => MessageInResult{message:msg, error:false},
+            Some(msg) => MessageInResult {
+                message: msg,
+                error: false,
+            },
             None => {
                 error!("receive_message channel closed");
-               return MessageInResult{message:ChannelMessage::default(), error:true};
+                return MessageInResult {
+                    message: ChannelMessage::default(),
+                    error: true,
+                };
             }
         }
     }
@@ -266,9 +319,12 @@ impl PluginHandler for TesterPlugin {
 
 impl TesterPlugin {
     async fn run_test_file(&self, path: &Path) -> anyhow::Result<()> {
-        let yaml: String = fs::read_to_string(path).await.expect("could not read test file");
+        let yaml: String = fs::read_to_string(path)
+            .await
+            .expect("could not read test file");
         let tf: TestFile = serde_yaml_bw::from_str(&yaml)?;
-        let dest = Path::new("./greentic/flows/running").join(Path::new(&tf.ygtc).file_name().unwrap());
+        let dest =
+            Path::new("./greentic/flows/running").join(Path::new(&tf.ygtc).file_name().unwrap());
         fs::create_dir_all("./greentic/flows/running").await?;
         fs::copy(&tf.ygtc, &dest).await?;
 
@@ -278,7 +334,9 @@ impl TesterPlugin {
             let session_id = format!("tester-session-{}", key);
             let cm = ChannelMessage {
                 channel: "tester".into(),
-                content: vec![MessageContent::Text{text:test.send.clone()}],
+                content: vec![MessageContent::Text {
+                    text: test.send.clone(),
+                }],
                 session_id: Some(session_id.clone()),
                 id: key.clone(),
                 timestamp: Utc::now().to_rfc3339(),
@@ -291,18 +349,30 @@ impl TesterPlugin {
             let got = time::timeout(Duration::from_millis(test.timeout), async {
                 let mut rx = self.reply_rx.lock().await;
                 loop {
-                    let Some(msg) = rx.recv().await else { break None };
+                    let Some(msg) = rx.recv().await else {
+                        break None;
+                    };
                     if msg == expected {
                         break Some(msg);
                     }
                 }
-            }).await.ok().flatten();
+            })
+            .await
+            .ok()
+            .flatten();
 
             let pass = got.as_deref() == Some(&test.expect);
-            results.push(format!("{}: {}", test.name, if pass {"PASS"} else {"FAIL"}));
+            results.push(format!(
+                "{}: {}",
+                test.name,
+                if pass { "PASS" } else { "FAIL" }
+            ));
 
             if !pass {
-                println!("❌ Test `{}` failed: expected {:?}, got {:?}", test.name, test.expect, got);
+                println!(
+                    "❌ Test `{}` failed: expected {:?}, got {:?}",
+                    test.name, test.expect, got
+                );
             }
         }
 
@@ -311,8 +381,6 @@ impl TesterPlugin {
         Ok(())
     }
 }
-
-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -327,14 +395,14 @@ mod tests {
     use super::TesterPlugin;
     use channel_plugin::message::{InitParams, LogLevel};
     use channel_plugin::plugin_runtime::{PluginHandler, VERSION};
+    use std::env;
+    use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs;
-    use tokio::time::{self, Duration};
     use tokio::io::AsyncWriteExt;
-    use std::env;
-    use std::path::PathBuf;
-    use std::io::Write;
-    
+    use tokio::time::{self, Duration};
+
     // helper: write the dummy flow file that simply echoes tester_in → tester_out
     async fn write_minimal_flow(dir: &TempDir, name: &str) -> PathBuf {
         let flows = dir.path().join("greentic/flows");
@@ -388,10 +456,9 @@ tests:
         let tmp = TempDir::new().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
-       
         // create the directories that run_test_file expects
         fs::create_dir_all("greentic/tests").await.unwrap();
-        fs::create_dir_all("greentic/flows").await.unwrap(); 
+        fs::create_dir_all("greentic/flows").await.unwrap();
 
         // 1) write minimal flow
         let _ygtc = write_minimal_flow(&tmp, "pass.ygtc").await;
@@ -400,26 +467,31 @@ tests:
 
         // 3) new plugin
         let mut plugin = TesterPlugin::default();
-        let params = InitParams{ 
-            version: VERSION.to_string(), 
-            config: vec![("GREENTIC_DIR".to_string(),"./greentic".to_string())], 
-            secrets: vec![], 
-            log_level: LogLevel::Info, 
-            log_dir: Some("./logs".to_string()), 
-            otel_endpoint: None };
+        let params = InitParams {
+            version: VERSION.to_string(),
+            config: vec![("GREENTIC_DIR".to_string(), "./greentic".to_string())],
+            secrets: vec![],
+            log_level: LogLevel::Info,
+            log_dir: Some("./logs".to_string()),
+            otel_endpoint: None,
+        };
         let result = plugin.init(params).await;
         assert!(result.success);
 
         // 4) invoke run_test_file directly
-        plugin.run_test_file(&test_path)
-              .await
-              .expect("run_test_file");
+        plugin
+            .run_test_file(&test_path)
+            .await
+            .expect("run_test_file");
 
         // 5) read the .result file
         let result_path = test_path.with_extension("test.result");
         let out = fs::read_to_string(&result_path).await.unwrap();
-        assert!(out.contains("roundtrip: PASS"),
-            "expected PASS but got: {}", out);
+        assert!(
+            out.contains("roundtrip: PASS"),
+            "expected PASS but got: {}",
+            out
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -429,7 +501,7 @@ tests:
 
         // create the directories that run_test_file expects
         fs::create_dir_all("greentic/tests").await.unwrap();
-        fs::create_dir_all("greentic/flows").await.unwrap(); 
+        fs::create_dir_all("greentic/flows").await.unwrap();
 
         // same flow
         let _ygtc = write_minimal_flow(&tmp, "pass.ygtc").await;
@@ -451,26 +523,30 @@ tests:
 
         let mut plugin = TesterPlugin::default();
 
-        let params = InitParams{ 
-            version: VERSION.to_string(), 
-            config: vec![("GREENTIC_DIR".to_string(),"./greentic".to_string())], 
-            secrets: vec![], 
-            log_level: LogLevel::Info, 
-            log_dir: Some("./logs".to_string()), 
-            otel_endpoint: None };
+        let params = InitParams {
+            version: VERSION.to_string(),
+            config: vec![("GREENTIC_DIR".to_string(), "./greentic".to_string())],
+            secrets: vec![],
+            log_level: LogLevel::Info,
+            log_dir: Some("./logs".to_string()),
+            otel_endpoint: None,
+        };
         let result = plugin.init(params).await;
         assert!(result.success);
 
-
-        plugin.clone()
-              .run_test_file(&test_path)
-              .await
-              .expect("run_test_file");
+        plugin
+            .clone()
+            .run_test_file(&test_path)
+            .await
+            .expect("run_test_file");
 
         let result_path = test_path.with_extension("test.result");
         let out = fs::read_to_string(&result_path).await.unwrap();
-        assert!(out.contains("roundtrip: FAIL"),
-            "expected FAIL but got: {}", out);
+        assert!(
+            out.contains("roundtrip: FAIL"),
+            "expected FAIL but got: {}",
+            out
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -479,9 +555,8 @@ tests:
         let tmp = TempDir::new()?;
         env::set_current_dir(&tmp)?;
 
-
         // create the directories that run_test_file expects
-        fs::create_dir_all("greentic/flows").await.unwrap(); 
+        fs::create_dir_all("greentic/flows").await.unwrap();
 
         // 2) Create the tests & flows/running directories
         fs::create_dir_all("greentic/tests").await?;
@@ -492,7 +567,9 @@ tests:
         let flow_path = tmp.path().join("simple.ygtc");
         {
             let mut f = std::fs::File::create(&flow_path)?;
-            writeln!(f, r#"
+            writeln!(
+                f,
+                r#"
 id: dummy
 title: dummy
 description: test flow
@@ -508,18 +585,19 @@ nodes:
 connections:
   tester_in:
     - tester_out
-"#)?;
+"#
+            )?;
         }
 
         // 4) Build a .test file referencing that flow
         let test = TestFile {
             ygtc: flow_path.to_string_lossy().into_owned(),
-            tests: vec![ SingleTest {
-                name:     "roundtrip".into(),
-                send:     "hello".into(),
-                expect:   "hello".into(),
-                timeout:  500,
-            } ],
+            tests: vec![SingleTest {
+                name: "roundtrip".into(),
+                send: "hello".into(),
+                expect: "hello".into(),
+                timeout: 500,
+            }],
         };
         let test_yaml = serde_yaml_bw::to_string(&test)?;
         let test_path = PathBuf::from("greentic/tests/my_test.test");
@@ -527,13 +605,17 @@ connections:
 
         // 5) Start the plugin
         let mut plugin = TesterPlugin::default();
-        let params = InitParams{ 
-            version: VERSION.to_string(), 
-            config: vec![("GREENTIC_DIR".to_string(),tmp.path().to_string_lossy().into())], 
-            secrets: vec![], 
-            log_level: LogLevel::Info, 
-            log_dir: Some("./logs".to_string()), 
-            otel_endpoint: None };
+        let params = InitParams {
+            version: VERSION.to_string(),
+            config: vec![(
+                "GREENTIC_DIR".to_string(),
+                tmp.path().to_string_lossy().into(),
+            )],
+            secrets: vec![],
+            log_level: LogLevel::Info,
+            log_dir: Some("./logs".to_string()),
+            otel_endpoint: None,
+        };
         let result = plugin.init(params).await;
         assert!(result.success);
 
@@ -542,7 +624,11 @@ connections:
         let mut found = false;
         for _ in 0..20 {
             interval.tick().await;
-            if tmp.path().join("greentic/tests/my_test.test.result").exists() {
+            if tmp
+                .path()
+                .join("greentic/tests/my_test.test.result")
+                .exists()
+            {
                 found = true;
                 break;
             }
@@ -551,7 +637,11 @@ connections:
 
         // 7) Read & verify its contents
         let result = fs::read_to_string("greentic/tests/my_test.test.result").await?;
-        assert!(result.contains("roundtrip: PASS"), "got result = {:?}", result);
+        assert!(
+            result.contains("roundtrip: PASS"),
+            "got result = {:?}",
+            result
+        );
 
         Ok(())
     }
@@ -562,35 +652,39 @@ connections:
         env::set_current_dir(tmp.path()).unwrap();
 
         fs::create_dir_all("greentic/tests").await.unwrap();
-        fs::create_dir_all("greentic/flows").await.unwrap(); 
+        fs::create_dir_all("greentic/flows").await.unwrap();
 
         let _ygtc = write_minimal_flow(&tmp, "pass.ygtc").await;
         let test_path = write_test_file(&tmp, "./greentic/flows/pass.ygtc", "unexpected").await;
 
         let mut plugin = TesterPlugin::default();
 
-
         // 🔸 No route added for "unexpected"
 
-        let params = InitParams{ 
-            version: VERSION.to_string(), 
-            config: vec![("GREENTIC_DIR".to_string(),"./greentic".to_string())], 
-            secrets: vec![], 
-            log_level: LogLevel::Info, 
-            log_dir: Some("./logs".to_string()), 
-            otel_endpoint: None };
+        let params = InitParams {
+            version: VERSION.to_string(),
+            config: vec![("GREENTIC_DIR".to_string(), "./greentic".to_string())],
+            secrets: vec![],
+            log_level: LogLevel::Info,
+            log_dir: Some("./logs".to_string()),
+            otel_endpoint: None,
+        };
         let result = plugin.init(params).await;
         assert!(result.success);
 
-        plugin.clone()
+        plugin
+            .clone()
             .run_test_file(&test_path)
             .await
             .expect("run_test_file");
 
         let result_path = test_path.with_extension("test.result");
         let out = fs::read_to_string(&result_path).await.unwrap();
-        assert!(out.contains("roundtrip: FAIL"),
-            "expected FAIL due to missing route but got: {}", out);
+        assert!(
+            out.contains("roundtrip: FAIL"),
+            "expected FAIL due to missing route but got: {}",
+            out
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -599,30 +693,35 @@ connections:
         env::set_current_dir(tmp.path()).unwrap();
 
         fs::create_dir_all("greentic/tests").await.unwrap();
-        fs::create_dir_all("greentic/flows").await.unwrap(); 
+        fs::create_dir_all("greentic/flows").await.unwrap();
 
         let _ygtc = write_minimal_flow(&tmp, "pass.ygtc").await;
         let test_path = write_test_file(&tmp, "./greentic/flows/pass.ygtc", "target").await;
 
         let mut plugin = TesterPlugin::default();
-        let params = InitParams{ 
-            version: VERSION.to_string(), 
-            config: vec![("GREENTIC_DIR".to_string(),"./greentic".to_string())], 
-            secrets: vec![], 
-            log_level: LogLevel::Info, 
-            log_dir: Some("./logs".to_string()), 
-            otel_endpoint: None };
+        let params = InitParams {
+            version: VERSION.to_string(),
+            config: vec![("GREENTIC_DIR".to_string(), "./greentic".to_string())],
+            secrets: vec![],
+            log_level: LogLevel::Info,
+            log_dir: Some("./logs".to_string()),
+            otel_endpoint: None,
+        };
         let result = plugin.init(params).await;
         assert!(result.success);
 
-        plugin.clone()
+        plugin
+            .clone()
             .run_test_file(&test_path)
             .await
             .expect("run_test_file");
 
         let result_path = test_path.with_extension("test.result");
         let out = fs::read_to_string(&result_path).await.unwrap();
-        assert!(out.contains("roundtrip: PASS"),
-            "expected PASS from correct route match but got: {}", out);
+        assert!(
+            out.contains("roundtrip: PASS"),
+            "expected PASS from correct route match but got: {}",
+            out
+        );
     }
 }

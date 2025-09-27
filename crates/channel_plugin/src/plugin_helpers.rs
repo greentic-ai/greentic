@@ -1,16 +1,16 @@
 //! Helper functions to construct `ChannelMessage`s, `Event`s and Protobuf-compatible JSON
 
+use chrono::Utc;
 use dotenvy::{dotenv_iter, from_path_iter};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_value as to_json, Value};
-use chrono::Utc;
+use serde_json::{Value, json, to_value as to_json};
 //use serde_json::{json, Value};
-use uuid::Uuid;
-use thiserror::Error;
 use crate::jsonrpc::{Id, Request};
 use crate::message::*;
 use crate::plugin_actor::Method;
+use thiserror::Error;
+use uuid::Uuid;
 
 // -----------------------------------------------------------------------------
 // Event builders
@@ -19,11 +19,16 @@ use crate::plugin_actor::Method;
 pub const USER_JOINED: &str = "UserJoined";
 pub const USER_LEFT: &str = "UserLeft";
 
-pub fn build_user_joined_event(channel: &str, user_id: &str, session_id: Option<String>) -> ChannelMessage {
+pub fn build_user_joined_event(
+    channel: &str,
+    user_id: &str,
+    session_id: Option<String>,
+) -> ChannelMessage {
     ChannelMessage {
         id: Uuid::new_v4().to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         channel: channel.into(),
+        channel_data: json!({}),
         direction: MessageDirection::Incoming,
         session_id,
         from: Participant {
@@ -34,20 +39,27 @@ pub fn build_user_joined_event(channel: &str, user_id: &str, session_id: Option<
         to: vec![],
         thread_id: None,
         reply_to_id: None,
-        content: vec![MessageContent::Event {event: Event{
-            event_type: USER_JOINED.to_string(),
-            event_payload: json!({ "user_id": user_id }),
-        }}],
+        content: vec![MessageContent::Event {
+            event: Event {
+                event_type: USER_JOINED.to_string(),
+                event_payload: json!({ "user_id": user_id }),
+            },
+        }],
         metadata: Value::Null,
     }
 }
 
-pub fn build_user_left_event(channel: &str, user_id: &str, session_id: Option<String>) -> ChannelMessage {
+pub fn build_user_left_event(
+    channel: &str,
+    user_id: &str,
+    session_id: Option<String>,
+) -> ChannelMessage {
     ChannelMessage {
         id: Uuid::new_v4().to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         direction: MessageDirection::Incoming,
         channel: channel.into(),
+        channel_data: json!({}),
         session_id,
         from: Participant {
             id: user_id.into(),
@@ -57,10 +69,12 @@ pub fn build_user_left_event(channel: &str, user_id: &str, session_id: Option<St
         to: vec![],
         thread_id: None,
         reply_to_id: None,
-        content: vec![MessageContent::Event {event: Event{
-            event_type: USER_LEFT.to_string(),
-            event_payload: json!({ "user_id": user_id }),
-        }}],
+        content: vec![MessageContent::Event {
+            event: Event {
+                event_type: USER_LEFT.to_string(),
+                event_payload: json!({ "user_id": user_id }),
+            },
+        }],
         metadata: Value::Null,
     }
 }
@@ -70,7 +84,7 @@ pub fn get_user_joined_left_events() -> Vec<EventType> {
         EventType {
             event_type: USER_JOINED.to_string(),
             description: "Event sent when a user connects".to_string(),
-            payload_schema:Some(json!({
+            payload_schema: Some(json!({
                 "type": "object",
                 "properties": {
                     "user_id": {
@@ -113,6 +127,7 @@ pub fn build_text_message(
         id: Uuid::new_v4().to_string(),
         session_id,
         channel: channel.to_string(),
+        channel_data: json!({}),
         direction: MessageDirection::Incoming,
         from: Participant {
             id: from.to_string(),
@@ -121,13 +136,14 @@ pub fn build_text_message(
         },
         to: Vec::new(),
         timestamp: Utc::now().to_rfc3339(),
-        content: vec![MessageContent::Text { text: text.to_string() }],
+        content: vec![MessageContent::Text {
+            text: text.to_string(),
+        }],
         thread_id: None,
         reply_to_id: None,
         metadata: serde_json::Value::Null,
     }
 }
-
 
 pub fn build_receive_text_msg(
     from: &str,
@@ -158,19 +174,19 @@ pub fn build_text_response<S: Into<String>>(
     )
 }
 
-
 /// Read a .env-style file and return two vectors:
 ///   * `config`  – all keys that **don't** start with `SECRET_`
 ///   * `secrets` – keys starting with `SECRET_` (prefix stripped)
-pub fn load_env_as_vecs(secrets_path: Option<&str>,config_path: Option<&str>)
-    -> anyhow::Result<(Vec<(String, String)>, Vec<(String, String)>)>
-{
-    let mut config  = Vec::new();
+pub fn load_env_as_vecs(
+    secrets_path: Option<&str>,
+    config_path: Option<&str>,
+) -> anyhow::Result<(Vec<(String, String)>, Vec<(String, String)>)> {
+    let mut config = Vec::new();
     let mut secrets = Vec::new();
     if secrets_path.is_some() {
         let secrets_iter = match secrets_path {
             Some(p) => from_path_iter(p)?,
-            None    => dotenv_iter()?,          // default: .env in CWD
+            None => dotenv_iter()?, // default: .env in CWD
         };
         for kv in secrets_iter {
             let (k, v) = kv?;
@@ -180,7 +196,7 @@ pub fn load_env_as_vecs(secrets_path: Option<&str>,config_path: Option<&str>)
     if config_path.is_some() {
         let config_iter = match config_path {
             Some(p) => from_path_iter(p)?,
-            None    => dotenv_iter()?,          // default: .env in CWD
+            None => dotenv_iter()?, // default: .env in CWD
         };
 
         for kv in config_iter {

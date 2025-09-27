@@ -1,4 +1,4 @@
-/* 
+/*
 ┌──────────────────────────────────────────────────┐
 │                  ChannelManager                 │
 │  ┌─────── inbound_rx ──────┐   outbound_tx ──▶ │
@@ -11,7 +11,7 @@
                   │            │
 ┌─────────────────┴────────────────┐
 │           flow_router.rs        │
-│  maps ChannelMessage → Vec<(flow_id,start_node)> 
+│  maps ChannelMessage → Vec<(flow_id,start_node)>
 └─────────────────────────────────┘
                   ▲
                   │ for each (flow, start_node):
@@ -30,10 +30,10 @@
 └──────────────────────────────────┘
 
 */
-pub mod manager;
 pub mod flow_router;
+pub mod manager;
 pub mod node;
-pub mod wrapper;
 pub mod plugin;
+pub mod wrapper;
 
 pub use wrapper::PluginWrapper;

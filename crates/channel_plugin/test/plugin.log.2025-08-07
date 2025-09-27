@@ -1,0 +1,6 @@
+2025-08-07T08:52:39.529162Z  WARN ‼️  A tracing layer is writing to STDOUT – this WILL break the JSON-RPC protocol.
+2025-08-07T08:56:17.314906Z  WARN ‼️  A tracing layer is writing to STDOUT – this WILL break the JSON-RPC protocol.
+2025-08-07T08:58:41.398986Z  WARN ‼️  A tracing layer is writing to STDOUT – this WILL break the JSON-RPC protocol.
+2025-08-07T09:01:59.450090Z  WARN ‼️  A tracing layer is writing to STDOUT – this WILL break the JSON-RPC protocol.
+2025-08-07T09:01:59.503541Z  INFO connected successfully server=4222 max_payload=1048576
+2025-08-07T09:01:59.505671Z  INFO 📤 Published message via PubSubPlugin

@@ -1,10 +1,13 @@
-use async_trait::async_trait;
-use schemars::{Schema, schema_for, JsonSchema};
 use ::serde::{Deserialize, Serialize};
+use async_trait::async_trait;
 use handlebars::{Handlebars, JsonValue};
+use schemars::{JsonSchema, Schema, schema_for};
 use serde_json::json;
 
-use crate::{message::Message, node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}};
+use crate::{
+    message::Message,
+    node::{NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing},
+};
 
 /// A Handlebars template process node.
 ///
@@ -95,16 +98,15 @@ impl NodeType for TemplateProcessNode {
     }
 
     #[tracing::instrument(name = "template_node_process", skip(self, context))]
-    async fn process(
-        &self,
-        input: Message,
-        context: &mut NodeContext,
-    ) -> Result<NodeOut, NodeErr> {
+    async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         let hbs = Handlebars::new();
 
         // Combine inputs into one context map
         let mut data = serde_json::Map::new();
-        data.insert("msg".to_string(), serde_json::to_value(&input).unwrap_or(json!({})));
+        data.insert(
+            "msg".to_string(),
+            serde_json::to_value(&input).unwrap_or(json!({})),
+        );
         let state_map: serde_json::Map<String, JsonValue> = context
             .get_all_state()
             .into_iter()
@@ -123,9 +125,12 @@ impl NodeType for TemplateProcessNode {
         data.insert("payload".to_string(), payload_value);
 
         // Render the template
-        let rendered = hbs.render_template(&self.template, &data)
-            .map_err(|e| 
-                NodeErr::fail(NodeError::InvalidInput(format!("Template render error: {}", e))))?;
+        let rendered = hbs.render_template(&self.template, &data).map_err(|e| {
+            NodeErr::fail(NodeError::InvalidInput(format!(
+                "Template render error: {}",
+                e
+            )))
+        })?;
 
         let msg = Message::new(&input.id(), json!({"text": rendered}), input.session_id());
         Ok(NodeOut::with_routing(msg, Routing::FollowGraph))
@@ -139,18 +144,18 @@ impl NodeType for TemplateProcessNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::{NodeContext};
-    use crate::message::Message;
     use crate::flow::state::StateValue;
+    use crate::message::Message;
+    use crate::node::NodeContext;
     use serde_json::json;
-
-
-
 
     fn dummy_context_with_state() -> NodeContext {
         let mut ctx = NodeContext::dummy();
         ctx.set_state("age", StateValue::try_from(json!(30)).unwrap());
-        ctx.set_state("user", StateValue::try_from(json!({"name": "Alice"})).unwrap());
+        ctx.set_state(
+            "user",
+            StateValue::try_from(json!({"name": "Alice"})).unwrap(),
+        );
         ctx
     }
 
@@ -172,10 +177,15 @@ mod tests {
     #[tokio::test]
     async fn test_template_with_msg_state_payload() {
         let node = TemplateProcessNode {
-            template: "Hi {{msg.id}}, you are {{state.age}} and it's {{payload.weather.temp}}°C.".to_string(),
+            template: "Hi {{msg.id}}, you are {{state.age}} and it's {{payload.weather.temp}}°C."
+                .to_string(),
         };
 
-        let msg = Message::new("abc123", json!({"weather": {"temp": 21}}), "sess42".to_string());
+        let msg = Message::new(
+            "abc123",
+            json!({"weather": {"temp": 21}}),
+            "sess42".to_string(),
+        );
         let mut ctx = dummy_context_with_state();
 
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();
@@ -191,7 +201,7 @@ mod tests {
         };
 
         let json_string = r#"{"weather": {"temp": 17}}"#;
-        let msg = Message::new("abc123", json_string.into(),  "123".to_string());
+        let msg = Message::new("abc123", json_string.into(), "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();
@@ -206,7 +216,7 @@ mod tests {
             template: "Hello {{state.name}}, temp: {{payload.temp}}".to_string(),
         };
 
-        let msg = Message::new("id", json!({}),  "123".to_string());
+        let msg = Message::new("id", json!({}), "123".to_string());
         let mut ctx = NodeContext::dummy();
 
         let output = node.process(msg.clone(), &mut ctx).await.unwrap();

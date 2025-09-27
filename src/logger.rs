@@ -1,50 +1,60 @@
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use anyhow::Result;
 use async_trait::async_trait;
 use channel_plugin::message::LogLevel;
-use opentelemetry::{Context, trace::FutureExt};
 use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Histogram;
 use opentelemetry::trace::TracerProvider;
-use opentelemetry_otlp::WithExportConfig;
-use serde::{Deserialize, Serialize};
-use anyhow::Result;
-use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use tracing_appender::rolling::RollingFileAppender;
-use tracing_appender::rolling::Rotation;
-use tracing_subscriber::fmt;
-use tracing_subscriber::Registry;
-use std::time::Instant;
-use tracing::{info, error};
+use opentelemetry::{Context, trace::FutureExt};
 use opentelemetry::{
     global,
-    trace::{TraceContextExt, Tracer},
     metrics::MeterProvider,
+    trace::{TraceContextExt, Tracer},
 };
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::WithExportConfig;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::Instant;
+use tracing::{error, info};
+use tracing_appender::rolling::RollingFileAppender;
+use tracing_appender::rolling::Rotation;
+use tracing_subscriber::Registry;
+use tracing_subscriber::fmt;
 
 use opentelemetry_otlp::{LogExporter, MetricExporter, Protocol, SpanExporter};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::{
     logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
 };
-use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
-
-
+use tracing_subscriber::prelude::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct LogConfig{
+pub struct LogConfig {
     pub(crate) log_level: LogLevel,
     pub(crate) log_dir: Option<PathBuf>,
     pub(crate) otel_endpoint: Option<String>,
 }
 
-impl LogConfig{
-    pub fn new(log_level: LogLevel, log_dir: Option<PathBuf>, otel_endpoint: Option<String>) -> Self {
-        Self{log_level,log_dir,otel_endpoint}
+impl LogConfig {
+    pub fn new(
+        log_level: LogLevel,
+        log_dir: Option<PathBuf>,
+        otel_endpoint: Option<String>,
+    ) -> Self {
+        Self {
+            log_level,
+            log_dir,
+            otel_endpoint,
+        }
     }
     pub fn default() -> Self {
-        Self{log_level:LogLevel::Info,log_dir:None,otel_endpoint:None}
+        Self {
+            log_level: LogLevel::Info,
+            log_dir: None,
+            otel_endpoint: None,
+        }
     }
 }
 
@@ -77,19 +87,19 @@ impl std::fmt::Debug for Logger {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, )]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OpenTelemetryLogger;
 
 impl OpenTelemetryLogger {
     pub fn new() -> Self {
-       Self
+        Self
     }
 }
 
 #[typetag::serde]
 #[async_trait]
 impl LoggerType for OpenTelemetryLogger {
-fn log(&self, level: LogLevel, context: &str, msg: &str) {
+    fn log(&self, level: LogLevel, context: &str, msg: &str) {
         // Add tracing-level logs
         match level {
             LogLevel::Trace => tracing::trace!(%context, "{msg}"),
@@ -130,11 +140,8 @@ pub fn init_tracing(
         );
     } else {
         // wire up file‐based logs + JSON reports
-        let _file_telem = FileTelemetry::init_files(
-            &log_level,
-            root.join(&log_file),
-            root.join(&event_file),
-        )?;
+        let _file_telem =
+            FileTelemetry::init_files(&log_level, root.join(&log_file), root.join(&event_file))?;
     }
 
     // The `Logger` itself just wraps the tracing‐based logger impl:
@@ -143,11 +150,13 @@ pub fn init_tracing(
 
 static RESOURCE: OnceLock<Resource> = OnceLock::new();
 fn get_resource() -> Resource {
-    RESOURCE.get_or_init(|| {
-        Resource::builder()
-            .with_service_name("greentic-service")
-            .build()
-    }).clone()
+    RESOURCE
+        .get_or_init(|| {
+            Resource::builder()
+                .with_service_name("greentic-service")
+                .build()
+        })
+        .clone()
 }
 
 /// Initialize the three OTLP‐HTTP providers
@@ -184,7 +193,7 @@ fn init_metrics(end_point: &str) -> SdkMeterProvider {
         .with_endpoint(end_point)
         .build()
         .expect("metric‐exporter");
- 
+
     SdkMeterProvider::builder()
         .with_periodic_exporter(exporter)
         .with_resource(get_resource())
@@ -208,7 +217,12 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
-    pub fn init(log_level: &str, logger_endpoint: &str, tracer_endpoint: &str, meter_endpoint: &str) -> Self {
+    pub fn init(
+        log_level: &str,
+        logger_endpoint: &str,
+        tracer_endpoint: &str,
+        meter_endpoint: &str,
+    ) -> Self {
         // 1) bring up the three SDKs
         let logger_provider = init_logs(logger_endpoint);
         let tracer_provider = init_traces(tracer_endpoint);
@@ -221,14 +235,13 @@ impl Telemetry {
                 .add_directive("tonic=off".parse().unwrap())
                 .add_directive("h2=off".parse().unwrap())
                 .add_directive("reqwest=off".parse().unwrap());
-            OpenTelemetryTracingBridge::new(&logger_provider)
-                .with_filter(filter)
+            OpenTelemetryTracingBridge::new(&logger_provider).with_filter(filter)
         };
 
         // 3) a local pretty‐printer so you still see `info!` on stdout
-        let fmt_layer = fmt::layer()
-            .with_thread_names(true)
-            .with_filter(EnvFilter::new(log_level).add_directive("opentelemetry=debug".parse().unwrap()));
+        let fmt_layer = fmt::layer().with_thread_names(true).with_filter(
+            EnvFilter::new(log_level).add_directive("opentelemetry=debug".parse().unwrap()),
+        );
 
         // 4) install subscriber
         Registry::default()
@@ -247,12 +260,8 @@ impl Telemetry {
             .u64_counter("requests_started")
             .with_description("Total requests started")
             .build();
-        let requests_succeeded = meter
-            .u64_counter("requests_succeeded")
-            .build();
-        let requests_failed = meter
-            .u64_counter("requests_failed")
-            .build();
+        let requests_succeeded = meter.u64_counter("requests_succeeded").build();
+        let requests_failed = meter.u64_counter("requests_failed").build();
         let request_latency_ms = meter
             .f64_histogram("request_latency_ms")
             .with_description("Latency per request in ms")
@@ -279,7 +288,9 @@ impl Telemetry {
         // start metrics & span
         self.requests_started.add(1, &[]);
         let start = Instant::now();
-        let span = self.tracer_provider.tracer("greentic-service")
+        let span = self
+            .tracer_provider
+            .tracer("greentic-service")
             .start(name.to_string());
 
         // Build a new Context that has `span` as the active span
@@ -297,7 +308,6 @@ impl Telemetry {
     }
 }
 
-
 /// Bundles everything you need at runtime, but writing *only* to files.
 pub struct FileTelemetry {
     /// application‐level counters & histograms
@@ -313,29 +323,33 @@ impl FileTelemetry {
     /// - `log_level` is an `EnvFilter` directive (e.g. `"info"`).
     /// - `log_file` is the path to your rolling text log.
     /// - `event_file` is the path to your rolling JSON “report” log.
-    pub fn init_files(
-        log_level: &str,
-        log_file: PathBuf,
-        event_file: PathBuf,
-    ) -> Result<Self> {
+    pub fn init_files(log_level: &str, log_file: PathBuf, event_file: PathBuf) -> Result<Self> {
         // 1) Build an EnvFilter
         let env_filter = EnvFilter::new(log_level);
 
         // 2) A plain‐text rolling file appender for info!/error! logs
-        let txt_appender = RollingFileAppender::new(Rotation::DAILY, log_file.parent().unwrap(), log_file.file_name().unwrap());
+        let txt_appender = RollingFileAppender::new(
+            Rotation::DAILY,
+            log_file.parent().unwrap(),
+            log_file.file_name().unwrap(),
+        );
         let txt_layer = fmt::Layer::default()
             .with_writer(txt_appender)
             .with_ansi(false);
-            //.with_filter(env_filter);
+        //.with_filter(env_filter);
 
         // 3) A JSON‐formatter rolling appender for request‐reports
-        let json_appender = RollingFileAppender::new(Rotation::DAILY, event_file.parent().unwrap(), event_file.file_name().unwrap());
+        let json_appender = RollingFileAppender::new(
+            Rotation::DAILY,
+            event_file.parent().unwrap(),
+            event_file.file_name().unwrap(),
+        );
         let json_layer = fmt::layer()
             .json() // newline‐delimited JSON
             .with_writer(json_appender)
-            .with_target(true)                 // emit only events with target="request"
+            .with_target(true) // emit only events with target="request"
             .with_filter(EnvFilter::new("request=info"));
-            //.with_filter(env_filter);
+        //.with_filter(env_filter);
 
         // 4) Install subscriber
         Registry::default()
@@ -353,12 +367,8 @@ impl FileTelemetry {
             .u64_counter("requests_started")
             .with_description("Total requests started")
             .build();
-        let requests_succeeded = meter
-            .u64_counter("requests_succeeded")
-            .build();
-        let requests_failed = meter
-            .u64_counter("requests_failed")
-            .build();
+        let requests_succeeded = meter.u64_counter("requests_succeeded").build();
+        let requests_failed = meter.u64_counter("requests_failed").build();
         let request_latency_ms = meter
             .f64_histogram("request_latency_ms")
             .with_description("Latency per request in ms")
@@ -377,11 +387,7 @@ impl FileTelemetry {
     ///
     /// Any `info!`/`error!` inside `handler` will go to the text log.
     /// At the end we emit one JSON line (target = "request") with name+latency.
-    pub async fn instrument_request<F, Fut, T, E>(
-        &self,
-        name: &str,
-        handler: F,
-    ) -> Result<T, E>
+    pub async fn instrument_request<F, Fut, T, E>(&self, name: &str, handler: F) -> Result<T, E>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, E>>,

@@ -22,30 +22,40 @@
 //! Note: this file focuses on core validation logic.  CLI glue‑code lives in
 //! `src/main.rs` or wherever the `Commands::Validate` variant is handled.
 
-use std::{collections::HashSet, fs, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{anyhow, Context, Result};
+use crate::{
+    apps::{detect_host_target, make_executable},
+    channel::manager::ChannelManager,
+    config::ConfigManager,
+    executor::Executor,
+    flow::{manager::Flow, session::InMemorySessionStore},
+    logger::{LogConfig, Logger, OpenTelemetryLogger},
+    secret::SecretsManager,
+};
+use anyhow::{Context, Result, anyhow};
 use channel_plugin::message::LogLevel;
-use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderValue};
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_yaml_bw as serde_yaml;
-use crate::{
-    apps::{detect_host_target, make_executable}, channel::manager::ChannelManager, config::ConfigManager, executor::Executor, flow::{manager::Flow, session::InMemorySessionStore}, logger::{LogConfig, Logger, OpenTelemetryLogger}, secret::SecretsManager
-};
 
 /// Diagnostic result – collects *all* warnings & errors instead of failing fast.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ValidationReport {
     /// Top‑level schema errors (flow.yaml malformed, missing fields, …)
-    pub schema_errors:   Vec<String>,
+    pub schema_errors: Vec<String>,
     /// Referenced channels/tools not available locally
     pub missing_plugins: Vec<String>,
     /// Tools that exist but the `.wasm` binary is missing
-    pub missing_wasm:    Vec<String>,
+    pub missing_wasm: Vec<String>,
     /// Required config keys that are absent in the ConfigManager
-    pub missing_config:  Vec<(String, String)>, // (key, description)
+    pub missing_config: Vec<(String, String)>, // (key, description)
     /// Required secret keys that are absent in the SecretsManager
     pub missing_secrets: Vec<(String, String)>, // (key, description)
 }
@@ -63,11 +73,12 @@ impl ValidationReport {
 /// Public entry‑point used by the CLI.
 pub async fn validate(
     flow_file: PathBuf,
-    root_dir:  PathBuf,
+    root_dir: PathBuf,
     tools_dir: PathBuf,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
 ) -> Result<()> {
+    let greentic_id = secrets_manager.get_secret("GREENTIC_ID").await.unwrap().expect("GREENTIC_ID was not set in secrets. Please run 'greentic init' first.");
     // ---------------------------------------------------------------------
     // 0) Read + parse YAML / JSON
     // ---------------------------------------------------------------------
@@ -93,8 +104,8 @@ pub async fn validate(
         serde_json::to_value(&schema_for!(Flow)).unwrap()
     };
 
-    let compiled = jsonschema::validator_for(&schema_json)
-        .context("failed to compile flow schema")?;
+    let compiled =
+        jsonschema::validator_for(&schema_json).context("failed to compile flow schema")?;
 
     let mut report = ValidationReport::default();
 
@@ -119,20 +130,32 @@ pub async fn validate(
     // 2) Spin up Executor + ChannelManager just like schema.rs  -------------
     // ---------------------------------------------------------------------
     //let _ = FileTelemetry::init_files(&log_level, log_file, event_file);
-    let log_config = LogConfig::new(LogLevel::Info, Some(root_dir.join("logs").to_path_buf()), None);
-    let logger  = Logger(Box::new(OpenTelemetryLogger::new()));
+    let log_config = LogConfig::new(
+        LogLevel::Info,
+        Some(root_dir.join("logs").to_path_buf()),
+        None,
+    );
+    let logger = Logger(Box::new(OpenTelemetryLogger::new()));
     let executor = Executor::new(secrets_manager.clone(), logger.clone());
     //let tool_watcher = executor.watch_tool_dir(tools_dir.clone()).await?;
     let sessions = InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new(config_manager.clone(), secrets_manager.clone(), sessions, log_config).await?;
+    let channel_mgr = ChannelManager::new(
+        config_manager.clone(),
+        secrets_manager.clone(),
+        greentic_id,
+        sessions,
+        log_config,
+    )
+    .await?;
+    
 
     // ---------------------------------------------------------------------
     // 3) Inspect flow JSON to collect all tool & channel IDs ---------------
     // ---------------------------------------------------------------------
-    let mut used_tools: HashSet<(String,String)>    = HashSet::new();
+    let mut used_tools: HashSet<(String, String)> = HashSet::new();
     let mut used_channels = HashSet::new();
 
-    collect_ids(&flow_value, &mut used_tools, &mut used_channels);
+    collect_ids(&flow_value, &mut used_tools, &mut used_channels, &channel_mgr);
 
     let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
     let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
@@ -141,17 +164,24 @@ pub async fn validate(
     let stopped_path = root_dir.join("plugins").join("channels").join("stopped");
     // 3a) missing plugins ---------------------------------------------------
     for t in &used_channels {
-         let channel_file = match cfg!(target_os = "windows") {
-                true => format!("channel_{t}.exe"),
-                false => format!("channel_{t}"),
-            };
+        let channel_file = match cfg!(target_os = "windows") {
+            true => format!("channel_{t}.exe"),
+            false => format!("channel_{t}"),
+        };
 
         let running_channel = running_path.join(channel_file.clone());
         let stopped_channel = stopped_path.join(channel_file.clone());
 
         if !running_channel.exists() && !stopped_channel.exists() {
             println!("Downloading {channel_file}");
-            match pull_channel(&token,&channel_file, detect_host_target(),&running_channel).await {
+            match pull_channel(
+                &token,
+                &channel_file,
+                detect_host_target(),
+                &running_channel,
+            )
+            .await
+            {
                 Ok(_) => {
                     tracing::info!("✅ Pulled and stored missing channel: {t}");
                 }
@@ -165,12 +195,12 @@ pub async fn validate(
     }
 
     // 3b) missing wasm files for tools -------------------------------------
-    for (name,_action) in &used_tools {
+    for (name, _action) in &used_tools {
         let wasm_file = format!("{name}.wasm");
         let wasm_path = tools_dir.join(wasm_file.clone());
         if !wasm_path.exists() {
             println!("Downloading {wasm_file}");
-            match pull_wasm(&token,name, &wasm_path).await {
+            match pull_wasm(&token, name, &wasm_path).await {
                 Ok(_) => {
                     tracing::info!("Pulled missing Wasm for tool: {name}");
                     let _ = executor.add_tool(wasm_path).await;
@@ -180,17 +210,24 @@ pub async fn validate(
                     report.missing_wasm.push(wasm_path.display().to_string());
                 }
             }
-
         }
     }
 
     // 3c) channel required keys --------------------------------------------
     // then start watching
-    let plugin_watcher = channel_mgr.clone().start_all(running_path.clone()).await?;
+    let remote_channels = flow_value.get("remote_channels")            // Option<&Value>
+        .and_then(|v| v.as_array())              // Option<&Vec<Value>>
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let plugin_watcher = channel_mgr.clone().start_all(running_path.clone(), remote_channels).await?;
     for c in &used_channels {
         if let Some(wrapper) = channel_mgr.channel(c) {
-            let req_cfg  = wrapper.list_config_keys().await.required_keys;
-            let req_sec  = wrapper.list_secret_keys().await.required_keys;
+            let req_cfg = wrapper.list_config_keys().await.required_keys;
+            let req_sec = wrapper.list_secret_keys().await.required_keys;
 
             for (k, desc) in req_cfg {
                 if config_manager.0.get(&k).await.is_none() {
@@ -209,14 +246,16 @@ pub async fn validate(
     }
 
     // 3d) channel required keys --------------------------------------------
-    for (name,action) in &used_tools {
+    for (name, action) in &used_tools {
         let tool_name = format!("{name}_{action}");
         if let Some(wrapper) = executor.get_tool(tool_name) {
-            let req_sec  = wrapper.secrets();
+            let req_sec = wrapper.secrets();
 
             for secret in req_sec {
                 if secret.required && secrets_manager.0.get(&secret.name).is_none() {
-                    report.missing_secrets.push((secret.name, secret.description));
+                    report
+                        .missing_secrets
+                        .push((secret.name, secret.description));
                 }
             }
         }
@@ -262,7 +301,7 @@ pub async fn validate(
 
         return Err(anyhow!("validation failed – see diagnostics above"));
     }
-    
+
     // ---------------------------------------------------------------------
     // 4) Output diagnostics -------------------------------------------------
     // ---------------------------------------------------------------------
@@ -272,18 +311,29 @@ pub async fn validate(
     return Ok(());
 }
 
-// Basic pull function to get a tool. In the future we need login and 
+// Basic pull function to get a tool. In the future we need login and
 // more advanced version management, ...
-async fn pull_channel(token: &str, channel_name: &str, platform: &str, destination: &Path) -> anyhow::Result<()> {
+async fn pull_channel(
+    token: &str,
+    channel_name: &str,
+    platform: &str,
+    destination: &Path,
+) -> anyhow::Result<()> {
     let url = format!("https://greenticstore.com/channels/{platform}/{channel_name}");
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
-        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))?)
+        .header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        )
         .send()
         .await?;
     if !response.status().is_success() {
-        anyhow::bail!("Failed to download channel for channel_{channel_name}: HTTP {}", response.status());
+        anyhow::bail!(
+            "Failed to download channel for channel_{channel_name}: HTTP {}",
+            response.status()
+        );
     }
 
     let bytes = response.bytes().await?;
@@ -293,19 +343,25 @@ async fn pull_channel(token: &str, channel_name: &str, platform: &str, destinati
     Ok(())
 }
 
-// Basic pull function to get a tool. In the future we need login and 
+// Basic pull function to get a tool. In the future we need login and
 // more advanced version management, ...
 async fn pull_wasm(token: &str, tool_name: &str, destination: &Path) -> anyhow::Result<()> {
     let url = format!("https://greenticstore.com/tools/{tool_name}.wasm");
-    
+
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
-        .header(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token))?)
+        .header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        )
         .send()
         .await?;
     if !response.status().is_success() {
-        anyhow::bail!("Failed to download Wasm for {tool_name}: HTTP {}", response.status());
+        anyhow::bail!(
+            "Failed to download Wasm for {tool_name}: HTTP {}",
+            response.status()
+        );
     }
 
     let bytes = response.bytes().await?;
@@ -317,7 +373,12 @@ async fn pull_wasm(token: &str, tool_name: &str, destination: &Path) -> anyhow::
 // Helper: walk the flow JSON structure and collect `tool:` and `channel:`
 // ids referenced in nodes.
 // -------------------------------------------------------------------------
-fn collect_ids(value: &Value, tools: &mut HashSet<(String,String)>, channels: &mut HashSet<String>) {
+fn collect_ids(
+    value: &Value,
+    tools: &mut HashSet<(String, String)>,
+    channels: &mut HashSet<String>,
+    channel_manager: &ChannelManager,
+) {
     match value {
         Value::Object(map) => {
             if let Some(Value::Object(t)) = map.get("tool") {
@@ -327,40 +388,44 @@ fn collect_ids(value: &Value, tools: &mut HashSet<(String,String)>, channels: &m
                 if name.is_some() && action.is_some() {
                     let tool_name = name.unwrap().as_str().unwrap();
                     let tool_action = action.unwrap().as_str().unwrap();
-                    tools.insert((tool_name.to_string(),tool_action.to_string()));
+                    tools.insert((tool_name.to_string(), tool_action.to_string()));
                 }
             }
             if let Some(Value::String(c)) = map.get("channel") {
-                channels.insert(c.to_string());
+                let channel = c.to_string();
+                channels.insert(channel);
             }
             for v in map.values() {
-                collect_ids(v, tools, channels);
+                collect_ids(v, tools, channels, &channel_manager);
             }
         }
         Value::Array(arr) => {
             for v in arr {
-                collect_ids(v, tools, channels);
+                collect_ids(v, tools, channels, &channel_manager);
             }
         }
         _ => {}
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::{config::MapConfigManager, secret::{EmptySecretsManager, EnvSecretsManager}};
+    use crate::{
+        config::MapConfigManager,
+        secret::{TestSecretsManager, EnvSecretsManager},
+    };
 
     use super::*;
     use serde_json::json;
-    use tempfile::tempdir;
     use std::fs;
+    use tempfile::tempdir;
 
     // ---------------------------------------------------------------------
     // helper: build a tiny YAML flow with a single node reference
     // ---------------------------------------------------------------------
     fn sample_flow_yaml(tool: &str, channel: &str) -> String {
-        format!(r#"---
+        format!(
+            r#"---
 id: test
 channels: [ {channel} ]
 nodes:
@@ -378,7 +443,8 @@ connections:
     to: call
   - from: call
     to: out
-"#)
+"#
+        )
     }
 
     // ------------------------------------------------------------------
@@ -388,17 +454,18 @@ connections:
     fn test_collect_ids() {
         let doc = json!({
             "nodes": [
-                { "tool": { 
-                    "name": "weather", 
-                    "action":"forecast" 
+                { "tool": {
+                    "name": "weather",
+                    "action":"forecast"
                 }},
                 { "channel": "telegram" }
             ]
         });
         let mut tools = std::collections::HashSet::new();
-        let mut chs   = std::collections::HashSet::new();
-        collect_ids(&doc, &mut tools, &mut chs);
-        assert!(tools.contains(&("weather".to_string(),"forecast".to_string())));
+        let mut chs = std::collections::HashSet::new();
+        let channel_manager = ChannelManager::dummy();
+        collect_ids(&doc, &mut tools, &mut chs, &channel_manager);
+        assert!(tools.contains(&("weather".to_string(), "forecast".to_string())));
         assert!(chs.contains("telegram"));
     }
 
@@ -409,17 +476,21 @@ connections:
     #[tokio::test]
     async fn test_validate_reports_missing_plugins() {
         let tmp = tempdir().unwrap();
-        let root_dir   = tmp.path().to_path_buf();
-        let tools_dir  = root_dir.join("tools");
+        let root_dir = tmp.path().to_path_buf();
+        let tools_dir = root_dir.join("tools");
         fs::create_dir_all(&tools_dir).unwrap();
 
         // write dummy flow file
         let flow_file = root_dir.join("flow.ygtc");
-        fs::write(&flow_file, sample_flow_yaml("weather_api.forecast", "telegram")).unwrap();
+        fs::write(
+            &flow_file,
+            sample_flow_yaml("weather_api.forecast", "telegram"),
+        )
+        .unwrap();
 
-        let secrets_manager = SecretsManager(EmptySecretsManager::new());
+        let secrets_manager = SecretsManager(TestSecretsManager::new());
+        let _ = secrets_manager.add_secret("GREENTIC_ID", "123").await;
         let config_manager = ConfigManager(MapConfigManager::new());
-
         // run validator – expect an Err because nothing is installed
         let res = validate(
             flow_file,
@@ -427,9 +498,13 @@ connections:
             tools_dir,
             secrets_manager,
             config_manager,
-        ).await;
+        )
+        .await;
 
-        assert!(res.is_err(), "validation should fail due to missing plugins");
+        assert!(
+            res.is_err(),
+            "validation should fail due to missing plugins"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -438,23 +513,24 @@ connections:
     #[tokio::test]
     async fn test_validate_bad_yaml() {
         let tmp = tempdir().unwrap();
-        let root_dir   = tmp.path().to_path_buf();
-        let tools_dir  = root_dir.join("tools");
+        let root_dir = tmp.path().to_path_buf();
+        let tools_dir = root_dir.join("tools");
         fs::create_dir_all(&tools_dir).unwrap();
 
         let flow_file = root_dir.join("bad.ygtc");
         fs::write(&flow_file, "this is : not : yaml").unwrap();
 
-        let secrets_manager = SecretsManager(EmptySecretsManager::new());
+        let secrets_manager = SecretsManager(TestSecretsManager::new());
+        let _ = secrets_manager.add_secret("GREENTIC_ID", "123").await;
         let config_manager = ConfigManager(MapConfigManager::new());
-
         let res = validate(
             flow_file,
             root_dir.clone(),
             tools_dir,
             secrets_manager,
             config_manager,
-        ).await;
+        )
+        .await;
 
         // Should surface a serde_yaml parsing error
         assert!(res.is_err());
@@ -467,10 +543,12 @@ connections:
     async fn test_pull_real_channel_ws() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_ws");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
+            Path::new("./greentic/secrets/").to_path_buf(),
+        )));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
-        let result = pull_channel(&token, "ws",detect_host_target(), &dest).await;
+        let result = pull_channel(&token, "channel_ws", detect_host_target(), &dest).await;
         assert!(result.is_ok(), "expected successful pull: {result:?}");
         assert!(dest.exists(), "destination file not created");
         assert!(fs::metadata(&dest).unwrap().len() > 0, "file is empty");
@@ -481,10 +559,12 @@ connections:
     async fn test_pull_real_tool_weather_api() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("weather_api.wasm");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
+            Path::new("./greentic/secrets/").to_path_buf(),
+        )));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
-        let result = pull_wasm(&token,"weather_api", &dest).await;
+        let result = pull_wasm(&token, "weather_api", &dest).await;
         assert!(result.is_ok(), "expected successful pull: {result:?}");
         assert!(dest.exists(), "destination file not created");
         assert!(fs::metadata(&dest).unwrap().len() > 0, "file is empty");
@@ -495,7 +575,9 @@ connections:
     async fn test_pull_missing_tool() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("nonexistent.wasm");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
+            Path::new("./greentic/secrets/").to_path_buf(),
+        )));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
         let result = pull_wasm(&token, "nonexistent", &dest).await;
@@ -512,10 +594,12 @@ connections:
     async fn test_pull_missing_channel() {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_fake");
-        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(Path::new("./greentic/secrets/").to_path_buf())));
+        let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
+            Path::new("./greentic/secrets/").to_path_buf(),
+        )));
         let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
         let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
-        let result = pull_channel(&token,"fake", detect_host_target(),&dest).await;
+        let result = pull_channel(&token, "fake", detect_host_target(), &dest).await;
         assert!(result.is_err(), "expected error but got success");
         let err = result.unwrap_err().to_string();
         assert!(

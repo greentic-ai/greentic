@@ -20,7 +20,7 @@ pub enum AgentReply {
     NeedMoreInfo {
         payload: FollowUpPayload,
     },
-} 
+}
 // ---------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

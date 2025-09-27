@@ -1,26 +1,45 @@
 // src/flow.rs
 
-use std::{
-    borrow::Cow, collections::{HashMap, HashSet}, fmt, fs, path::{Path, PathBuf}, sync::Arc, time::Duration
-};
+use crate::node::ToolNode;
 use crate::{
-    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::Executor, flow::session::SessionStore, mapper::Mapper, message::Message, node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing}, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, watcher::{DirectoryWatcher, WatchedType}
+    agent::manager::BuiltInAgent,
+    channel::manager::ChannelManager,
+    executor::Executor,
+    flow::session::SessionStore,
+    mapper::Mapper,
+    message::Message,
+    node::{ChannelOrigin, NodeContext, NodeErr, NodeError, NodeOut, NodeType, Routing},
+    process::manager::{BuiltInProcess, ProcessManager},
+    secret::SecretsManager,
+    watcher::{DirectoryWatcher, WatchedType},
 };
-use anyhow::{Error};
-use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
-use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
-use thiserror::Error;
-use std::fmt::Debug;
+use anyhow::Error;
 use async_trait::async_trait;
+use channel_plugin::message::{ChannelMessage, MessageContent, MessageDirection, Participant};
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
-use petgraph::{graph::NodeIndex, prelude::{StableDiGraph, StableGraph}, visit::{Topo, Walker}, Directed};
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json, Value};
-use tokio::{sync::Mutex,time::sleep};
+use petgraph::{
+    Directed,
+    graph::NodeIndex,
+    prelude::{StableDiGraph, StableGraph},
+    visit::{Topo, Walker},
+};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
+use serde_json::{Value, json};
+use std::fmt::Debug;
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    fmt, fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+use thiserror::Error;
+use tokio::{sync::Mutex, time::sleep};
 use tracing::{error, info};
-use crate::node::ToolNode;
-use tracing::{warn,trace};
+use tracing::{trace, warn};
 
 /// One record per-node, successful or error
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -40,7 +59,13 @@ impl NodeRecord {
         finished: DateTime<Utc>,
         result: Result<NodeOut, NodeErr>,
     ) -> Self {
-        Self {node_id, attempt, started, finished, result }
+        Self {
+            node_id,
+            attempt,
+            started,
+            finished,
+            result,
+        }
     }
 }
 
@@ -59,7 +84,10 @@ impl ExecutionReport {
     pub fn skipped() -> Self {
         ExecutionReport {
             records: vec![],
-            error: Some(("skipped".to_string(), NodeError::ExecutionFailed("Flow not allowed".to_string()))),
+            error: Some((
+                "skipped".to_string(),
+                NodeError::ExecutionFailed("Flow not allowed".to_string()),
+            )),
             total: chrono::Duration::zero(),
             finished: false,
         }
@@ -74,12 +102,12 @@ impl JsonSchema for ExecutionReport {
         Cow::Owned(format!("{}::ExecutionReport", module_path!()))
     }
 
-  fn json_schema(generate: &mut SchemaGenerator) -> Schema {
+    fn json_schema(generate: &mut SchemaGenerator) -> Schema {
         // ------------------------------------------------------------------
         // Grab re-usable sub-schemas from the generator
         // ------------------------------------------------------------------
         let records_schema = generate.subschema_for::<Vec<NodeRecord>>();
-        let error_schema   = generate.subschema_for::<Option<(String, NodeError)>>();
+        let error_schema = generate.subschema_for::<Option<(String, NodeError)>>();
 
         // The `total` field is just a number with a short description
         let total_schema = json_schema!({
@@ -109,9 +137,11 @@ pub struct Flow {
     id: String,
     title: String,
     description: String,
-    
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_channels: Vec<String>,
 
     /// node_id → node configuration
     #[serde(
@@ -140,6 +170,7 @@ impl PartialEq for Flow {
             && self.title == other.title
             && self.description == other.description
             && self.channels == other.channels
+            && self.remote_channels == other.remote_channels
             && self.nodes == other.nodes
             && self.connections == other.connections
         // graph, index_of, plans are skipped
@@ -149,35 +180,35 @@ impl PartialEq for Flow {
 // this just re‐uses the normal Serde impl for the map but
 // after we get it, we fix up each NodeConfig.id
 fn deserialize_nodes_with_id<'de, D>(
-    deserializer: D
+    deserializer: D,
 ) -> Result<HashMap<String, NodeConfig>, D::Error>
 where
-    D: Deserializer<'de>
+    D: Deserializer<'de>,
 {
     // 1) first let Serde give us a HashMap<String,RawNodeConfig>
     let raw: HashMap<String, RawNodeConfig> = HashMap::deserialize(deserializer)?;
     // 2) now turn it into your real NodeConfig, injecting the key as `id`
     let mut out = HashMap::with_capacity(raw.len());
     for (key, r) in raw {
-        out.insert(key.clone(), NodeConfig {
-            id: key,
-            kind: r.kind,
-            config: r.config,
-            max_retries: r.max_retries,
-            retry_delay_secs: r.retry_delay_secs,
-        });
+        out.insert(
+            key.clone(),
+            NodeConfig {
+                id: key,
+                kind: r.kind,
+                config: r.config,
+                max_retries: r.max_retries,
+                retry_delay_secs: r.retry_delay_secs,
+            },
+        );
     }
     Ok(out)
 }
 
 // if you want to hide `id` when serializing back out, you can
 // just re‐serialize the map normally (it won’t include `id`)
-fn serialize_nodes<S>(
-    nodes: &HashMap<String, NodeConfig>,
-    serializer: S
-) -> Result<S::Ok, S::Error>
+fn serialize_nodes<S>(nodes: &HashMap<String, NodeConfig>, serializer: S) -> Result<S::Ok, S::Error>
 where
-    S: Serializer
+    S: Serializer,
 {
     use serde::ser::SerializeMap;
     let mut map = serializer.serialize_map(Some(nodes.len()))?;
@@ -199,11 +230,16 @@ pub fn json_array_to_message_contents(v: Value) -> Vec<MessageContent> {
         Value::Array(arr) => arr
             .into_iter()
             .map(|item| {
-                serde_json::from_value::<MessageContent>(item.clone())
-                    .unwrap_or_else(|_| MessageContent::Text{text:item.to_string()})
+                serde_json::from_value::<MessageContent>(item.clone()).unwrap_or_else(|_| {
+                    MessageContent::Text {
+                        text: item.to_string(),
+                    }
+                })
             })
             .collect(),
-        _ => vec![MessageContent::Text{text:v.to_string()}],
+        _ => vec![MessageContent::Text {
+            text: v.to_string(),
+        }],
     }
 }
 
@@ -212,12 +248,17 @@ impl Flow {
         self.id.clone()
     }
     /// Create a new, empty flow with the given identifiers.
-    pub fn new(id: impl Into<String>, title: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Flow {
             id: id.into(),
             title: title.into(),
             description: description.into(),
             channels: Vec::new(),
+            remote_channels: Vec::new(),
             nodes: HashMap::new(),
             connections: HashMap::new(),
             graph: StableDiGraph::new(),
@@ -230,6 +271,9 @@ impl Flow {
     }
     pub fn description(&self) -> String {
         self.description.clone()
+    }
+    pub fn remote_channels(&self) -> Vec<String> {
+        self.remote_channels.clone()
     }
     /// Deserialize + build the internal graph
     pub fn build(mut self) -> Self {
@@ -257,29 +301,34 @@ impl Flow {
             let out_id = format!("{}__out", node_id);
             // clone + tweak your ChannelConfig…
             let mut pub_cfg = base.clone();
-            pub_cfg.channel_in  = false;
+            pub_cfg.channel_in = false;
             pub_cfg.channel_out = true;
+            pub_cfg.channel_remote = base.channel_remote;
             // **this is key**: send somewhere *else*
             pub_cfg.channel_name = format!("{}_out", base.channel_name);
 
-            self.nodes.insert(out_id.clone(), NodeConfig {
-                id:   out_id.clone(),
-                kind: NodeKind::Channel { cfg: pub_cfg },
-                config: None,
-                max_retries: None,
-                retry_delay_secs: None,
-            });
+            self.nodes.insert(
+                out_id.clone(),
+                NodeConfig {
+                    id: out_id.clone(),
+                    kind: NodeKind::Channel { cfg: pub_cfg },
+                    config: None,
+                    max_retries: None,
+                    retry_delay_secs: None,
+                },
+            );
 
             // mutate the original into a pure receiver…
             if let NodeKind::Channel { cfg: orig_cfg } =
                 &mut self.nodes.get_mut(&node_id).unwrap().kind
             {
-                orig_cfg.channel_in  = true;
+                orig_cfg.channel_in = true;
                 orig_cfg.channel_out = false;
             }
 
             // rewire edges:
-            self.connections.insert(node_id.clone(), vec![out_id.clone()]);
+            self.connections
+                .insert(node_id.clone(), vec![out_id.clone()]);
             if !children.is_empty() {
                 self.connections.insert(out_id.clone(), children);
             }
@@ -340,11 +389,10 @@ impl Flow {
         }
 
         self.plans = plans;
-        self.graph    = graph;
+        self.graph = graph;
         self.index_of = index_of;
         self
     }
-
 
     /// Kick off this flow with an initial message
     pub async fn run(&self, msg: Message, start: &str, ctx: &mut NodeContext) -> ExecutionReport {
@@ -368,20 +416,20 @@ impl Flow {
         let mut outputs: HashMap<NodeIndex, Vec<Message>> = HashMap::new();
 
         let start_idx = match self.index_of.get(start) {
-                Some(idx) => *idx,
-                None => {
-                    early_err = Some((
-                        self.id.clone(),
-                        NodeError::ExecutionFailed(format!("No plan for start node `{}`", start)),
-                    ));
-                    return ExecutionReport {
-                        records,
-                        error: early_err,
-                        total: Utc::now() - run_start,
-                        finished: true,
-                    };
-                }
-            };
+            Some(idx) => *idx,
+            None => {
+                early_err = Some((
+                    self.id.clone(),
+                    NodeError::ExecutionFailed(format!("No plan for start node `{}`", start)),
+                ));
+                return ExecutionReport {
+                    records,
+                    error: early_err,
+                    total: Utc::now() - run_start,
+                    finished: true,
+                };
+            }
+        };
         outputs.insert(start_idx, vec![msg.clone()]);
         ctx.set_nodes(vec![start.to_string()]);
 
@@ -422,15 +470,24 @@ impl Flow {
                                     MessageDirection::Outgoing,
                                 );
                                 match cm {
-                                    Ok(msg) => {
-                                        ctx.channel_manager().send_to_channel(&cfg.channel_name, msg).await
-                                            .map(|_| NodeOut::all(input.clone()))
-                                            .map_err(|e| NodeErr::fail(NodeError::ConnectionFailed(format!("{:?}", e))))
-                                    },
+                                    Ok(msg) => ctx
+                                        .channel_manager()
+                                        .send_to_channel(&cfg.channel_name, msg)
+                                        .await
+                                        .map(|_| NodeOut::all(input.clone()))
+                                        .map_err(|e| {
+                                            NodeErr::fail(NodeError::ConnectionFailed(format!(
+                                                "{:?}",
+                                                e
+                                            )))
+                                        }),
                                     Err(err) => {
-                                        let error = format!("Could not create a channel message: {:?}", err);
+                                        let error = format!(
+                                            "Could not create a channel message: {:?}",
+                                            err
+                                        );
                                         Err(NodeErr::fail(NodeError::ExecutionFailed(error)))
-                                    },
+                                    }
                                 }
                             } else {
                                 Ok(NodeOut::with_routing(input.clone(), Routing::FollowGraph))
@@ -444,7 +501,7 @@ impl Flow {
                             );
 
                             let mut secret_map = HashMap::new();
-                            let name = format!("{}_{}",tool.name,tool.action);
+                            let name = format!("{}_{}", tool.name, tool.action);
                             if let Some(keys) = ctx.executor().executor.secrets(name.clone()) {
                                 for s in keys {
                                     if let Some(tok) = ctx.reveal_secret(&s.name).await {
@@ -461,14 +518,12 @@ impl Flow {
                                 tool.err_map.clone(),
                                 tool.on_ok.clone(),
                                 tool.on_err.clone(),
-                            ).process(msg_with_params, ctx).await
+                            )
+                            .process(msg_with_params, ctx)
+                            .await
                         }
-                        NodeKind::Agent { agent } => {
-                            agent.process(input.clone(), ctx).await
-                        }
-                        NodeKind::Process { process } => {
-                            process.process(input.clone(), ctx).await
-                        }
+                        NodeKind::Agent { agent } => agent.process(input.clone(), ctx).await,
+                        NodeKind::Process { process } => process.process(input.clone(), ctx).await,
                     };
 
                     let finished = Utc::now();
@@ -485,7 +540,9 @@ impl Flow {
                         Err(err) => {
                             // if it knows how to route, don’t retry
                             match err.routing() {
-                                Routing::ToNode(_) | Routing::ToNodes(_) | Routing::ReplyToOrigin => {
+                                Routing::ToNode(_)
+                                | Routing::ToNodes(_)
+                                | Routing::ReplyToOrigin => {
                                     break Err(err);
                                 }
                                 _ if attempt < max_retries => {
@@ -505,27 +562,35 @@ impl Flow {
                                 self.connections.get(&node_id).cloned().unwrap_or_default()
                             }
                             Routing::ToNode(n) => {
-
                                 vec![n.clone()]
-                            },
-                            Routing::ToNodes(v) => {
-                                v.clone()}
-                            ,
+                            }
+                            Routing::ToNodes(v) => v.clone(),
                             Routing::ReplyToOrigin => {
                                 // break at the end of this loop
                                 reply_2_channel = true;
                                 ctx.set_node(node_id.clone());
                                 if let Some(origin) = ctx.channel_origin() {
-                                    match origin.reply(
-                                        &node_id,
-                                        out_msg.message().session_id().clone(),
-                                        out_msg.message().payload(),
-                                        ctx,
-                                    ).map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))) {
+                                    match origin
+                                        .reply(
+                                            &node_id,
+                                            out_msg.message().session_id().clone(),
+                                            out_msg.message().payload(),
+                                            ctx,
+                                        )
+                                        .map_err(|e| {
+                                            NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))
+                                        }) {
                                         Ok(cm) => {
                                             // Trying to remove ctx.add_node(node_id.clone());
-                                            if let Err(e) = ctx.channel_manager().send_to_channel(&origin.channel(), cm).await {
-                                                early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
+                                            if let Err(e) = ctx
+                                                .channel_manager()
+                                                .send_to_channel(&origin.channel(), cm)
+                                                .await
+                                            {
+                                                early_err = Some((
+                                                    node_id.clone(),
+                                                    NodeError::ConnectionFailed(format!("{:?}", e)),
+                                                ));
                                             }
                                         }
                                         Err(e) => {
@@ -547,7 +612,8 @@ impl Flow {
 
                         for to in target_ids.iter() {
                             if let Some(&succ_idx) = self.index_of.get(to) {
-                                outputs.entry(succ_idx)
+                                outputs
+                                    .entry(succ_idx)
                                     .or_insert_with(Vec::new)
                                     .push(out_msg.message().clone());
                                 ctx.add_node(to.clone());
@@ -559,27 +625,36 @@ impl Flow {
                         let targets = match routing {
                             Routing::FollowGraph => {
                                 self.connections.get(&node_id).cloned().unwrap_or_default()
-                            },
+                            }
                             Routing::ToNode(n) => {
                                 vec![n.clone()]
-                            },
-                            Routing::ToNodes(v) => {
-                                v.clone()
-                            },
+                            }
+                            Routing::ToNodes(v) => v.clone(),
                             Routing::ReplyToOrigin => {
                                 // break at the end of this loop
                                 reply_2_channel = true;
                                 ctx.set_node(node_id.clone());
                                 if let Some(origin) = ctx.channel_origin() {
-                                    match origin.reply(
-                                        &node_id,
-                                        ctx.get_session_id().clone(),
-                                        json!({"error": err.error()}),
-                                        ctx,
-                                    ).map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))) {
+                                    match origin
+                                        .reply(
+                                            &node_id,
+                                            ctx.get_session_id().clone(),
+                                            json!({"error": err.error()}),
+                                            ctx,
+                                        )
+                                        .map_err(|e| {
+                                            NodeErr::fail(NodeError::ExecutionFailed(e.to_string()))
+                                        }) {
                                         Ok(cm) => {
-                                            if let Err(e) = ctx.channel_manager().send_to_channel(&origin.channel(), cm).await {
-                                                early_err = Some((node_id.clone(), NodeError::ConnectionFailed(format!("{:?}", e))));
+                                            if let Err(e) = ctx
+                                                .channel_manager()
+                                                .send_to_channel(&origin.channel(), cm)
+                                                .await
+                                            {
+                                                early_err = Some((
+                                                    node_id.clone(),
+                                                    NodeError::ConnectionFailed(format!("{:?}", e)),
+                                                ));
                                             }
                                         }
                                         Err(e) => {
@@ -591,7 +666,7 @@ impl Flow {
                             }
                             Routing::EndFlow => {
                                 // Don't do anything
-                                /* 
+                                /*
                                 return ExecutionReport {
                                     records,
                                     error: Some((node_id.clone(), err.error())),
@@ -604,14 +679,15 @@ impl Flow {
 
                         for to in targets {
                             if let Some(&succ_idx) = self.index_of.get(&to) {
-                                outputs.entry(succ_idx)
+                                outputs
+                                    .entry(succ_idx)
                                     .or_insert_with(Vec::new)
                                     .push(input.clone()); // Forward original input to err route
                                 ctx.add_node(to.clone());
                             }
                         }
 
-                        /* 
+                        /*
                         records.push(NodeRecord::new(
                             node_id.clone(),
                             attempt,
@@ -627,7 +703,7 @@ impl Flow {
             // If the flow needs to go back to the user, break
             if reply_2_channel {
                 break;
-            } 
+            }
         }
         ExecutionReport {
             records,
@@ -637,17 +713,15 @@ impl Flow {
         }
     }
 
-
-
-    pub fn channels(&self) -> Vec<String>{
+    pub fn channels(&self) -> Vec<String> {
         self.channels.clone()
     }
 
-    pub fn nodes(&self) -> HashMap<String, NodeConfig>{
+    pub fn nodes(&self) -> HashMap<String, NodeConfig> {
         self.nodes.clone()
     }
 
-    pub fn connections(&self) -> HashMap<String, Vec<String>>{
+    pub fn connections(&self) -> HashMap<String, Vec<String>> {
         self.connections.clone()
     }
 
@@ -655,6 +729,13 @@ impl Flow {
         let name = name.into();
         if !self.channels.contains(&name) {
             self.channels.push(name);
+        }
+        self
+    }
+    pub fn add_remote_channel(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        if !self.remote_channels.contains(&name) {
+            self.remote_channels.push(name);
         }
         self
     }
@@ -694,8 +775,7 @@ impl ValueOrTemplate<Participant> {
                 Ok(part.id.clone())
             }
             ValueOrTemplate::Template(tmpl) => {
-                let rendered = ctx.render_template(tmpl)
-                    .map_err(ResolveError::Template)?;
+                let rendered = ctx.render_template(tmpl).map_err(ResolveError::Template)?;
                 // rendered is a String like "p1"; return it directly:
                 Ok(rendered)
             }
@@ -718,16 +798,22 @@ pub struct ChannelNodeConfig {
     // Skip if `false`
     #[serde(rename = "out", default, skip_serializing_if = "std::ops::Not::not")]
     pub channel_out: bool,
+
+    /// Whether this node is a remote node or local
+    // Skip if `false`
+    #[serde(rename = "remote", default, skip_serializing_if = "std::ops::Not::not")]
+    pub channel_remote: bool,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<ValueOrTemplate<Participant>>,               // Sender info
+    pub from: Option<ValueOrTemplate<Participant>>, // Sender info
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to: Option<Vec<ValueOrTemplate<Participant>>>,            // Recipient(s)
+    pub to: Option<Vec<ValueOrTemplate<Participant>>>, // Recipient(s)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<ValueOrTemplate<MessageContent>>, // Text or attachment
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<ValueOrTemplate<String>>,       // For threading support
+    pub thread_id: Option<ValueOrTemplate<String>>, // For threading support
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply_to_id: Option<ValueOrTemplate<String>>, 
+    pub reply_to_id: Option<ValueOrTemplate<String>>,
 }
 
 impl ChannelNodeConfig {
@@ -748,40 +834,40 @@ impl ChannelNodeConfig {
             let co = ctx.channel_origin();
             if co.is_none() {
                 // no from set, make it the platform
-                Participant { 
-                    id: id.clone(), 
-                    display_name: Some("greentic".to_string()), 
-                    channel_specific_id: Some("greentic".to_string()), 
+                Participant {
+                    id: id.clone(),
+                    display_name: Some("greentic".to_string()),
+                    channel_specific_id: Some("greentic".to_string()),
                 }
             } else {
                 // Optional: fall back to channel_origin for `from` as well
                 ctx.channel_origin().map(|co| co.participant()).unwrap()
             }
-
         };
 
         // 2) `to`: first try config, else channel_origin, else error:
         let to = if let Some(list) = &self.to {
-                list.iter()
-                    .map(|tpl| {
-                        // 1. Render the template & produce a String:
-                        let rendered = tpl.resolve_as_string(ctx)?;
-                        // 2. Create a Participant whose only `id` is the rendered string:
-                        Ok(Participant {
-                            id: rendered,
-                            display_name: None,
-                            channel_specific_id: None,
-                        })
+            list.iter()
+                .map(|tpl| {
+                    // 1. Render the template & produce a String:
+                    let rendered = tpl.resolve_as_string(ctx)?;
+                    // 2. Create a Participant whose only `id` is the rendered string:
+                    Ok(Participant {
+                        id: rendered,
+                        display_name: None,
+                        channel_specific_id: None,
                     })
-                    .collect::<Result<Vec<_>, ResolveError>>()?
+                })
+                .collect::<Result<Vec<_>, ResolveError>>()?
         } else if let Some(co) = ctx.channel_origin() {
             vec![co.participant()]
         } else {
-            let error = format!("no `to` configured and no channel_origin for session_id {:?}", session_id);
+            let error = format!(
+                "no `to` configured and no channel_origin for session_id {:?}",
+                session_id
+            );
             error!(error);
-            return Err(ResolveError::Template(
-               error.into(),
-            ));
+            return Err(ResolveError::Template(error.into()));
         };
 
         // 3) `content`: prefer config, else convert the raw payload:
@@ -792,9 +878,16 @@ impl ChannelNodeConfig {
         };
 
         // 4) `thread_id` and `reply_to_id` are both simple Option<…>:
-        let thread_id = self.thread_id.as_ref().map(|tpl| tpl.resolve(ctx)).transpose()?;
-        let reply_to_id = self.reply_to_id.as_ref().map(|tpl| tpl.resolve(ctx)).transpose()?;
-
+        let thread_id = self
+            .thread_id
+            .as_ref()
+            .map(|tpl| tpl.resolve(ctx))
+            .transpose()?;
+        let reply_to_id = self
+            .reply_to_id
+            .as_ref()
+            .map(|tpl| tpl.resolve(ctx))
+            .transpose()?;
 
         // 5) Build the ChannelMessage, pulling channel from the config:
         Ok(ChannelMessage {
@@ -842,14 +935,14 @@ pub enum NodeKind {
 ///     "action": "<tool action to call>",
 ///     "input": "<input parameters to pass to the tool>"
 /// }
-/// You can use an optional Mapper for transforming input (in_map), 
+/// You can use an optional Mapper for transforming input (in_map),
 /// output (out_map) and error (err_map).
 /// If you want a specific set of connections to be called when the
 /// call is successful, then set the names in the on_ok list.
 /// If you want other connections to be called on error, set their names
 /// in the on_err list.
-/// If no on_ok or on_err are specified then all connections will be called 
-/// with the result. 
+/// If no on_ok or on_err are specified then all connections will be called
+/// with the result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ToolNodeConfig {
     pub name: String,
@@ -860,12 +953,11 @@ pub struct ToolNodeConfig {
     pub out_map: Option<Mapper>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub err_map: Option<Mapper>,
-     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_ok: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_err: Option<Vec<String>>,
 }
-
 
 /// A single node’s config in the flow
 #[derive(Debug, Clone, JsonSchema, PartialEq)]
@@ -877,9 +969,15 @@ pub struct NodeConfig {
     pub kind: NodeKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<Value>,
-    #[serde(default = "NodeConfig::default_max_retries", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "NodeConfig::default_max_retries",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_retries: Option<usize>,
-    #[serde(default = "NodeConfig::default_retry_delay", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "NodeConfig::default_retry_delay",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub retry_delay_secs: Option<u64>,
 }
 
@@ -897,8 +995,12 @@ struct RawNodeConfig {
 }
 
 impl NodeConfig {
-    fn default_max_retries() -> Option<usize> { Some(3) }
-    fn default_retry_delay() -> Option<u64> { Some(1) }
+    fn default_max_retries() -> Option<usize> {
+        Some(3)
+    }
+    fn default_retry_delay() -> Option<u64> {
+        Some(1)
+    }
 
     pub fn new(id: impl Into<String>, kind: NodeKind, config: Option<Value>) -> Self {
         Self {
@@ -928,8 +1030,7 @@ impl WatchedType for FlowWatcher {
         path.extension().and_then(|e| e.to_str()) == Some("greentic")
     }
     async fn on_create_or_modify(&self, path: &Path) -> anyhow::Result<()> {
-        let flow = FlowManager::load_flow_from_file(path.to_str().unwrap())?
-            .build();
+        let flow = FlowManager::load_flow_from_file(path.to_str().unwrap())?.build();
         self.manager.register_flow(flow);
         Ok(())
     }
@@ -939,11 +1040,10 @@ impl WatchedType for FlowWatcher {
     }
 }
 
-pub type FlowAddedHandler = Arc<dyn Fn(&str, &Flow) + Send + Sync >;
-
+pub type FlowAddedHandler = Arc<dyn Fn(&str, &Flow) + Send + Sync>;
 
 /// Manages all loaded flows and dispatches messages
-#[derive( Clone)]
+#[derive(Clone)]
 pub struct FlowManager {
     flows: DashMap<String, Flow>,
     store: SessionStore,
@@ -955,9 +1055,33 @@ pub struct FlowManager {
 }
 
 impl FlowManager {
-    pub fn new(store: SessionStore, executor: Arc<Executor>, channel_manager: Arc<ChannelManager>, process_manager: Arc<ProcessManager>, secrets: SecretsManager) -> Arc<Self> {
+    pub fn new(
+        store: SessionStore,
+        executor: Arc<Executor>,
+        channel_manager: Arc<ChannelManager>,
+        process_manager: Arc<ProcessManager>,
+        secrets: SecretsManager,
+    ) -> Arc<Self> {
         let on_added = Arc::new(Mutex::new(Vec::new()));
-        Arc::new(FlowManager { flows: DashMap::new(), store, executor, channel_manager, process_manager, secrets, on_added})
+        Arc::new(FlowManager {
+            flows: DashMap::new(),
+            store,
+            executor,
+            channel_manager,
+            process_manager,
+            secrets,
+            on_added,
+        })
+    }
+
+    pub fn remote_channels(&self) -> Vec<String> {
+        let mut all_remote_channels = HashSet::new();
+        for (_,flow) in self.flows.clone(){
+            for channel in flow.remote_channels(){
+                all_remote_channels.insert(channel);
+            }
+        }
+        all_remote_channels.into_iter().collect()
     }
 
     pub async fn subscribe_flow_added(&self, h: FlowAddedHandler) {
@@ -983,7 +1107,7 @@ impl FlowManager {
         });
     }
 
-    pub fn flows(&self) -> DashMap<String, Flow>{
+    pub fn flows(&self) -> DashMap<String, Flow> {
         self.flows.clone()
     }
 
@@ -992,9 +1116,11 @@ impl FlowManager {
         info!("Removed flow: {}", name);
     }
 
-    pub async fn watch_flow_dir(self: Arc<Self>, dir: PathBuf) -> Result<DirectoryWatcher,Error> {
-        let watcher = FlowWatcher { manager: self.clone() };
-        DirectoryWatcher::new(dir, Arc::new(watcher), &["jgtc","ygtc"], true).await
+    pub async fn watch_flow_dir(self: Arc<Self>, dir: PathBuf) -> Result<DirectoryWatcher, Error> {
+        let watcher = FlowWatcher {
+            manager: self.clone(),
+        };
+        DirectoryWatcher::new(dir, Arc::new(watcher), &["jgtc", "ygtc"], true).await
     }
 
     pub fn load_flow_from_file(path: &str) -> Result<Flow, FlowError> {
@@ -1009,13 +1135,15 @@ impl FlowManager {
         let flow: Flow = match ext.as_str() {
             "jgtc" => {
                 // JSON‐based flow file
-                serde_json::from_str(&contents)
-                    .map_err(|e| FlowError::SerializationError(format!("JSON parse error: {}", e)))?
+                serde_json::from_str(&contents).map_err(|e| {
+                    FlowError::SerializationError(format!("JSON parse error: {}", e))
+                })?
             }
             "ygtc" => {
                 // YAML‐based flow file
-                serde_yaml_bw::from_str(&contents)
-                    .map_err(|e| FlowError::SerializationError(format!("YAML parse error: {}", e)))?
+                serde_yaml_bw::from_str(&contents).map_err(|e| {
+                    FlowError::SerializationError(format!("YAML parse error: {}", e))
+                })?
             }
             other => {
                 return Err(FlowError::SerializationError(format!(
@@ -1069,7 +1197,7 @@ impl FlowManager {
         channel_origin: Option<ChannelOrigin>,
     ) -> Option<ExecutionReport> {
         let flow = self.flows.get(flow_name)?;
-        let session_id=message.session_id();
+        let session_id = message.session_id();
         let state = self.store.get_or_create(&session_id).await;
         let mut ctx = NodeContext::new(
             session_id,
@@ -1086,10 +1214,18 @@ impl FlowManager {
             None => {
                 // Lazily allow the current flow
                 ctx.add_flow(flow_name.to_string());
-                trace!("👣 Registering flow `{}` for session `{}`", flow.id, ctx.get_session_id());
+                trace!(
+                    "👣 Registering flow `{}` for session `{}`",
+                    flow.id,
+                    ctx.get_session_id()
+                );
             }
             Some(ref allowed) if !allowed.contains(&flow.id) => {
-                warn!("🛑 Flow `{}` not permitted for session `{}`", flow.id, ctx.get_session_id());
+                warn!(
+                    "🛑 Flow `{}` not permitted for session `{}`",
+                    flow.id,
+                    ctx.get_session_id()
+                );
                 return Some(ExecutionReport::skipped());
             }
             _ => {} // allowed, continue
@@ -1142,8 +1278,6 @@ impl fmt::Display for FlowError {
 
 impl std::error::Error for FlowError {}
 
-
-
 /// Possible errors when resolving a `ValueOrTemplate`.
 #[derive(Debug, Error)]
 pub enum ResolveError {
@@ -1153,7 +1287,6 @@ pub enum ResolveError {
     #[error("failed to parse rendered value into target type: {0}")]
     Parse(#[from] serde_json::Error),
 }
-
 
 impl<T> ValueOrTemplate<T>
 where
@@ -1170,9 +1303,7 @@ where
             ValueOrTemplate::Value(v) => Ok(v.clone()),
             ValueOrTemplate::Template(tmpl) => {
                 // 1) Render the template to a raw JSON string
-                let rendered = ctx
-                    .render_template(tmpl)
-                    .map_err(ResolveError::Template)?;
+                let rendered = ctx.render_template(tmpl).map_err(ResolveError::Template)?;
 
                 // 2) Parse into the target type T
                 let parsed: T = serde_json::from_str(&rendered)?;
@@ -1191,7 +1322,7 @@ pub trait TemplateContext {
 #[cfg(test)]
 impl FlowManager {
     pub fn new_test(session_store: SessionStore) -> Self {
-        use crate::secret::EmptySecretsManager;
+        use crate::secret::TestSecretsManager;
 
         Self {
             flows: DashMap::new(),
@@ -1199,7 +1330,7 @@ impl FlowManager {
             executor: Executor::dummy(),
             channel_manager: ChannelManager::dummy(),
             process_manager: ProcessManager::dummy(),
-            secrets: SecretsManager(EmptySecretsManager::new()),
+            secrets: SecretsManager(TestSecretsManager::new()),
             on_added: Arc::new(Mutex::new(Vec::new())),
         }
     }

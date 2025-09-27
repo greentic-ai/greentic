@@ -110,7 +110,7 @@ If you don’t have Rust yet, the easiest way is via `rustup`:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
-
+You might have to restart the terminal to get Rust to work. Test it via 'cargo --version'
 ---
 
 ## 🚀 Getting Started: Install Greentic
@@ -152,13 +152,13 @@ Then:
 1. [Create and configure a Telegram bot](./docs/TELEGRAM.md), and add your token:
 
    ```bash
-   greentic secret add TELEGRAM_TOKEN <your_token>
+   greentic secrets add TELEGRAM_TOKEN <your_token>
    ```
 
 2. [Sign up to WeatherAPI](https://www.weatherapi.com/signup.aspx) and add your free API key:
 
    ```bash
-   greentic secret add WEATHERAPI_KEY <your_key>
+   greentic secrets add WEATHERAPI_KEY <your_key>
    ```
 
 3. (Optional) To enable AI-powered queries like *“What’s the weather in London tomorrow?”*:

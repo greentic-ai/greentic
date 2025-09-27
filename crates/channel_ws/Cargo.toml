@@ -1,6 +1,6 @@
 [package]
 name = "channel_ws"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 
@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 
 [dependencies]
-channel_plugin = { version = "0.2.0", path = "../channel_plugin" }
+channel_plugin = { version = "0.2.1", path = "../channel_plugin" }
 anyhow = "1.0.98"
 serde_json = "1.0.140"
 tracing = "0.1.41"
