@@ -714,7 +714,7 @@ mod tests {
     #[tokio::test]
     async fn test_state_transitions_async() {
         let (config, secrets) = load_env_as_vecs(
-            Some("./greentic/secrets/.env"),
+            Some("../../greentic/secrets/.env"),
             None, /* default: .env in cwd */
         )
         .expect("failed to read .env");
@@ -784,7 +784,7 @@ mod tests {
                 config: vec![],
                 secrets: vec![],
                 log_level: LogLevel::Info,
-                log_dir: Some("./logs".to_string()),
+                log_dir: Some("../../logs".to_string()),
                 otel_endpoint: None
             })
             .await
