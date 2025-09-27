@@ -25,10 +25,10 @@ thiserror = "2.0.12"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 futures-util = "0.3.31"
-tokio-tungstenite = "0.27.0"
-async-nats = "0.42.0"
+tokio-tungstenite = "0.28.0"
+async-nats = "0.43.1"
 nkeys = "0.4.5"
-jsonschema = "0.32.1"
+jsonschema = "0.33.0"
 sha2 = "0.10.9"
 
 [lib]
