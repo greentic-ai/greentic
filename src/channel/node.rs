@@ -63,6 +63,7 @@ pub async fn handle_message(
         serde_json::to_value(msg.content.clone()).unwrap(),
         session_id,
     );
+
     let channel_origin = ChannelOrigin::new(
         msg.channel.clone(),
         msg.reply_to_id.clone(),

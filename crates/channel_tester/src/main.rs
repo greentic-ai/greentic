@@ -27,9 +27,9 @@ use channel_plugin::{
     message::{
         CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult,
         InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams,
-        MessageOutResult, NameResult, StateResult, StopResult,
+        MessageOutResult, NameResult, StateResult, StopResult, PLUGIN_VERSION,
     },
-    plugin_runtime::{HasStore, PluginHandler, run},
+    plugin_runtime::{run, HasStore, PluginHandler},
 };
 
 #[derive(Deserialize, Serialize)]

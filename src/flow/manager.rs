@@ -804,7 +804,6 @@ pub struct ChannelNodeConfig {
     #[serde(rename = "remote", default, skip_serializing_if = "std::ops::Not::not")]
     pub channel_remote: bool,
 
-
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<ValueOrTemplate<Participant>>, // Sender info
     #[serde(default, skip_serializing_if = "Option::is_none")]
