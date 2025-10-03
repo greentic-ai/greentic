@@ -134,7 +134,7 @@ impl ProcessManager {
     /// On removal, it will call `unregister_process(...)`.
     ///
     /// Returns the spawned task handle.  You can keep it if you want to `await` or abort later.
-    pub async fn watch_process_dir(&mut self) -> Result<DirectoryWatcher, Error> {
+    pub async fn watch_process_dir(&mut self, initial_scan: bool) -> Result<DirectoryWatcher, Error> {
         // Create a new watcher (initially empty).  It knows how to load/unload WASM Plugin executors.
         let watcher = ProcessWatcher::new();
         self.watcher = Some(watcher.clone());
@@ -146,6 +146,7 @@ impl ProcessManager {
             watch_path.clone(),
             Arc::new(watcher.clone()),
             &["wasm"],
+            initial_scan,
             true,
         )
         .await?)
@@ -258,7 +259,7 @@ pub mod tests {
         assert!(manager.watcher.is_none());
 
         // Spawn the watcher task
-        let handle = manager.watch_process_dir().await?;
+        let handle = manager.watch_process_dir(true).await?;
         // After calling, watcher should be Some(...)
         assert!(manager.watcher.is_some());
         handle.shutdown();

@@ -53,6 +53,7 @@ impl DirectoryWatcher {
         dir: PathBuf,
         watcher_impl: Arc<dyn WatchedType>,
         exts: &[&str],
+        initial_scan: bool,
         enable_retry: bool,
     ) -> Result<DirectoryWatcher> {
         // If the directory doesn’t exist, bail out immediately.
@@ -64,11 +65,13 @@ impl DirectoryWatcher {
 
         // 1) On startup: scan the existing entries in `dir` and “reload” each one.
         //    In other words, if file matches, call `try_reload(...)`.
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if watcher_impl.is_relevant(&path) || is_valid_extension(&path, exts) {
-                try_reload(&watcher_impl, &path, enable_retry).await;
+        if initial_scan {
+            for entry in std::fs::read_dir(&dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if watcher_impl.is_relevant(&path) || is_valid_extension(&path, exts) {
+                    try_reload(&watcher_impl, &path, enable_retry).await;
+                }
             }
         }
 
@@ -256,7 +259,7 @@ mod tests {
 
         //let handle = tokio::spawn(watch_dir(dir.clone(), Arc::new(watcher), &["txt"], false));
         let watcher_arc: Arc<dyn WatchedType> = Arc::new(watcher);
-        let dir_watcher = DirectoryWatcher::new(dir.clone(), watcher_arc.clone(), &["txt"], false)
+        let dir_watcher = DirectoryWatcher::new(dir.clone(), watcher_arc.clone(), &["txt"], true, false)
             .await
             .unwrap();
 

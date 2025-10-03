@@ -53,6 +53,12 @@ pub fn detect_host_target() -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Build,
+    Test,
+}
+
 fn main() {
     // 1) List your channel crate names here:
     let all_channels = [
@@ -64,11 +70,27 @@ fn main() {
         // add more as needed…
     ];
 
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+
+    let action = if let Some(first) = args.first() {
+        match first.as_str() {
+            "build" => {
+                args.remove(0);
+                Action::Build
+            }
+            "test" => {
+                args.remove(0);
+                Action::Test
+            }
+            _ => Action::Build,
+        }
+    } else {
+        Action::Build
+    };
 
     // Optional filtering via CLI: cargo run -- channel_ws
-    let selected_channels: Vec<&str> = if args.len() > 1 {
-        let wanted: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+    let selected_channels: Vec<&str> = if !args.is_empty() {
+        let wanted: Vec<&str> = args.iter().map(String::as_str).collect();
         for ch in &wanted {
             if !all_channels.contains(ch) {
                 eprintln!("Unknown channel `{}`", ch);
@@ -80,23 +102,26 @@ fn main() {
         all_channels.to_vec()
     };
 
-    // Path to the `channel_telegram` crate
+    match action {
+        Action::Build => build_channels(&selected_channels),
+        Action::Test => test_channels(&selected_channels),
+    }
+}
+
+fn build_channels(selected_channels: &[&str]) {
     let crate_dir = PathBuf::from(".");
     let channels_out_dir = PathBuf::from("channels");
-    let stop_dir = PathBuf::from("greentic/plugins/channels/stopped"); // or wherever you want to copy
+    let stop_dir = PathBuf::from("greentic/plugins/channels/stopped");
 
-    // Ensure base output dirs exist
     for target in TARGETS {
         fs::create_dir_all(channels_out_dir.join(target.dir)).unwrap();
     }
-
-    // make sure the output directory exists
     if let Err(e) = fs::create_dir_all(&stop_dir) {
         eprintln!("Failed to create {}: {}", stop_dir.display(), e);
         exit(1);
     }
 
-    for pkg in &selected_channels {
+    for pkg in selected_channels {
         for target in TARGETS {
             println!("🔨 Building `{}` for target `{}`…", pkg, target.triple);
             let status = Command::new("cargo")
@@ -146,10 +171,8 @@ fn main() {
         }
     }
 
-    // 🧠 Detect host and copy correct binary to stopped/
     let host_target = detect_host_target();
-
-    for pkg in &selected_channels {
+    for pkg in selected_channels {
         let target = TARGETS
             .iter()
             .find(|t| t.name == host_target)
@@ -173,4 +196,23 @@ fn main() {
     println!(
         "\n🎉 All plugins built and placed into `channels/*` and `greentic/plugins/channels/stopped`."
     );
+}
+
+fn test_channels(selected_channels: &[&str]) {
+    for pkg in selected_channels {
+        println!("🧪 Testing `{}`…", pkg);
+        let status = Command::new("cargo")
+            .args(["test", "--package", pkg])
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to launch cargo test for `{}`: {}", pkg, e);
+                exit(1);
+            });
+        if !status.success() {
+            eprintln!("Tests failed for `{}`", pkg);
+            exit(1);
+        }
+    }
+
+    println!("\n✅ Channel tests completed successfully.");
 }

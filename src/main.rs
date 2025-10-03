@@ -1,22 +1,26 @@
-use anyhow::bail;
+use anyhow::{bail, Context};
 use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
     apps::{App, cmd_init, download},
-    config::{ConfigManager, EnvConfigManager},
+    config::{ConfigManager, EnvConfigManager, MapConfigManager},
     flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file},
-    logger::{FileTelemetry, init_tracing},
+    logger::{FileTelemetry, Logger, init_tracing},
     schema::write_schema,
     secret::{EnvSecretsManager, SecretsManager},
+    runtime_snapshot::RuntimeSnapshot,
 };
-use std::{env, fs, path::PathBuf, process};
+use std::{env, fs, fs::File, io::BufReader, path::PathBuf, process};
+use tokio::time::{sleep, Duration};
+use std::panic::catch_unwind;
+use tracing::dispatcher;
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "greentic",
     about = "The Greener Digital Workers Platform",
-    version = "0.2.0-rc4"
+    version = "0.2.3"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -42,6 +46,9 @@ enum Commands {
 
     /// Handle secrets
     Config(ConfigArgs),
+
+    /// Handle export
+    Export(ExportArgs),
 }
 
 #[derive(Args, Debug)]
@@ -63,6 +70,17 @@ struct FlowArgs {
 }
 
 #[derive(Args, Debug)]
+struct ExportArgs {
+    /// Optional output filename
+    #[arg(long)]
+    name: Option<String>,
+
+    /// Optional output directory (defaults to ./greentic/imports)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
 struct RunArgs {
     #[arg(long, default_value = "1800")]
     session_timeout: u64,
@@ -77,6 +95,10 @@ struct RunArgs {
     /// OpenTelemetry endpoint (e.g. http://localhost:4317)
     #[arg(long)]
     otel_events_endpoint: Option<String>,
+
+    /// Allow to pass a saved state for ultra fast boot
+    #[arg(long)]
+    greentic_state: Option<String>,
 }
 
 /// Emit JSON‐Schema for flows, tools and channels into `<root>/schemas`
@@ -140,8 +162,25 @@ async fn main() -> anyhow::Result<()> {
         log_level: "info".to_string(),
         otel_logs_endpoint: None,
         otel_events_endpoint: None,
+        greentic_state: None,
     })) {
         Commands::Run(args) => {
+            let state: Option<PathBuf> = match args.greentic_state {
+                Some(state_string) => {
+                    // does the state exist
+                    let state = PathBuf::from(state_string.clone());
+                    match state.exists() {
+                        true => Some(state),
+                        false => {
+                            let error = format!("Greentic state does not exist. Please make sure {} points to a valid greentic state. Use greentic export to get a valid state.",state_string.clone());
+                            error!(error);
+                            println!("{}", error);
+                            process::exit(-1);
+                        },
+                    }
+                },
+                None => None,
+            };
             run(
                 root,
                 args.session_timeout,
@@ -150,9 +189,31 @@ async fn main() -> anyhow::Result<()> {
                 args.otel_events_endpoint,
                 secrets_manager,
                 config_manager,
+                state,
             )
             .await?;
             Ok(())
+        }
+        Commands::Export(args) => {
+            match export_runtime(
+                root.clone(),
+                secrets_manager,
+                config_manager,
+                args.name,
+                args.dir,
+            )
+            .await
+            {
+                Ok(final_path) => {
+                    println!("✅ Exported runtime snapshot to {}", final_path.display());
+                    process::exit(0);
+                }
+                Err(err) => {
+                    error!("Export failed: {err:#}");
+                    println!("❌ Export failed: {err:#}");
+                    process::exit(-1);
+                }
+            }
         }
         Commands::Schema(args) => {
             let out_dir = root.join("schemas");
@@ -304,7 +365,20 @@ async fn run(
     otel_events_endpoint: Option<String>,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
+    greentic_state: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    let snapshot_data = if let Some(ref path) = greentic_state {
+        info!("Loading runtime snapshot from {}", path.display());
+        let file = File::open(path)
+            .with_context(|| format!("Failed to open snapshot at {}", path.display()))?;
+        Some(
+            bincode::deserialize_from::<_, RuntimeSnapshot>(BufReader::new(file)).with_context(
+                || format!("Failed to deserialize snapshot at {}", path.display()),
+            )?,
+        )
+    } else {
+        None
+    };
     let flows_dir = root.join("flows/running");
     let log_file = "logs/greentic_logs.log".to_string();
     let log_dir = Some(root.join("logs"));
@@ -346,13 +420,14 @@ async fn run(
             tools_dir.clone(),
             processes_dir.clone(),
             config_manager,
-            logger,
-            convert_level(log_level),
-            log_dir,
-            otel_logs_endpoint,
-            secrets_manager,
-        )
-        .await;
+        logger,
+        convert_level(log_level),
+        log_dir,
+        otel_logs_endpoint,
+        secrets_manager,
+        snapshot_data.as_ref(),
+    )
+    .await;
     if result.is_err() {
         error!(
             "Failed to bootstrap greentic runtime: {:#}",
@@ -405,6 +480,127 @@ async fn run(
     process::exit(0);
 }
 
+async fn export_runtime(
+    root: PathBuf,
+    secrets_manager: SecretsManager,
+    config_manager: ConfigManager,
+    export_name: Option<String>,
+    export_dir: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    const EXPORT_SESSION_TIMEOUT: u64 = 1800;
+    const EXPORT_DELAY_MS: u64 = 500;
+
+    if !root.exists() {
+        bail!(
+            "Root directory `{}` does not exist. Please run `greentic init` first.",
+            root.display()
+        );
+    }
+
+    let flows_dir = root.join("flows/running");
+    let tools_dir = root.join("plugins").join("tools");
+    let processes_dir = root.join("plugins").join("processes");
+    let channels_dir = root.join("plugins").join("channels/running");
+
+    let log_dir = Some(root.join("logs"));
+    let log_file = "logs/greentic_export.log".to_string();
+    let event_file = "logs/greentic_export_events.log".to_string();
+
+    let logger = if dispatcher::has_been_set() {
+        Logger(Box::new(greentic::logger::OpenTelemetryLogger::new()))
+    } else {
+        match catch_unwind(|| {
+            init_tracing(
+                root.clone(),
+                log_file,
+                event_file,
+                "info".to_string(),
+                None,
+                None,
+            )
+        }) {
+            Ok(Ok(logger)) => logger,
+            Ok(Err(err)) => {
+                println!(
+                    "Tracing initialization failed ({}); falling back to basic logger",
+                    err
+                );
+                Logger(Box::new(greentic::logger::OpenTelemetryLogger::new()))
+            }
+            Err(_) => {
+                println!(
+                    "Tracing initialization panicked; falling back to basic logger"
+                );
+                Logger(Box::new(greentic::logger::OpenTelemetryLogger::new()))
+            }
+        }
+    };
+
+    let mut app = App::new();
+    app.bootstrap(
+        EXPORT_SESSION_TIMEOUT,
+        flows_dir,
+        channels_dir,
+        tools_dir,
+        processes_dir,
+        config_manager,
+        logger,
+        LogLevel::Info,
+        log_dir,
+        None,
+        secrets_manager,
+        None,
+    )
+    .await
+    .context("failed to bootstrap runtime for export")?;
+
+    sleep(Duration::from_millis(EXPORT_DELAY_MS)).await;
+
+    let snapshot = match app.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            app.shutdown().await;
+            return Err(err);
+        }
+    };
+
+    let base_dir = export_dir.unwrap_or_else(|| root.join("imports"));
+    fs::create_dir_all(&base_dir).with_context(|| {
+        format!("failed to create exports directory at {}", base_dir.display())
+    })?;
+
+    let file_name = export_name.unwrap_or_else(|| {
+        let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        format!("snapshot-{}.gtc", timestamp)
+    });
+
+    let destination = base_dir.join(file_name);
+
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create export destination directory at {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    {
+        let mut file = File::create(&destination)
+            .with_context(|| format!("failed to create export file {}", destination.display()))?;
+        bincode::serialize_into(&mut file, &snapshot).with_context(|| {
+            format!(
+                "failed to serialize snapshot to {}",
+                destination.display()
+            )
+        })?;
+    }
+
+    app.shutdown().await;
+
+    Ok(destination)
+}
+
 fn convert_level(level: String) -> LogLevel {
     match level.to_lowercase().as_str() {
         "trace" => LogLevel::Trace,
@@ -414,5 +610,121 @@ fn convert_level(level: String) -> LogLevel {
         "error" => LogLevel::Error,
         "critical" => LogLevel::Critical,
         _ => LogLevel::Info,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use greentic::secret::TestSecretsManager;
+    use greentic::apps::App;
+    use greentic::logger::Logger;
+    use greentic::logger::OpenTelemetryLogger;
+    use tempfile::TempDir;
+
+    fn create_test_layout(root: &PathBuf) {
+        let dirs = [
+            "config",
+            "secrets",
+            "logs",
+            "flows/running",
+            "flows/stopped",
+            "plugins/tools",
+            "plugins/channels/running",
+            "plugins/channels/stopped",
+            "plugins/processes",
+        ];
+        for d in &dirs {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        fs::write(root.join("config/.env"), "").unwrap();
+    }
+
+    async fn make_test_secrets() -> SecretsManager {
+        let secrets = SecretsManager(TestSecretsManager::new());
+        secrets
+            .add_secret("GREENTIC_ID", "test-greentic-id")
+            .await
+            .unwrap();
+        secrets
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn export_writes_snapshot() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("greentic");
+        create_test_layout(&root);
+
+        let secrets = make_test_secrets().await;
+        let config = ConfigManager(MapConfigManager::new());
+
+        let export_path = export_runtime(
+            root.clone(),
+            secrets,
+            config,
+            Some("test-snapshot.gtc".into()),
+            None,
+        )
+        .await
+        .expect("export should succeed");
+
+        assert!(export_path.exists());
+
+        let file = File::open(export_path).unwrap();
+        let snapshot: RuntimeSnapshot =
+            bincode::deserialize_from(BufReader::new(file)).expect("snapshot should deserialize");
+        assert_eq!(snapshot.version, RuntimeSnapshot::CURRENT_VERSION);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bootstrap_from_snapshot() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("greentic");
+        create_test_layout(&root);
+
+        let secrets = make_test_secrets().await;
+        let config = ConfigManager(MapConfigManager::new());
+
+        let snapshot_path = export_runtime(
+            root.clone(),
+            secrets.clone(),
+            config.clone(),
+            Some("preload.gtc".into()),
+            None,
+        )
+        .await
+        .expect("export should succeed");
+
+        let file = File::open(snapshot_path).unwrap();
+        let snapshot: RuntimeSnapshot =
+            bincode::deserialize_from(BufReader::new(file)).expect("snapshot should deserialize");
+
+        let flows_dir = root.join("flows/running");
+        let channels_dir = root.join("plugins/channels/running");
+        let tools_dir = root.join("plugins/tools");
+        let processes_dir = root.join("plugins/processes");
+        let logger = Logger(Box::new(OpenTelemetryLogger::new()));
+
+        let mut app = App::new();
+        app.bootstrap(
+            60,
+            flows_dir,
+            channels_dir,
+            tools_dir,
+            processes_dir,
+            config,
+            logger,
+            LogLevel::Info,
+            Some(root.join("logs")),
+            None,
+            secrets,
+            Some(&snapshot),
+        )
+        .await
+        .expect("bootstrap with snapshot should succeed");
+
+        let captured = app.snapshot().expect("snapshot capture should succeed");
+        assert_eq!(captured.version, RuntimeSnapshot::CURRENT_VERSION);
+        app.shutdown().await;
     }
 }

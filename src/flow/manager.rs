@@ -1116,11 +1116,15 @@ impl FlowManager {
         info!("Removed flow: {}", name);
     }
 
-    pub async fn watch_flow_dir(self: Arc<Self>, dir: PathBuf) -> Result<DirectoryWatcher, Error> {
+    pub async fn watch_flow_dir(
+        self: Arc<Self>,
+        dir: PathBuf,
+        initial_scan: bool,
+    ) -> Result<DirectoryWatcher, Error> {
         let watcher = FlowWatcher {
             manager: self.clone(),
         };
-        DirectoryWatcher::new(dir, Arc::new(watcher), &["jgtc", "ygtc"], true).await
+        DirectoryWatcher::new(dir, Arc::new(watcher), &["jgtc", "ygtc"], initial_scan, true).await
     }
 
     pub fn load_flow_from_file(path: &str) -> Result<Flow, FlowError> {

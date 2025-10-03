@@ -1,5 +1,6 @@
 [alias]
-build-channels = "run -p xtask"
+build-channels = "run -p xtask build"
+test-channels = "run -p xtask test"
 
 [target.x86_64-unknown-linux-musl]
 linker = "musl-gcc"          # or path to your musl linker

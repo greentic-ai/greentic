@@ -124,7 +124,6 @@ pub struct ToolInstance {
     pub secrets_list: Vec<SecretsDescription>,
     pub tools_list: Vec<Tool>,
 }
-
 pub trait ToolExecutorTrait: Send + Sync + Debug {
     fn tools(&self) -> Arc<DashMap<String, Arc<ToolWrapper>>>;
     fn secrets_manager(&self) -> SecretsManager;
@@ -162,14 +161,18 @@ impl Executor {
         Ok(())
     }
 
-    pub async fn watch_tool_dir(&self, tool_dir: PathBuf) -> Result<DirectoryWatcher, Error> {
+    pub async fn watch_tool_dir(
+        &self,
+        tool_dir: PathBuf,
+        initial_scan: bool,
+    ) -> Result<DirectoryWatcher, Error> {
         let handler = ToolDirHandler {
             tools: Arc::clone(&self.executor.tools()),
             secrets: self.executor.secrets_manager().clone(),
             logging: self.executor.logger().clone(),
         };
         // watch_dir will do exactly the same setup+loop+pattern-matching you already wrote for channels:
-        DirectoryWatcher::new(tool_dir, Arc::new(handler), &["wasm"], true).await
+        DirectoryWatcher::new(tool_dir, Arc::new(handler), &["wasm"], initial_scan, true).await
     }
 
     pub fn get_tool(&self, tool_name: String) -> Option<Arc<ToolWrapper>> {
@@ -519,6 +522,10 @@ impl ToolWrapper {
         self.description.clone()
     }
 
+    pub fn wasm_path(&self) -> PathBuf {
+        self.tool_instance.wasm_path.clone()
+    }
+
     pub fn secrets(&self) -> Vec<SecretsDescription> {
         self.secrets.clone()
     }
@@ -758,8 +765,19 @@ pub mod tests {
         false
     }
 
+    fn should_run_network_tests() -> bool {
+        matches!(
+            std::env::var("RUN_GREENTIC_NETWORK_TESTS").map(|v| v == "1"),
+            Ok(true)
+        )
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_dynamic_tool_watcher_load_and_remove() {
+        if !should_run_network_tests() {
+            eprintln!("skipping network test_dynamic_tool_watcher_load_and_remove");
+            return;
+        }
         let tool_dir = Path::new("./tests/wasm/tools_load_remove").to_path_buf();
         let test_wasm = tool_dir.join("weather_api.wasm");
         // remove the test file in case the previous test failed
@@ -776,7 +794,7 @@ pub mod tests {
         let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move {
             executor_clone
-                .watch_tool_dir(tool_dir.clone())
+                .watch_tool_dir(tool_dir.clone(), true)
                 .await
                 .expect("could not start watcher");
             let _ = ready_tx.send(()).await;
@@ -824,6 +842,10 @@ pub mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_call_weather_tool() {
+        if !should_run_network_tests() {
+            eprintln!("skipping network test_call_weather_tool");
+            return;
+        }
         let test_wasm = Path::new("./tests/wasm/tools_call");
         assert!(
             test_wasm.exists(),
@@ -838,7 +860,7 @@ pub mod tests {
 
         // Start watching the directory
         let watcher = executor
-            .watch_tool_dir(test_wasm.to_path_buf())
+            .watch_tool_dir(test_wasm.to_path_buf(), true)
             .await
             .expect("watcher should start");
         let input = serde_json::json!({ "q": "London", "days": 1,  });

@@ -1621,7 +1621,8 @@ connections:
         );
 
         let mock = ManagedChannel::new(
-            PluginWrapper::new(plugin, store.clone(), log_config).await,
+            PluginWrapper::new(plugin, store.clone(), log_config, Some(path.to_path_buf()))
+                .await,
             None,
             None,
         );

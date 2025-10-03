@@ -3,7 +3,11 @@
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use channel_plugin::{
-    channel_client::ChannelClient, control_client::ControlClient, message::{ChannelMessage, ChannelState}, plugin_actor::PluginHandle, plugin_helpers::PluginError,
+    channel_client::ChannelClient,
+    control_client::ControlClient,
+    message::{ChannelMessage, ChannelState},
+    plugin_actor::{spawn_rpc_plugin, PluginHandle},
+    plugin_helpers::PluginError,
 };
 use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
@@ -181,6 +185,51 @@ impl ChannelManager {
         self.channels.clone()
     }
 
+    pub async fn register_remote_snapshot_channel(&self, name: String) -> Result<(), Error> {
+        if self.channels.contains_key(&name) {
+            return Ok(());
+        }
+
+        let greentic_id = self.greentic_id.clone();
+        let client = ChannelClient::new_pubsub(name.clone(), greentic_id.clone()).await?;
+        let control = ControlClient::new_pubsub(name.clone(), greentic_id).await?;
+        let plugin = PluginHandle::new(client, control).await;
+        let wrapper = PluginWrapper::new(
+            plugin,
+            self.session_store(),
+            self.log_config.clone(),
+            None,
+        )
+        .await;
+        let managed = ManagedChannel::new(wrapper, None, None);
+        self.register_channel(name.clone(), managed).await?;
+        self.start_channel(&name).await?;
+        Ok(())
+    }
+
+    pub async fn register_local_snapshot_channel(
+        &self,
+        name: String,
+        path: PathBuf,
+    ) -> Result<(), Error> {
+        if self.channels.contains_key(&name) {
+            return Ok(());
+        }
+
+        let plugin = spawn_rpc_plugin(&path).await?;
+        let wrapper = PluginWrapper::new(
+            plugin,
+            self.session_store(),
+            self.log_config.clone(),
+            Some(path),
+        )
+        .await;
+        let managed = ManagedChannel::new(wrapper, None, None);
+        self.register_channel(name.clone(), managed).await?;
+        self.start_channel(&name).await?;
+        Ok(())
+    }
+
     /// Start watching the plugins directory, subscribe ourselves,
     /// and spawn the watcher task.
     ///
@@ -189,31 +238,17 @@ impl ChannelManager {
         self: Arc<Self>,
         plugins_dir: PathBuf,
         remote_channels: Vec<String>,
+        initial_scan: bool,
     ) -> Result<DirectoryWatcher, Error> {
         // Load all the remote channels
-        for channel in remote_channels
-        {
-            // remote channel was not loaded yet, so let's load it
-            let session_store = self.session_store();
-            let log_config = self.log_config.clone();
-            let greentic_id = self.greentic_id.clone();
-            let client = ChannelClient::new_pubsub(channel.clone(), greentic_id.clone()).await;
-            let control = ControlClient::new_pubsub(channel.clone(),greentic_id).await;
-            if client.is_err() {
-                let err = client.unwrap_err();
-                error!("Cannot create remote channel `{}` because {}", channel, err.to_string());
+        for channel in remote_channels {
+            if let Err(err) = self
+                .register_remote_snapshot_channel(channel.clone())
+                .await
+            {
+                error!("Cannot create remote channel `{}` because {:?}", channel, err);
                 return Err(err);
-            } else if control.is_err() {
-                let err = control.unwrap_err();
-                error!("Cannot create remote channel `{}` because {}", channel, err.to_string());
-                return Err(err);
-            } else {
-                let plugin = PluginHandle::new(client.unwrap(), control.unwrap()).await;
-                let plugin_wrapper = PluginWrapper::new(plugin, session_store, log_config).await;
-                let wrapper = ManagedChannel::new(plugin_wrapper.clone(), None, None);
-                let _ = self.register_channel(channel, wrapper).await;
             }
-
         }
         // 1) build the watcher
         let watcher = Arc::new(PluginWatcher::new(plugins_dir.clone()).await);
@@ -222,7 +257,7 @@ impl ChannelManager {
             .subscribe(self.clone() as Arc<dyn PluginEventHandler>, false)
             .await;
         // 3) spawn the fs watcher
-        match watcher.watch().await {
+        match watcher.watch(initial_scan).await {
             Ok(handle) => Ok(handle),
             Err(err) => {
                 let error = format!(
@@ -263,6 +298,7 @@ impl PluginEventHandler for ChannelManager {
         &self,
         name: &str,
         plugin: PluginHandle,
+        path: Option<PathBuf>,
     ) -> Result<(), Error> {
         info!("Channel plugin added/reloaded: {}", name);
         // If already present, tear down the old one:
@@ -289,7 +325,13 @@ impl PluginEventHandler for ChannelManager {
 
         // Wrap + configure:
 
-        let wrapper = PluginWrapper::new(plugin, self.store.clone(), self.log_config.clone()).await;
+        let wrapper = PluginWrapper::new(
+            plugin,
+            self.store.clone(),
+            self.log_config.clone(),
+            path,
+        )
+        .await;
 
         // 3) Start it **on its own thread** with its own runtime
         let mut wrapper_cloned = wrapper.clone();
@@ -415,7 +457,7 @@ impl PluginEventHandler for ChannelManager {
         Ok(())
     }
 }
-#[derive(Debug,)]
+#[derive(Debug)]
 pub struct ManagedChannel {
     wrapper: PluginWrapper,
     cancel: Option<CancellationToken>,
@@ -512,7 +554,13 @@ pub mod tests {
             .unwrap();
 
         let (_mock, plugin_handle) = spawn_mock_handle().await;
-        let wrapper = PluginWrapper::new(plugin_handle, store, LogConfig::default()).await;
+        let wrapper = PluginWrapper::new(
+            plugin_handle,
+            store,
+            LogConfig::default(),
+            None,
+        )
+        .await;
         mgr.register_channel(
             "foo".into(),
             ManagedChannel {

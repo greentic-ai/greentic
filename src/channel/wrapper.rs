@@ -10,10 +10,11 @@ use channel_plugin::{
 use crossbeam_utils::atomic::AtomicCell;
 use schemars::SchemaGenerator;
 use serde_json::json;
-use std::{fmt, sync::Arc};
+use std::{fmt, path::PathBuf, sync::Arc};
 use tracing::error;
 
 pub type Plugin = (ChannelClient, ControlClient);
+
 pub struct PluginWrapper {
     name: String,
     msg: ChannelClient,
@@ -24,6 +25,7 @@ pub struct PluginWrapper {
     state: Arc<AtomicCell<ChannelState>>,
     log_config: LogConfig,
     session_store: SessionStore,
+    plugin_path: Option<PathBuf>,
 }
 
 impl Clone for PluginWrapper {
@@ -38,6 +40,7 @@ impl Clone for PluginWrapper {
             state: self.state.clone(),
             log_config: self.log_config.clone(),
             session_store: self.session_store.clone(),
+            plugin_path: self.plugin_path.clone(),
         }
     }
 }
@@ -58,6 +61,7 @@ impl PluginWrapper {
         plugin: PluginHandle,
         session_store: SessionStore,
         log_config: LogConfig,
+        plugin_path: Option<PathBuf>,
     ) -> Self {
         let inner = plugin.control_client();
         let msg = plugin.channel_client();
@@ -75,6 +79,7 @@ impl PluginWrapper {
             state: Arc::new(AtomicCell::new(ChannelState::RUNNING)),
             log_config,
             session_store,
+            plugin_path,
         }
     }
 
@@ -128,6 +133,10 @@ impl PluginWrapper {
 
     pub async fn state(&self) -> ChannelState {
         self.inner.state().await.expect("Could not get state")
+    }
+
+    pub fn plugin_path(&self) -> Option<PathBuf> {
+        self.plugin_path.clone()
     }
 
     pub async fn start(
@@ -224,14 +233,14 @@ pub mod tests {
         let (_mock, plugin) = spawn_mock_handle().await; //   👈 real PluginHandle!
 
         let store = InMemorySessionStore::new(60);
-        PluginWrapper::new(plugin, store, LogConfig::default()).await
+        PluginWrapper::new(plugin, store, LogConfig::default(), None).await
     }
 
     #[tokio::test]
     async fn test_send_and_poll() {
         let (mock, plugin_handle) = spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
-        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default()).await;
+        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default(), None).await;
         let config = vec![];
         let secrets = vec![];
         w.start(config, secrets).await.expect("could not start");
@@ -274,7 +283,7 @@ pub mod tests {
     async fn test_config_and_secrets() {
         let (mock, plugin_handle) = spawn_mock_handle().await;
         let store = InMemorySessionStore::new(60);
-        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default()).await;
+        let mut w = PluginWrapper::new(plugin_handle, store, LogConfig::default(), None).await;
         let config = vec![("k".to_string(), "v".to_string())];
         let secrets = vec![("k".to_string(), "s".to_string())];
         w.start(config, secrets).await.expect("could not start");

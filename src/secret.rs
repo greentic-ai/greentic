@@ -176,7 +176,7 @@ impl EnvSecretsManager {
                     mgr: Arc::clone(&mgr),
                 };
                 tokio::spawn(async move {
-                    if let Err(e) = DirectoryWatcher::new(path, Arc::new(handler), &[], false).await
+                    if let Err(e) = DirectoryWatcher::new(path, Arc::new(handler), &[], true, false).await
                     {
                         tracing::error!("dotenv watch_dir failed: {}", e);
                     }

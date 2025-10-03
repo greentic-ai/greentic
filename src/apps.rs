@@ -1,5 +1,5 @@
 // src/app.rs
-use anyhow::{Context, Error, bail};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use std::{
     fs::{self, File},
     io::{Write, stdin, stdout},
@@ -20,11 +20,11 @@ use crate::{
     flow::{manager::FlowManager, session::InMemorySessionStore},
     logger::{LogConfig, Logger},
     process::manager::ProcessManager,
+    runtime_snapshot::{ChannelSnapshot, ProcessSnapshot, RuntimeSnapshot, ToolSnapshot},
     secret::{EnvSecretsManager, SecretsManager},
     validate::validate,
     watcher::DirectoryWatcher,
 };
-use anyhow::{Result, anyhow};
 use channel_plugin::message::LogLevel;
 use reqwest::{
     Client,
@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Makes a file executable on Unix. On Windows, this is a no-op.
 pub fn make_executable<P: AsRef<Path> + std::fmt::Debug>(path: P) -> std::io::Result<()> {
@@ -99,27 +99,30 @@ impl App {
         log_dir: Option<PathBuf>,
         otel_endpoint: Option<String>,
         secrets: SecretsManager,
+        snapshot: Option<&RuntimeSnapshot>,
     ) -> Result<(), Error> {
         let greentic_id = secrets.get_secret("GREENTIC_ID").await.unwrap().expect("Your GREENTIC_ID is not set. Please run 'greentic init' first.");
+        let initial_scan = snapshot.is_none();
         // 1) Flow manager & initial load + watcher
         let store = InMemorySessionStore::new(session_timeout);
         // Process Manager
-        match ProcessManager::new(processes_dir) {
-            Ok(mut pm) => match pm.watch_process_dir().await {
-                Ok(watcher) => {
-                    self.process_manager = Some(pm.clone());
-                    self.watcher = Some(watcher)
-                }
-                Err(error) => {
-                    let werror = format!("Could not start up process manager because {:?}", error);
-                    error!(werror);
-                    return Err(error);
-                }
-            },
+        let mut pm = match ProcessManager::new(processes_dir) {
+            Ok(pm) => pm,
             Err(err) => {
                 let perror = format!("Could not start up process manager because {:?}", err);
                 error!(perror);
                 return Err(err);
+            }
+        };
+        match pm.watch_process_dir(initial_scan).await {
+            Ok(watcher) => {
+                self.process_manager = Some(pm.clone());
+                self.watcher = Some(watcher);
+            }
+            Err(error) => {
+                let werror = format!("Could not start up process manager because {:?}", error);
+                error!(werror);
+                return Err(error);
             }
         }
         let process_manager = Arc::new(self.process_manager.to_owned().unwrap());
@@ -128,12 +131,22 @@ impl App {
         self.executor = Some(Executor::new(secrets.clone(), logger.clone()));
         let executor = self.executor.clone().unwrap();
 
+        if let Some(snapshot) = snapshot {
+            for tool in &snapshot.tools {
+                executor
+                    .add_tool(tool.wasm_path.clone())
+                    .await
+                    .context(format!("Failed to load tool snapshot {}", tool.name))?;
+            }
+        }
+
         // 2) Executor / Tool‐watcher
         self.tools_task = Some({
             let ex = executor.clone();
             let dir = tools_dir.clone();
+            let scan = initial_scan;
             tokio::spawn(async move {
-                if let Err(e) = ex.watch_tool_dir(dir).await {
+                if let Err(e) = ex.watch_tool_dir(dir, scan).await {
                     error!("Tool‐watcher error: {:?}", e);
                 }
             })
@@ -155,14 +168,25 @@ impl App {
         );
         self.flow_manager = Some(flow_mgr.clone());
 
-        // Load all existing flows, then watch for changes:
-        flow_mgr
-            .load_all_flows_from_dir(&flows_dir)
-            .await
-            .expect("initial load failed");
+        if let Some(snapshot) = snapshot {
+            for flow in &snapshot.flows {
+                flow_mgr.register_flow(flow.clone().build());
+            }
+        } else {
+            flow_mgr
+                .load_all_flows_from_dir(&flows_dir)
+                .await
+                .context("initial flow load failed")?;
+        }
+
+        let remote_channels = flow_mgr.remote_channels();
+
         let flow_mgr_clone = flow_mgr.clone();
         self.flow_task = Some(tokio::spawn(async move {
-            if let Err(e) = flow_mgr_clone.watch_flow_dir(flows_dir).await {
+            if let Err(e) = flow_mgr_clone
+                .watch_flow_dir(flows_dir, initial_scan)
+                .await
+            {
                 error!("Flow‐watcher error: {:?}", e);
             }
         }));
@@ -175,8 +199,12 @@ impl App {
         self.channel_manager
             .clone()
             .unwrap()
-            .start_all(channels_dir.clone(), flow_mgr.remote_channels())
+            .start_all(channels_dir.clone(), remote_channels, initial_scan)
             .await?;
+
+        if let Some(snapshot) = snapshot {
+            self.load_snapshot(snapshot).await?;
+        }
 
         // We don’t need to manually `start()` each channel here; ChannelManager::new()
         // will have already subscribed the watcher and started existing plugins.
@@ -188,6 +216,102 @@ impl App {
 
         // Tasks are detached; they’ll run for the lifetime of the process.
         // We return the two managers for the caller to drive shutdown or further orchestration.
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> Result<RuntimeSnapshot> {
+        let flow_manager = self
+            .flow_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("Flow manager not initialised"))?;
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or_else(|| anyhow!("Executor not initialised"))?;
+        let channel_manager = self
+            .channel_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("Channel manager not initialised"))?;
+        let process_manager = self
+            .process_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("Process manager not initialised"))?;
+
+        let flow_map = flow_manager.flows();
+        let mut flows: Vec<_> = flow_map.iter().map(|entry| entry.value().clone()).collect();
+        flows.sort_by(|a, b| a.id().cmp(&b.id()));
+
+        let tool_registry = executor.executor.tools();
+        let mut tools: Vec<ToolSnapshot> = tool_registry
+            .iter()
+            .map(|entry| {
+                let wrapper = entry.value().clone();
+                ToolSnapshot {
+                    name: wrapper.name(),
+                    tool_id: wrapper.tool_id(),
+                    action: wrapper.tool_method_id(),
+                    wasm_path: wrapper.wasm_path(),
+                    description: wrapper.description(),
+                    secrets: wrapper
+                        .secrets()
+                        .into_iter()
+                        .map(|desc| format!("{desc:?}"))
+                        .collect(),
+                    parameters_json: wrapper
+                        .parameters()
+                        .to_string(),
+                }
+            })
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let channels_map = channel_manager.channels();
+        let mut channels: Vec<ChannelSnapshot> = channels_map
+            .iter()
+            .map(|entry| {
+                let managed = entry.value();
+                let wrapper = managed.wrapper().clone();
+                ChannelSnapshot {
+                    name: wrapper.name(),
+                    remote: wrapper.remote(),
+                    plugin_path: wrapper.plugin_path(),
+                }
+            })
+            .collect();
+        channels.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut processes = ProcessSnapshot::from_manager(process_manager);
+        processes.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(RuntimeSnapshot::from_parts(flows, tools, channels, processes))
+    }
+
+    async fn load_snapshot(&self, snapshot: &RuntimeSnapshot) -> Result<(), Error> {
+        let channel_manager = self
+            .channel_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("Channel manager not initialised"))?;
+
+        for channel in &snapshot.channels {
+            if channel_manager.channel(&channel.name).is_some() {
+                continue;
+            }
+            if channel.remote {
+                channel_manager
+                    .register_remote_snapshot_channel(channel.name.clone())
+                    .await?;
+            } else if let Some(path) = channel.plugin_path.clone() {
+                channel_manager
+                    .register_local_snapshot_channel(channel.name.clone(), path)
+                    .await?;
+            } else {
+                warn!(
+                    "Snapshot channel `{}` missing plugin path; skipping",
+                    channel.name
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -226,7 +350,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     for d in &dirs {
         let path = root.join(d);
         fs::create_dir_all(&path)
-            .with_context(|| format!("failed to create {}", path.display()))?;
+            .context(format!("failed to create {}", path.display()))?;
     }
 
     // 2) write config/.env
@@ -234,7 +358,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     if !conf_path.exists() {
         let default_cfg = r#""#;
         fs::write(&conf_path, default_cfg)
-            .with_context(|| format!("failed to write {}", conf_path.display()))?;
+            .context(format!("failed to write {}", conf_path.display()))?;
         println!("Created {}", conf_path.display());
     } else {
         println!("Skipping {}, already exists", conf_path.display());
@@ -309,19 +433,11 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
         .send()
         .await?;
 
-    let _ = match res.json::<Verifying>().await {
-        Ok(verifying) => {
-            info!("Verifying status: {}", verifying.status);
-            verifying
-        }
-        Err(err) => {
-            error!("Error veryifying: {:?}", err);
-            bail!(
-                "Could not continue verification because {:?}",
-                err.to_string()
-            );
-        }
-    };
+    let verifying = res
+        .json::<Verifying>()
+        .await
+        .context("Could not continue verification")?;
+    info!("Verifying status: {}", verifying.status);
     println!("A verifying code was send to your email. Please reproduce it here.");
     print!("Code: ");
     stdout().flush().unwrap();
@@ -342,19 +458,11 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
         .send()
         .await?;
 
-    let verified = match res.json::<Verified>().await {
-        Ok(response) => {
-            info!("Verified status: {}", response.status);
-            response
-        }
-        Err(err) => {
-            error!("Error verifying: {:?}", err);
-            bail!(
-                "Could not continue verification because {:?}",
-                err.to_string()
-            );
-        }
-    };
+    let verified = res
+        .json::<Verified>()
+        .await
+        .context("Could not continue verification")?;
+    info!("Verified status: {}", verified.status);
 
     let token = &verified.user_token;
     let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
@@ -416,19 +524,11 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
         .send()
         .await?;
 
-    let jwt_response = match res.json::<JwtResponse>().await {
-        Ok(response) => {
-            info!("JWT success: {}", response.success);
-            response
-        }
-        Err(err) => {
-            error!("Error getting jwt token: {:?}", err);
-            bail!(
-                "Could not get the jwt pre-signed token because {:?}",
-                err.to_string()
-            );
-        }
-    };
+    let jwt_response = res
+        .json::<JwtResponse>()
+        .await
+        .context("Could not get the jwt pre-signed token")?;
+    info!("JWT success: {}", jwt_response.success);
 
     if !jwt_response.success {
         bail!("Could not generate the GREENTIC_NATS_JWT. Please rerun greentic init later and if the problem persists please contact support at support@greentic.ai.");

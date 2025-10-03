@@ -223,7 +223,10 @@ pub async fn validate(
                 .collect()
         })
         .unwrap_or_default();
-    let plugin_watcher = channel_mgr.clone().start_all(running_path.clone(), remote_channels).await?;
+    let plugin_watcher = channel_mgr
+        .clone()
+        .start_all(running_path.clone(), remote_channels, true)
+        .await?;
     for c in &used_channels {
         if let Some(wrapper) = channel_mgr.channel(c) {
             let req_cfg = wrapper.list_config_keys().await.required_keys;
@@ -420,6 +423,13 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    fn should_run_network_tests() -> bool {
+        matches!(
+            std::env::var("RUN_GREENTIC_NETWORK_TESTS").map(|v| v == "1"),
+            Ok(true)
+        )
+    }
+
     // ---------------------------------------------------------------------
     // helper: build a tiny YAML flow with a single node reference
     // ---------------------------------------------------------------------
@@ -541,6 +551,10 @@ connections:
     // --------- Pull a known working channel (ws) ---------------------------
     #[tokio::test]
     async fn test_pull_real_channel_ws() {
+        if !should_run_network_tests() {
+            eprintln!("skipping network test_pull_real_channel_ws");
+            return;
+        }
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_ws");
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
@@ -557,6 +571,10 @@ connections:
     // --------- Pull a known working tool (weather_api) ---------------------
     #[tokio::test]
     async fn test_pull_real_tool_weather_api() {
+        if !should_run_network_tests() {
+            eprintln!("skipping network test_pull_real_tool_weather_api");
+            return;
+        }
         let dir = tempdir().unwrap();
         let dest = dir.path().join("weather_api.wasm");
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
@@ -573,6 +591,10 @@ connections:
     // --------- Pull a missing tool -----------------------------------------
     #[tokio::test]
     async fn test_pull_missing_tool() {
+        if !should_run_network_tests() {
+            eprintln!("skipping network test_pull_missing_tool");
+            return;
+        }
         let dir = tempdir().unwrap();
         let dest = dir.path().join("nonexistent.wasm");
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(
@@ -592,6 +614,10 @@ connections:
     // --------- Pull a missing channel --------------------------------------
     #[tokio::test]
     async fn test_pull_missing_channel() {
+        if !should_run_network_tests() {
+            eprintln!("skipping network test_pull_missing_channel");
+            return;
+        }
         let dir = tempdir().unwrap();
         let dest = dir.path().join("channel_fake");
         let secrets_manager = SecretsManager(EnvSecretsManager::new(Some(

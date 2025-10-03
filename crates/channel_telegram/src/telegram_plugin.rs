@@ -541,7 +541,14 @@ impl PluginHandler for TelegramPlugin {
                 error: Some(error.into()),
             };
         } else {
-            let bot = self.bot.clone().expect("bot not set in telegram");
+            let Some(bot) = self.bot.clone() else {
+                let error = "bot not initialised for telegram";
+                error!(error);
+                return MessageOutResult {
+                    success: false,
+                    error: Some(error.into()),
+                };
+            };
             match tokio::spawn(async move {
                 send_telegram_to_list(&bot, &to_list, &msg.message.content).await
             })

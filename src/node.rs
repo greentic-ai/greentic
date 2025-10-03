@@ -311,7 +311,7 @@ impl JsonSchema for Node {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelOrigin {
     channel: String,
     reply_to: Option<String>,
@@ -564,6 +564,7 @@ impl NodeContext {
             None => None,
         }
     }
+
 }
 
 /// A shared registry you build once at startup:
@@ -1239,7 +1240,10 @@ pub mod tests {
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(), logging);
         let watcher = executor
-            .watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf())
+            .watch_tool_dir(
+                Path::new("./tests/wasm/mock_tool_watcher").to_path_buf(),
+                true,
+            )
             .await;
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());
@@ -1295,7 +1299,10 @@ pub mod tests {
         let logging = Logger(Box::new(OpenTelemetryLogger::new()));
         let executor = Executor::new(secrets.clone(), logging);
         let watcher = executor
-            .watch_tool_dir(Path::new("./tests/wasm/mock_tool_watcher").to_path_buf())
+            .watch_tool_dir(
+                Path::new("./tests/wasm/mock_tool_watcher").to_path_buf(),
+                true,
+            )
             .await;
         assert!(watcher.is_ok());
         let config_mgr = ConfigManager(MapConfigManager::new());

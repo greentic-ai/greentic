@@ -22,7 +22,12 @@ use crate::watcher::{DirectoryWatcher, WatchedType};
 #[async_trait]
 pub trait PluginEventHandler: Send + Sync + 'static {
     /// A plugin named `name` has just been loaded or re-loaded.
-    async fn plugin_added_or_reloaded(&self, name: &str, plugin: PluginHandle)
+    async fn plugin_added_or_reloaded(
+        &self,
+        name: &str,
+        plugin: PluginHandle,
+        path: Option<PathBuf>,
+    )
     -> Result<(), Error>;
 
     /// A plugin named `name` has just been removed.
@@ -54,11 +59,11 @@ impl PluginWatcher {
 
     /// Start watching the plugin directory for add/modify/remove events.
     /// Returns a JoinHandle for the spawned watcher task.
-    pub async fn watch(self: Arc<Self>) -> Result<DirectoryWatcher, Error> {
+    pub async fn watch(self: Arc<Self>, initial_scan: bool) -> Result<DirectoryWatcher, Error> {
         // We know `PluginWatcher` already implements `WatchedType`
         let dir = self.dir.clone();
         let watch_me: Arc<dyn WatchedType> = self.clone();
-        DirectoryWatcher::new(dir, watch_me, &["exe", ""], true).await
+        DirectoryWatcher::new(dir, watch_me, &["exe", ""], initial_scan, true).await
     }
 
     pub fn set_watcher(&mut self, watcher: DirectoryWatcher) {
@@ -92,7 +97,15 @@ impl PluginWatcher {
                 // entry.value() -> &Arc<Plugin>
                 let name = entry.key(); // borrow key
                 let plugin = entry.value(); // clone the Arc so you own one
-                if let Err(err) = handler.plugin_added_or_reloaded(name, plugin.clone()).await {
+                let path = self
+                    .path_to_name
+                    .iter()
+                    .find(|mapped| mapped.value() == name)
+                    .map(|mapped| PathBuf::from(mapped.key().as_str()));
+                if let Err(err) = handler
+                    .plugin_added_or_reloaded(name, plugin.clone(), path)
+                    .await
+                {
                     warn!("Could not load plugin {}: {:?}", name, err);
                 }
             }
@@ -100,10 +113,17 @@ impl PluginWatcher {
     }
 
     /// Notify all subscribers that `name` was added or reloaded.
-    async fn notify_add_or_reload(&self, name: &str, plugin: &PluginHandle) {
+    async fn notify_add_or_reload(
+        &self,
+        name: &str,
+        plugin: &PluginHandle,
+        path: Option<PathBuf>,
+    ) {
         let subs = self.subscribers.lock().unwrap().clone();
         for sub in subs {
-            let result = sub.plugin_added_or_reloaded(name, plugin.clone()).await;
+            let result = sub
+                .plugin_added_or_reloaded(name, plugin.clone(), path.clone())
+                .await;
             if result.is_err() {
                 warn!("Could not reload plugin {}", name);
             } else {
@@ -143,7 +163,8 @@ impl crate::watcher::WatchedType for PluginWatcher {
                 self.plugins.insert(name.to_string(), handle.clone());
                 let path_str = path.to_string_lossy().to_string();
                 self.path_to_name.insert(path_str, name.to_string());
-                self.notify_add_or_reload(&name, &handle).await;
+                self.notify_add_or_reload(&name, &handle, Some(path.to_path_buf()))
+                    .await;
             }
             Err(err) => {
                 error!("Could not load {:?} because {:?}", path, err);

@@ -40,7 +40,7 @@ pub async fn write_schema(
     let secrets = SecretsManager(TestSecretsManager::new());
     let executor = Executor::new(secrets.clone(), logger);
     executor
-        .watch_tool_dir(tools_dir)
+        .watch_tool_dir(tools_dir, true)
         .await
         .expect("Could not load tools");
     write_tools_schema(executor.clone(), &out_dir)?;
@@ -51,7 +51,10 @@ pub async fn write_schema(
     let channel_mgr = ChannelManager::new(config, secrets, "123".to_string(),store.clone(), log_config)
         .await
         .expect("Could not start channels");
-    let _ = channel_mgr.clone().start_all(channels_dir, remote_channels).await;
+    let _ = channel_mgr
+        .clone()
+        .start_all(channels_dir, remote_channels, true)
+        .await;
 
     for wrapper in channel_mgr.channels().iter() {
         let (name, schema) = wrapper
