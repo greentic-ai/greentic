@@ -101,7 +101,12 @@ impl App {
         secrets: SecretsManager,
         snapshot: Option<&RuntimeSnapshot>,
     ) -> Result<(), Error> {
-        let greentic_id = secrets.get_secret("GREENTIC_ID").await.unwrap().expect("Your GREENTIC_ID is not set. Please run 'greentic init' first.");
+        let greentic_id = secrets.get_secret("GREENTIC_ID").await.unwrap();
+        if greentic_id.is_none() {
+            warn!(
+                "GREENTIC_ID not set; skipping remote channel bootstrap. Run `greentic init` if you need remote plugins."
+            );
+        }
         let initial_scan = snapshot.is_none();
         // 1) Flow manager & initial load + watcher
         let store = InMemorySessionStore::new(session_timeout);
@@ -154,8 +159,14 @@ impl App {
 
         // Channel manager (internally starts its own PluginWatcher over channels_dir)
         let log_config = LogConfig::new(log_level, log_dir, otel_endpoint);
-        let channel_manager =
-            ChannelManager::new(config, secrets.clone(), greentic_id, store.clone(), log_config).await?;
+        let channel_manager = ChannelManager::new(
+            config,
+            secrets.clone(),
+            greentic_id.unwrap_or_default(),
+            store.clone(),
+            log_config,
+        )
+        .await?;
         self.channel_manager = Some(channel_manager.clone());
 
         // flow manager
@@ -297,10 +308,14 @@ impl App {
                 continue;
             }
             if channel.remote {
-                channel_manager
-                    .register_remote_snapshot_channel(channel.name.clone())
-                    .await?;
-            } else if let Some(path) = channel.plugin_path.clone() {
+                info!(
+                    "Skipping remote channel `{}` from snapshot; register manually if needed",
+                    channel.name
+                );
+                continue;
+            }
+
+            if let Some(path) = channel.plugin_path.clone() {
                 channel_manager
                     .register_local_snapshot_channel(channel.name.clone(), path)
                     .await?;

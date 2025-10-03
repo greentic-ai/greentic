@@ -3,7 +3,7 @@ use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
     apps::{App, cmd_init, download},
-    config::{ConfigManager, EnvConfigManager, MapConfigManager},
+    config::{ConfigManager, EnvConfigManager},
     flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file},
     logger::{FileTelemetry, Logger, init_tracing},
     schema::write_schema,
@@ -98,7 +98,7 @@ struct RunArgs {
 
     /// Allow to pass a saved state for ultra fast boot
     #[arg(long)]
-    greentic_state: Option<String>,
+    snapshot: Option<String>,
 }
 
 /// Emit JSON‐Schema for flows, tools and channels into `<root>/schemas`
@@ -162,10 +162,10 @@ async fn main() -> anyhow::Result<()> {
         log_level: "info".to_string(),
         otel_logs_endpoint: None,
         otel_events_endpoint: None,
-        greentic_state: None,
+        snapshot: None,
     })) {
         Commands::Run(args) => {
-            let state: Option<PathBuf> = match args.greentic_state {
+            let state: Option<PathBuf> = match args.snapshot {
                 Some(state_string) => {
                     // does the state exist
                     let state = PathBuf::from(state_string.clone());
@@ -365,14 +365,14 @@ async fn run(
     otel_events_endpoint: Option<String>,
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
-    greentic_state: Option<PathBuf>,
+    snapshot: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let snapshot_data = if let Some(ref path) = greentic_state {
+    let snapshot_data = if let Some(ref path) = snapshot {
         info!("Loading runtime snapshot from {}", path.display());
         let file = File::open(path)
             .with_context(|| format!("Failed to open snapshot at {}", path.display()))?;
         Some(
-            bincode::deserialize_from::<_, RuntimeSnapshot>(BufReader::new(file)).with_context(
+            serde_cbor::from_reader::<RuntimeSnapshot, _>(BufReader::new(file)).with_context(
                 || format!("Failed to deserialize snapshot at {}", path.display()),
             )?,
         )
@@ -588,7 +588,7 @@ async fn export_runtime(
     {
         let mut file = File::create(&destination)
             .with_context(|| format!("failed to create export file {}", destination.display()))?;
-        bincode::serialize_into(&mut file, &snapshot).with_context(|| {
+        serde_cbor::to_writer(&mut file, &snapshot).with_context(|| {
             format!(
                 "failed to serialize snapshot to {}",
                 destination.display()
@@ -672,7 +672,7 @@ mod tests {
 
         let file = File::open(export_path).unwrap();
         let snapshot: RuntimeSnapshot =
-            bincode::deserialize_from(BufReader::new(file)).expect("snapshot should deserialize");
+            serde_cbor::from_reader(BufReader::new(file)).expect("snapshot should deserialize");
         assert_eq!(snapshot.version, RuntimeSnapshot::CURRENT_VERSION);
     }
 
@@ -697,7 +697,7 @@ mod tests {
 
         let file = File::open(snapshot_path).unwrap();
         let snapshot: RuntimeSnapshot =
-            bincode::deserialize_from(BufReader::new(file)).expect("snapshot should deserialize");
+            serde_cbor::from_reader(BufReader::new(file)).expect("snapshot should deserialize");
 
         let flows_dir = root.join("flows/running");
         let channels_dir = root.join("plugins/channels/running");

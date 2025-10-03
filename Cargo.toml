@@ -92,7 +92,7 @@ data-encoding = "2.9.0"
 sha2 = "0.10.9"
 nkeys = "0.4.5"
 base64 = "0.22.1"
-bincode = "1.3"
+serde_cbor = "0.11"
 
 [dev-dependencies]
 url = "2.5.4"

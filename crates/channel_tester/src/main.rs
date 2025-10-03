@@ -6,6 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use anyhow::{anyhow, Context};
 use chrono::Utc;
 use dashmap::DashMap;
 use notify::{
@@ -323,10 +324,34 @@ impl TesterPlugin {
             .await
             .expect("could not read test file");
         let tf: TestFile = serde_yaml_bw::from_str(&yaml)?;
-        let dest =
-            Path::new("./greentic/flows/running").join(Path::new(&tf.ygtc).file_name().unwrap());
-        fs::create_dir_all("./greentic/flows/running").await?;
-        fs::copy(&tf.ygtc, &dest).await?;
+
+        let source_candidate = PathBuf::from(&tf.ygtc);
+        let greentic_dir = self
+            .config
+            .get("GREENTIC_DIR")
+            .map(|e| PathBuf::from(e.value().as_str()))
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let source = if source_candidate.is_absolute() {
+            source_candidate
+        } else if fs::metadata(&source_candidate).await.is_ok() {
+            source_candidate
+        } else {
+            greentic_dir.join(&source_candidate)
+        };
+
+        fs::metadata(&source)
+            .await
+            .with_context(|| format!("Flow file not found at {}", source.display()))?;
+
+        let flows_running = PathBuf::from("./greentic/flows/running");
+        fs::create_dir_all(&flows_running).await?;
+        let dest = flows_running.join(
+            source
+                .file_name()
+                .ok_or_else(|| anyhow!("Flow file missing name: {}", source.display()))?,
+        );
+        fs::copy(&source, &dest).await?;
 
         let mut results = Vec::new();
         for test in tf.tests {
@@ -607,10 +632,7 @@ connections:
         let mut plugin = TesterPlugin::default();
         let params = InitParams {
             version: VERSION.to_string(),
-            config: vec![(
-                "GREENTIC_DIR".to_string(),
-                tmp.path().to_string_lossy().into(),
-            )],
+            config: vec![("GREENTIC_DIR".to_string(), "./greentic".to_string())],
             secrets: vec![],
             log_level: LogLevel::Info,
             log_dir: Some("./logs".to_string()),
@@ -701,7 +723,10 @@ connections:
         let mut plugin = TesterPlugin::default();
         let params = InitParams {
             version: VERSION.to_string(),
-            config: vec![("GREENTIC_DIR".to_string(), "./greentic".to_string())],
+            config: vec![(
+                "GREENTIC_DIR".to_string(),
+                tmp.path().to_string_lossy().into(),
+            )],
             secrets: vec![],
             log_level: LogLevel::Info,
             log_dir: Some("./logs".to_string()),
