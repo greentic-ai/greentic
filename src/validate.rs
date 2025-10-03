@@ -78,7 +78,11 @@ pub async fn validate(
     secrets_manager: SecretsManager,
     config_manager: ConfigManager,
 ) -> Result<()> {
-    let greentic_id = secrets_manager.get_secret("GREENTIC_ID").await.unwrap().expect("GREENTIC_ID was not set in secrets. Please run 'greentic init' first.");
+    let greentic_id = secrets_manager
+        .get_secret("GREENTIC_ID")
+        .await
+        .unwrap()
+        .expect("GREENTIC_ID was not set in secrets. Please run 'greentic init' first.");
     // ---------------------------------------------------------------------
     // 0) Read + parse YAML / JSON
     // ---------------------------------------------------------------------
@@ -147,7 +151,6 @@ pub async fn validate(
         log_config,
     )
     .await?;
-    
 
     // ---------------------------------------------------------------------
     // 3) Inspect flow JSON to collect all tool & channel IDs ---------------
@@ -155,7 +158,12 @@ pub async fn validate(
     let mut used_tools: HashSet<(String, String)> = HashSet::new();
     let mut used_channels = HashSet::new();
 
-    collect_ids(&flow_value, &mut used_tools, &mut used_channels, &channel_mgr);
+    collect_ids(
+        &flow_value,
+        &mut used_tools,
+        &mut used_channels,
+        &channel_mgr,
+    );
 
     let handle = secrets_manager.0.get("GREENTIC_TOKEN").expect("GREENTIC_TOKEN not set, please run 'greentic init' one time before calling 'greentic validate'");
     let token = secrets_manager.0.reveal(handle).await.unwrap().unwrap();
@@ -215,8 +223,9 @@ pub async fn validate(
 
     // 3c) channel required keys --------------------------------------------
     // then start watching
-    let remote_channels = flow_value.get("remote_channels")            // Option<&Value>
-        .and_then(|v| v.as_array())              // Option<&Vec<Value>>
+    let remote_channels = flow_value
+        .get("remote_channels") // Option<&Value>
+        .and_then(|v| v.as_array()) // Option<&Vec<Value>>
         .map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -415,7 +424,7 @@ fn collect_ids(
 mod tests {
     use crate::{
         config::MapConfigManager,
-        secret::{TestSecretsManager, EnvSecretsManager},
+        secret::{EnvSecretsManager, TestSecretsManager},
     };
 
     use super::*;

@@ -882,7 +882,7 @@ mod tests {
             debug_process::DebugProcessNode,
             manager::{BuiltInProcess, ProcessManager},
         },
-        secret::{TestSecretsManager, EnvSecretsManager, SecretsManager},
+        secret::{EnvSecretsManager, SecretsManager, TestSecretsManager},
     };
 
     use super::*;
@@ -1621,8 +1621,7 @@ connections:
         );
 
         let mock = ManagedChannel::new(
-            PluginWrapper::new(plugin, store.clone(), log_config, Some(path.to_path_buf()))
-                .await,
+            PluginWrapper::new(plugin, store.clone(), log_config, Some(path.to_path_buf())).await,
             None,
             None,
         );

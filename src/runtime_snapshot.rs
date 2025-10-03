@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
-
 /// Serializable representation of the loaded runtime components.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSnapshot {
@@ -83,7 +82,8 @@ impl From<&ProcessWrapper> for ProcessSnapshot {
             name: wrapper.name().to_string(),
             description: wrapper.description(),
             wasm_path: Some(instance.wasm_path),
-            parameters_json: serde_json::to_string(&wrapper.parameters()).unwrap_or_else(|_| "{}".into()),
+            parameters_json: serde_json::to_string(&wrapper.parameters())
+                .unwrap_or_else(|_| "{}".into()),
         }
     }
 }

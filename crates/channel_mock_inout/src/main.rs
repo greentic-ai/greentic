@@ -9,9 +9,9 @@ use channel_plugin::{
     message::{
         CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult,
         InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams,
-        MessageOutResult, NameResult, Participant, StateResult, StopResult, PLUGIN_VERSION,
+        MessageOutResult, NameResult, PLUGIN_VERSION, Participant, StateResult, StopResult,
     },
-    plugin_runtime::{run, HasStore, PluginHandler},
+    plugin_runtime::{HasStore, PluginHandler, run},
 };
 use dashmap::DashMap;
 use tracing::info;

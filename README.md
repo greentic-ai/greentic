@@ -94,8 +94,9 @@ Flows link these components into one cohesive automation. Your digital workers a
 ### Agents
 
 - **Agents** are LLM-powered nodes capable of autonomous decision-making.
-- The first type of agent is oLlama. More types coming soon.
-- Coming Soon: Agents understand context, use memory, trigger tools, and follow goals.
+- `openai` calls the OpenAI Chat Completions API. Provide an `OPENAI_KEY` secret and optionally `OPENAI_URL` to target a compatible endpoint.
+- `ollama` connects to a local Ollama server for chat, generation, and embeddings. Configure the model, mode, and tools per flow.
+- Coming Soon: richer memory, tool orchestration, and goal-following behaviours.
 
 👉 [Learn more about Agents](./docs/AGENTS.md)
 
@@ -332,4 +333,3 @@ Distributed under the **MIT License**. See [LICENSE](./LICENSE) for details.
 ---
 
 Thank you for checking out **Greentic.AI**—let’s build the future of automation together! 🚀
-

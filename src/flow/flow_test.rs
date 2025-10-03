@@ -19,7 +19,7 @@ mod tests {
     use crate::process::debug_process::DebugProcessNode;
     use crate::process::manager::{BuiltInProcess, ProcessManager};
     use crate::process::script_process::ScriptProcessNode;
-    use crate::secret::{TestSecretsManager, SecretsManager};
+    use crate::secret::{SecretsManager, TestSecretsManager};
     use async_trait::async_trait;
     use channel_plugin::message::{MessageContent, MessageDirection, Participant};
     use dashmap::DashMap;
@@ -684,10 +684,15 @@ mod tests {
         let secrets = SecretsManager(TestSecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
-        let channel_mgr =
-            ChannelManager::new(cfg_mgr, secrets.clone(), "123".to_string(), store, LogConfig::default())
-                .await
-                .expect("channel manager");
+        let channel_mgr = ChannelManager::new(
+            cfg_mgr,
+            secrets.clone(),
+            "123".to_string(),
+            store,
+            LogConfig::default(),
+        )
+        .await
+        .expect("channel manager");
         let tempdir = TempDir::new().unwrap();
         let process_mgr = ProcessManager::new(tempdir.path()).unwrap();
         let ctx = NodeContext::new(
@@ -731,10 +736,15 @@ mod tests {
         let secrets = SecretsManager(TestSecretsManager::new());
         let cfg_mgr = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
-        let channel_mgr =
-            ChannelManager::new(cfg_mgr, secrets.clone(),"123".to_string(), store, LogConfig::default())
-                .await
-                .expect("channel manager");
+        let channel_mgr = ChannelManager::new(
+            cfg_mgr,
+            secrets.clone(),
+            "123".to_string(),
+            store,
+            LogConfig::default(),
+        )
+        .await
+        .expect("channel manager");
         let state = InMemoryState::new();
         // Provide participant JSON in state
         let part_json = json!({ "id": "p1", "display_name": "Alice", "channel_specific_id": "a1" });

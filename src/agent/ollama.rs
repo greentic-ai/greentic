@@ -12,6 +12,7 @@ use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::models::ModelOptions;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tracing::{error, info};
@@ -22,6 +23,8 @@ use url::Url;
 // --------------------------------------------------------------------------------
 
 /// `OllamaAgent` invokes a local Ollama server via `ollama_rs`.  
+/// If OLLAMA_URL is set in config then another url is used.
+/// If OLLAMA_KEY is used then a Bearer token is used and https is assumed.
 /// It supports plain generation (`Generate`), embeddings (`Embed`), chat mode (`Chat`) and tool calls (`ToolCall`).
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +57,53 @@ pub struct OllamaAgent {
     pub tool_nodes: Option<DashMap<String, Box<ToolNode>>>,
 }
 
+impl OllamaAgent {
+    fn build_ollama_client(&self, context: &NodeContext) -> Ollama {
+        let chosen_url: Option<Url> = self
+        .ollama_url
+        .clone()
+        .or_else(|| {
+            // Works whether get_config returns Option<String> or Option<&str>
+            context
+                .get_config("OLLAMA_URL")
+                .as_deref()                 // Option<&str>
+                .and_then(|s| Url::parse(s).ok())
+        });
+
+        let mut headers = HeaderMap::new();
+        if let Some(key) = context.get_config("OLLAMA_KEY") {
+            let val = format!("Bearer {}", key);
+            if let Ok(hv) = HeaderValue::from_str(&val) {
+                headers.insert(AUTHORIZATION, hv);
+            }
+        }
+
+        match chosen_url {
+            Some(url) => {
+                // If the URL has a port, use it. Otherwise fall back to default constructor.
+                if let Some(port) = url.port() {
+                    if headers.is_empty() {
+                        Ollama::new(url, port)
+                    } else {
+                        let client = reqwest::Client::builder()
+                        .default_headers(headers)
+                        .timeout(std::time::Duration::from_secs(60))
+                        .build()
+                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("reqwest client: {e}"))))
+                        .expect("Could not create client for ollama");
+
+                        ollama_rs::Ollama::new_with_client(url, port, client)
+                    }
+                } else {
+                    // Many users will pass e.g. http://host:11434 — if no port, use default()
+                    Ollama::default()
+                }
+            }
+            None => Ollama::default(),
+        }
+    }
+}
+
 impl PartialEq for OllamaAgent {
     fn eq(&self, other: &Self) -> bool {
         self.task == other.task
@@ -81,15 +131,7 @@ impl NodeType for OllamaAgent {
     #[tracing::instrument(name = "ollama_agent_node_process", skip(self, context))]
     async fn process(&self, input: Message, context: &mut NodeContext) -> Result<NodeOut, NodeErr> {
         // 1) build our client
-        let mut client = if let Some(url) = &self.ollama_url {
-            if let Some(port) = url.port() {
-                Ollama::new(url.clone(), port)
-            } else {
-                Ollama::default()
-            }
-        } else {
-            Ollama::default()
-        };
+        let mut client = self.build_ollama_client(context);
 
         match self.mode.unwrap_or_default() {
             OllamaMode::Embed => return self.do_embed(client, &input).await,

@@ -1076,8 +1076,8 @@ impl FlowManager {
 
     pub fn remote_channels(&self) -> Vec<String> {
         let mut all_remote_channels = HashSet::new();
-        for (_,flow) in self.flows.clone(){
-            for channel in flow.remote_channels(){
+        for (_, flow) in self.flows.clone() {
+            for channel in flow.remote_channels() {
                 all_remote_channels.insert(channel);
             }
         }
@@ -1124,7 +1124,14 @@ impl FlowManager {
         let watcher = FlowWatcher {
             manager: self.clone(),
         };
-        DirectoryWatcher::new(dir, Arc::new(watcher), &["jgtc", "ygtc"], initial_scan, true).await
+        DirectoryWatcher::new(
+            dir,
+            Arc::new(watcher),
+            &["jgtc", "ygtc"],
+            initial_scan,
+            true,
+        )
+        .await
     }
 
     pub fn load_flow_from_file(path: &str) -> Result<Flow, FlowError> {

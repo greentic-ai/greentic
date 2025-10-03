@@ -3,7 +3,11 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use channel_plugin::{
     message::{
-        make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, Event, EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata, MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams, MessageOutResult, NameResult, Participant, StateResult, StopResult, TextMessage, PLUGIN_VERSION
+        CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, Event,
+        EventType, FileMetadata, HealthResult, InitResult, ListKeysResult, MediaMetadata,
+        MediaType, MessageContent, MessageDirection, MessageInResult, MessageOutParams,
+        MessageOutResult, NameResult, PLUGIN_VERSION, Participant, StateResult, StopResult,
+        TextMessage, make_session_key,
     },
     plugin_helpers::{build_user_joined_event, get_user_joined_left_events},
     plugin_runtime::{HasStore, PluginHandler},

@@ -1,15 +1,4 @@
 // src/app.rs
-use anyhow::{anyhow, bail, Context, Error, Result};
-use std::{
-    fs::{self, File},
-    io::{Write, stdin, stdout},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-use data_encoding::BASE32_NOPAD;
-use sha2::{Sha256, Digest};
-use nkeys::KeyPair;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use crate::{
     channel::{
         manager::{ChannelManager, IncomingHandler},
@@ -25,14 +14,25 @@ use crate::{
     validate::validate,
     watcher::DirectoryWatcher,
 };
+use anyhow::{Context, Error, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use channel_plugin::message::LogLevel;
+use data_encoding::BASE32_NOPAD;
+use nkeys::KeyPair;
 use reqwest::{
     Client,
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::{
+    fs::{self, File},
+    io::{Write, stdin, stdout},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
@@ -194,10 +194,7 @@ impl App {
 
         let flow_mgr_clone = flow_mgr.clone();
         self.flow_task = Some(tokio::spawn(async move {
-            if let Err(e) = flow_mgr_clone
-                .watch_flow_dir(flows_dir, initial_scan)
-                .await
-            {
+            if let Err(e) = flow_mgr_clone.watch_flow_dir(flows_dir, initial_scan).await {
                 error!("Flow‐watcher error: {:?}", e);
             }
         }));
@@ -268,9 +265,7 @@ impl App {
                         .into_iter()
                         .map(|desc| format!("{desc:?}"))
                         .collect(),
-                    parameters_json: wrapper
-                        .parameters()
-                        .to_string(),
+                    parameters_json: wrapper.parameters().to_string(),
                 }
             })
             .collect();
@@ -294,7 +289,9 @@ impl App {
         let mut processes = ProcessSnapshot::from_manager(process_manager);
         processes.sort_by(|a, b| a.name.cmp(&b.name));
 
-        Ok(RuntimeSnapshot::from_parts(flows, tools, channels, processes))
+        Ok(RuntimeSnapshot::from_parts(
+            flows, tools, channels, processes,
+        ))
     }
 
     async fn load_snapshot(&self, snapshot: &RuntimeSnapshot) -> Result<(), Error> {
@@ -364,8 +361,7 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     ];
     for d in &dirs {
         let path = root.join(d);
-        fs::create_dir_all(&path)
-            .context(format!("failed to create {}", path.display()))?;
+        fs::create_dir_all(&path).context(format!("failed to create {}", path.display()))?;
     }
 
     // 2) write config/.env
@@ -496,7 +492,9 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     let hash = Sha256::digest(token);
     let short_hash = &hash[..8];
     let greentic_id = BASE32_NOPAD.encode(short_hash).to_lowercase();
-    let result = secrets_manager.add_secret("GREENTIC_ID", &greentic_id).await;
+    let result = secrets_manager
+        .add_secret("GREENTIC_ID", &greentic_id)
+        .await;
     if result.is_err() {
         bail!(
             "Could not add the GREENTIC_ID={} to the secrets. Please add the token manually. Not doing so will not enable you to connect to Greentic remote plugins.",
@@ -507,7 +505,9 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     let user_kp = KeyPair::new_user();
     let public_key = user_kp.public_key(); // e.g., "UXXXXXX..."
     let seed = user_kp.seed()?;
-    let result = secrets_manager.add_secret("GREENTIC_NATS_SEED", &seed).await; 
+    let result = secrets_manager
+        .add_secret("GREENTIC_NATS_SEED", &seed)
+        .await;
     if result.is_err() {
         bail!(
             "Could not add the GREENTIC_NATS_SEED={} to the secrets. Please add the token manually. Not doing so will not enable you to connect to Greentic remote plugins.",
@@ -546,7 +546,9 @@ pub async fn cmd_init(root: PathBuf) -> Result<(), Error> {
     info!("JWT success: {}", jwt_response.success);
 
     if !jwt_response.success {
-        bail!("Could not generate the GREENTIC_NATS_JWT. Please rerun greentic init later and if the problem persists please contact support at support@greentic.ai.");
+        bail!(
+            "Could not generate the GREENTIC_NATS_JWT. Please rerun greentic init later and if the problem persists please contact support at support@greentic.ai."
+        );
     }
 
     let jwt_token = jwt_response.jwt_token.unwrap();
@@ -703,7 +705,6 @@ struct ProofJson<'a> {
     token: &'a str,
     signature: String,
 }
-
 
 #[derive(Serialize)]
 struct JwtRequest<'a> {

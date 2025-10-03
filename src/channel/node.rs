@@ -173,7 +173,7 @@ impl ChannelsRegistry {
 
 #[async_trait]
 impl IncomingHandler for ChannelsRegistry {
-    async fn handle_incoming(&self, mut msg: ChannelMessage,  session_store: SessionStore) {
+    async fn handle_incoming(&self, mut msg: ChannelMessage, session_store: SessionStore) {
         // exactly your old `handle_incoming` logic:
         if let Some(nodes) = self.map.get(&msg.channel) {
             if nodes.is_empty() {
@@ -200,8 +200,17 @@ impl IncomingHandler for ChannelsRegistry {
                         for flow in session_flows.iter() {
                             for node in session_nodes.iter() {
                                 if self.find_if_node_in_flow(flow, node) {
-                                    if let Some(channel) = self.channel_manager.channel(&msg.channel) {
-                                        handle_message(flow, node, channel.remote(), &msg, &self.flow_manager).await;
+                                    if let Some(channel) =
+                                        self.channel_manager.channel(&msg.channel)
+                                    {
+                                        handle_message(
+                                            flow,
+                                            node,
+                                            channel.remote(),
+                                            &msg,
+                                            &self.flow_manager,
+                                        )
+                                        .await;
                                         routed = true;
                                     }
                                 }
@@ -214,7 +223,8 @@ impl IncomingHandler for ChannelsRegistry {
                                 session_flows, session_nodes
                             );
                             for node in nodes.iter().cloned() {
-                                node.handle_message(node.remote, &msg, &self.flow_manager).await;
+                                node.handle_message(node.remote, &msg, &self.flow_manager)
+                                    .await;
                             }
                         }
                     } else {
@@ -223,7 +233,8 @@ impl IncomingHandler for ChannelsRegistry {
                             msg.channel
                         );
                         for node in nodes.iter().cloned() {
-                            node.handle_message(node.remote, &msg, &self.flow_manager).await;
+                            node.handle_message(node.remote, &msg, &self.flow_manager)
+                                .await;
                         }
                     }
                 } else {
@@ -350,9 +361,15 @@ mod tests {
         let logger = Logger(Box::new(OpenTelemetryLogger::new()));
         let exec = Executor::new(secrets.clone(), logger);
         let config = ConfigManager(MapConfigManager::new());
-        let cm = ChannelManager::new(config, secrets.clone(), "123".to_string(), store.clone(), LogConfig::default())
-            .await
-            .expect("could not create channel manager");
+        let cm = ChannelManager::new(
+            config,
+            secrets.clone(),
+            "123".to_string(),
+            store.clone(),
+            LogConfig::default(),
+        )
+        .await
+        .expect("could not create channel manager");
         let pm = ProcessManager::dummy();
         let fm = FlowManager::new(store.clone(), exec, cm.clone(), pm.clone(), secrets);
         let reg = ChannelsRegistry::new(fm, cm).await;

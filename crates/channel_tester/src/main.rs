@@ -5,8 +5,8 @@ use std::{
     time::Duration,
 };
 
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
-use anyhow::{anyhow, Context};
 use chrono::Utc;
 use dashmap::DashMap;
 use notify::{
@@ -28,9 +28,9 @@ use channel_plugin::{
     message::{
         CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult,
         InitParams, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams,
-        MessageOutResult, NameResult, StateResult, StopResult, PLUGIN_VERSION,
+        MessageOutResult, NameResult, PLUGIN_VERSION, StateResult, StopResult,
     },
-    plugin_runtime::{run, HasStore, PluginHandler},
+    plugin_runtime::{HasStore, PluginHandler, run},
 };
 
 #[derive(Deserialize, Serialize)]

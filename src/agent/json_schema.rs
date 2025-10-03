@@ -1,4 +1,7 @@
-//! src/ollama_schema.rs
+//! Custom schemars integration for the Ollama agent.
+//!
+//! This keeps the generated JSON schema stable so we can expose the agent in
+//! configuration UIs without relying on auto-derived defaults.
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use std::borrow::Cow;
 

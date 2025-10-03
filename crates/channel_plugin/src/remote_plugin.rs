@@ -102,7 +102,9 @@ pub fn validate_channel_data_with_caps(
     caps: &ChannelCapabilities,
     channel_data: &serde_json::Value,
 ) -> Result<(), String> {
-    let Some(desc) = &caps.channel_data_schema else { return Ok(()); };
+    let Some(desc) = &caps.channel_data_schema else {
+        return Ok(());
+    };
 
     // JsonSchemaDescriptor is your enum (Inline/Ref). For tests we only handle Inline.
     let schema_val = match desc {
@@ -164,11 +166,7 @@ pub fn subject_for_out(msg: &ChannelMessage) -> String {
 
 /// If producer didn’t set one, derive an idempotency key deterministically.
 pub fn idempotency_key_or_hash(msg: &ChannelMessage) -> String {
-    if let Some(v) = msg
-        .metadata
-        .get("idempotency_key")
-        .and_then(|v| v.as_str())
-    {
+    if let Some(v) = msg.metadata.get("idempotency_key").and_then(|v| v.as_str()) {
         return v.to_string();
     }
     use sha2::{Digest, Sha256};
@@ -182,8 +180,8 @@ pub fn idempotency_key_or_hash(msg: &ChannelMessage) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::message::{Participant,MessageDirection,ChannelMessage, JsonSchemaDescriptor};
     use super::*;
+    use crate::message::{ChannelMessage, JsonSchemaDescriptor, MessageDirection, Participant};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
@@ -225,7 +223,11 @@ mod tests {
         let s = serde_json::to_string(&evt).unwrap();
         let back: AdminEvent = serde_json::from_str(&s).unwrap();
         match back {
-            AdminEvent::UpsertSubscription { tenant, channel, params } => {
+            AdminEvent::UpsertSubscription {
+                tenant,
+                channel,
+                params,
+            } => {
                 assert_eq!(tenant, "acme");
                 assert_eq!(channel, "ms_teams");
                 assert_eq!(params["team_id"], "t1");
@@ -338,21 +340,19 @@ mod tests {
 
         async fn admin(&self, evt: AdminEvent) -> anyhow::Result<serde_json::Value> {
             match evt {
-                AdminEvent::UpsertSubscription { tenant, channel, .. } => {
-                    Ok(json!({"ok":true,"tenant":tenant,"channel":channel}))
-                }
-                AdminEvent::DeleteSubscription { tenant, channel, .. } => {
-                    Ok(json!({"ok":true,"deleted":true,"tenant":tenant,"channel":channel}))
-                }
+                AdminEvent::UpsertSubscription {
+                    tenant, channel, ..
+                } => Ok(json!({"ok":true,"tenant":tenant,"channel":channel})),
+                AdminEvent::DeleteSubscription {
+                    tenant, channel, ..
+                } => Ok(json!({"ok":true,"deleted":true,"tenant":tenant,"channel":channel})),
                 AdminEvent::UpsertToken { tenant, key, .. } => {
                     Ok(json!({"ok":true,"token_key":key,"tenant":tenant}))
                 }
                 AdminEvent::CancelToken { tenant, key } => {
                     Ok(json!({"ok":true,"cancelled":true,"token_key":key,"tenant":tenant}))
                 }
-                AdminEvent::GetCapabilities => {
-                    Ok(json!(self.caps))
-                }
+                AdminEvent::GetCapabilities => Ok(json!(self.caps)),
             }
         }
 
@@ -362,7 +362,9 @@ mod tests {
                 .unwrap()
                 .push((tenant.to_string(), key.to_string()));
             // pretend we rescheduled 30 minutes from now
-            Ok(RefreshOutcome::Rescheduled(SystemTime::now() + Duration::from_secs(1800)))
+            Ok(RefreshOutcome::Rescheduled(
+                SystemTime::now() + Duration::from_secs(1800),
+            ))
         }
     }
 

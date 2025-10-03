@@ -134,7 +134,10 @@ impl ProcessManager {
     /// On removal, it will call `unregister_process(...)`.
     ///
     /// Returns the spawned task handle.  You can keep it if you want to `await` or abort later.
-    pub async fn watch_process_dir(&mut self, initial_scan: bool) -> Result<DirectoryWatcher, Error> {
+    pub async fn watch_process_dir(
+        &mut self,
+        initial_scan: bool,
+    ) -> Result<DirectoryWatcher, Error> {
         // Create a new watcher (initially empty).  It knows how to load/unload WASM Plugin executors.
         let watcher = ProcessWatcher::new();
         self.watcher = Some(watcher.clone());

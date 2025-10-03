@@ -1,9 +1,33 @@
+//! Shared serde/schemars types that describe how agents hand structured
+//! responses back to Greentic flows.
+//!
+//! The [`AgentReply`] enum is the contract LLM-backed nodes must fulfill. Each
+//! agent, whether built on OpenAI, Ollama, or something custom, should return a
+//! JSON object that deserialises into this type so the runtime can route
+//! messages and mutate session state.
+
 use schemars::JsonSchema;
 
 use serde::{Deserialize, Serialize};
 
 use crate::flow::state::StateValue;
 
+/// Structured response returned by an agent node.
+///
+/// The runtime serialises this enum so LLMs can be instructed to respond with
+/// predictable shapes. A minimal success reply looks like:
+///
+/// ```json
+/// {
+///   "Success": {
+///     "payload": "{\"text\":\"hi\"}",
+///     "connections": ["next_node"]
+///   }
+/// }
+/// ```
+///
+/// For follow-up questions agents must emit the [`NeedMoreInfo`] variant to
+/// tell the engine to send a reply back to the originating channel.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 //#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentReply {
@@ -23,6 +47,7 @@ pub enum AgentReply {
 }
 // ---------------------------------------------------
 
+/// Key/value information the agent wants to persist in the session state.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StateKeyValue {
     pub key: String,
@@ -31,6 +56,7 @@ pub struct StateKeyValue {
 }
 
 // ---------------------------------------------------
+/// Declares the runtime data type for a [`StateKeyValue`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ValueType {
@@ -43,11 +69,27 @@ pub enum ValueType {
 
 // ---------------------------------------------------
 
+/// Payload emitted when an agent needs the user to supply additional
+/// information.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FollowUpPayload {
     pub text: String,
 }
 
+/// Convert a raw string returned by an LLM into a strongly-typed
+/// [`StateValue`].
+///
+/// ```rust
+/// use greentic::agent::agent_reply_schema::{parse_state_value, ValueType};
+/// use greentic::flow::state::StateValue;
+///
+/// let parsed = parse_state_value(&ValueType::Integer, "42").unwrap();
+/// assert_eq!(parsed, StateValue::Integer(42));
+/// ```
+///
+/// The parser performs minimal validation: malformed integers, floats, or
+/// booleans return a descriptive `Err` string so the caller can surface useful
+/// diagnostics.
 pub fn parse_state_value(value_type: &ValueType, raw: &str) -> Result<StateValue, String> {
     match value_type {
         ValueType::String => Ok(StateValue::String(raw.to_string())),

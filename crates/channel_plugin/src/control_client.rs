@@ -1,19 +1,30 @@
-use std::sync::Arc;
-use serde_json::{json, Value};
-use tokio::sync::{Mutex, RwLock};
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream};
-use uuid::Uuid;
-use tokio::net::TcpStream;
-use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 use crate::{
-    jsonrpc::{Id, Request, Response}, message::{
-        CapabilitiesResult, ChannelCapabilities, ChannelState, DrainResult, HealthResult, InitParams, InitResult, ListKeysResult, NameResult, StateResult, StopResult, WaitUntilDrainedParams, WaitUntilDrainedResult
-    }, plugin_actor::Method, plugin_runtime::PluginHandler, pubsub_client::PubSubPlugin
+    jsonrpc::{Id, Request, Response},
+    message::{
+        CapabilitiesResult, ChannelCapabilities, ChannelState, DrainResult, HealthResult,
+        InitParams, InitResult, ListKeysResult, NameResult, StateResult, StopResult,
+        WaitUntilDrainedParams, WaitUntilDrainedResult,
+    },
+    plugin_actor::Method,
+    plugin_runtime::PluginHandler,
+    pubsub_client::PubSubPlugin,
 };
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use futures_util::{
+    SinkExt, StreamExt,
+    stream::{SplitSink, SplitStream},
+};
 use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, RwLock};
 use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as WsMessage,
+};
+use uuid::Uuid;
 
 #[async_trait]
 pub trait ControlClientType: Send + Sync + 'static {
@@ -48,12 +59,11 @@ impl ControlClient {
         Ok(ControlClient::WebSocket(client))
     }
 
-    pub async fn new_pubsub(router_id: String, greentic_id: String ) -> Result<Self> {
+    pub async fn new_pubsub(router_id: String, greentic_id: String) -> Result<Self> {
         let pubsub = PubSubPlugin::new(router_id, greentic_id);
         let client = PubSubControlClient::new(pubsub);
         Ok(ControlClient::PubSub(client))
     }
-
 }
 
 #[async_trait]
@@ -154,7 +164,9 @@ pub struct PubSubControlClient {
 
 impl PubSubControlClient {
     pub fn new(plugin: PubSubPlugin) -> Self {
-        Self { plugin: Arc::new(RwLock::new(plugin)) }
+        Self {
+            plugin: Arc::new(RwLock::new(plugin)),
+        }
     }
 }
 
@@ -211,7 +223,7 @@ impl ControlClientType for PubSubControlClient {
     }
 
     async fn wait_until_drained(&self, timeout_ms: u64) -> anyhow::Result<WaitUntilDrainedResult> {
-        let params = WaitUntilDrainedParams{ timeout_ms };
+        let params = WaitUntilDrainedParams { timeout_ms };
         let plugin = self.plugin.read().await;
         Ok(plugin.wait_until_drained(params).await)
     }
@@ -320,7 +332,6 @@ impl ControlClientType for RpcControlClient {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct WebSocketControlClient {
     sender: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>>>,
@@ -376,11 +387,13 @@ impl ControlClientType for WebSocketControlClient {
     }
 
     async fn init(&self, p: InitParams) -> Result<InitResult> {
-        self.call(Method::Init, Some(serde_json::to_value(p)?)).await
+        self.call(Method::Init, Some(serde_json::to_value(p)?))
+            .await
     }
 
     async fn start(&self, p: InitParams) -> Result<InitResult> {
-        self.call(Method::Start, Some(serde_json::to_value(p)?)).await
+        self.call(Method::Start, Some(serde_json::to_value(p)?))
+            .await
     }
 
     async fn drain(&self) -> Result<DrainResult> {
@@ -414,18 +427,21 @@ impl ControlClientType for WebSocketControlClient {
     }
 
     async fn wait_until_drained(&self, t_ms: u64) -> Result<WaitUntilDrainedResult> {
-        self.call(Method::WaitUntilDrained, Some(json!({ "timeout_ms": t_ms })))
-            .await
+        self.call(
+            Method::WaitUntilDrained,
+            Some(json!({ "timeout_ms": t_ms })),
+        )
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_tungstenite::{accept_async, tungstenite::protocol::Message as WsMessage};
-    use tokio::net::TcpListener;
     use futures_util::{SinkExt, StreamExt};
     use std::net::SocketAddr;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::protocol::Message as WsMessage};
 
     #[tokio::test]
     async fn test_websocket_control_client_name_call() {
@@ -470,7 +486,7 @@ mod tests {
                 let req: serde_json::Value = serde_json::from_str(&txt).unwrap();
                 if req["method"] == "state" {
                     let id = req["id"].clone();
-                    let state = StateResult{
+                    let state = StateResult {
                         state: ChannelState::RUNNING,
                     };
                     let response = json!({

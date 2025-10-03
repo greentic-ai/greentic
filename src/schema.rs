@@ -11,9 +11,9 @@ use crate::{
     channel::manager::ChannelManager,
     config::{ConfigManager, MapConfigManager},
     executor::Executor,
-    flow::{manager::Flow, session::{InMemorySessionStore}},
+    flow::{manager::Flow, session::InMemorySessionStore},
     logger::{FileTelemetry, LogConfig, Logger, OpenTelemetryLogger},
-    secret::{TestSecretsManager, SecretsManager},
+    secret::{SecretsManager, TestSecretsManager},
 };
 
 /// The entry point invoked by `main.rs` for `Commands::Schema`.
@@ -48,9 +48,15 @@ pub async fn write_schema(
     // 4) channel schemas
     let config = ConfigManager(MapConfigManager::new());
     let store = InMemorySessionStore::new(10);
-    let channel_mgr = ChannelManager::new(config, secrets, "123".to_string(),store.clone(), log_config)
-        .await
-        .expect("Could not start channels");
+    let channel_mgr = ChannelManager::new(
+        config,
+        secrets,
+        "123".to_string(),
+        store.clone(),
+        log_config,
+    )
+    .await
+    .expect("Could not start channels");
     let _ = channel_mgr
         .clone()
         .start_all(channels_dir, remote_channels, true)

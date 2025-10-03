@@ -15,7 +15,6 @@ use serde_json::Value;
 // -----------------------------------------------------------------------------
 pub const PLUGIN_VERSION: &str = "0.3";
 
-
 /// Trace context propagated end‑to‑end for observability.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TraceInfo {
@@ -166,7 +165,9 @@ impl ChannelMessage {
     pub fn get_event_payload(&self) -> anyhow::Result<&serde_json::Map<String, Value>> {
         for content in &self.content {
             if let MessageContent::Event { event } = content {
-                return event.event_payload.as_object()
+                return event
+                    .event_payload
+                    .as_object()
                     .ok_or_else(|| anyhow::anyhow!("event_payload is not an object"));
             }
         }
@@ -185,9 +186,13 @@ pub struct EventType {
     pub payload_schema: Option<Value>, // the json schema for the event_payload
 }
 
-impl EventType{
-    pub fn new(event_type:String, description: String, payload_schema: Option<Value>) -> Self{
-        Self{event_type,description,payload_schema}
+impl EventType {
+    pub fn new(event_type: String, description: String, payload_schema: Option<Value>) -> Self {
+        Self {
+            event_type,
+            description,
+            payload_schema,
+        }
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -253,7 +258,7 @@ pub struct TextMessage {
 // -----------------------------------------------------------------------------
 
 /// High‑level status values for plugins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default,)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ChannelState {
     STARTING,
@@ -465,7 +470,10 @@ mod tests {
     }
 
     // Validates `data` against the inline schema inside capabilities (if present)
-    fn validate_with_caps(caps: &ChannelCapabilities, data: &serde_json::Value) -> Result<(), String> {
+    fn validate_with_caps(
+        caps: &ChannelCapabilities,
+        data: &serde_json::Value,
+    ) -> Result<(), String> {
         let Some(desc) = &caps.channel_data_schema else {
             return Ok(());
         };
@@ -486,7 +494,9 @@ mod tests {
 
     #[test]
     fn message_content_text_roundtrip() {
-        let mc = MessageContent::Text { text: "hello".into() };
+        let mc = MessageContent::Text {
+            text: "hello".into(),
+        };
         let ser = serde_json::to_string(&mc).unwrap();
         let de: MessageContent = serde_json::from_str(&ser).unwrap();
         assert_eq!(mc, de);
@@ -550,7 +560,9 @@ mod tests {
             from: dummy_participant(),
             to: vec![],
             timestamp: now_iso(),
-            content: vec![MessageContent::Text { text: "Hello".into() }],
+            content: vec![MessageContent::Text {
+                text: "Hello".into(),
+            }],
             thread_id: Some("teams-thread-123".into()),
             reply_to_id: None,
             // No schema attached here—should still serialize/deserialize
@@ -576,7 +588,9 @@ mod tests {
             from: dummy_participant(),
             to: vec![],
             timestamp: now_iso(),
-            content: vec![MessageContent::Text { text: "Ping".into() }],
+            content: vec![MessageContent::Text {
+                text: "Ping".into(),
+            }],
             thread_id: None,
             reply_to_id: None,
             metadata: serde_json::Value::Null,

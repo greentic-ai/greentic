@@ -1,4 +1,4 @@
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use channel_plugin::message::LogLevel;
 use clap::{Args, Parser, Subcommand};
 use greentic::{
@@ -6,13 +6,13 @@ use greentic::{
     config::{ConfigManager, EnvConfigManager},
     flow_commands::{deploy_flow_file, move_flow_file, validate_flow_file},
     logger::{FileTelemetry, Logger, init_tracing},
+    runtime_snapshot::RuntimeSnapshot,
     schema::write_schema,
     secret::{EnvSecretsManager, SecretsManager},
-    runtime_snapshot::RuntimeSnapshot,
 };
-use std::{env, fs, fs::File, io::BufReader, path::PathBuf, process};
-use tokio::time::{sleep, Duration};
 use std::panic::catch_unwind;
+use std::{env, fs, fs::File, io::BufReader, path::PathBuf, process};
+use tokio::time::{Duration, sleep};
 use tracing::dispatcher;
 use tracing::{error, info};
 
@@ -172,13 +172,16 @@ async fn main() -> anyhow::Result<()> {
                     match state.exists() {
                         true => Some(state),
                         false => {
-                            let error = format!("Greentic state does not exist. Please make sure {} points to a valid greentic state. Use greentic export to get a valid state.",state_string.clone());
+                            let error = format!(
+                                "Greentic state does not exist. Please make sure {} points to a valid greentic state. Use greentic export to get a valid state.",
+                                state_string.clone()
+                            );
                             error!(error);
                             println!("{}", error);
                             process::exit(-1);
-                        },
+                        }
                     }
-                },
+                }
                 None => None,
             };
             run(
@@ -372,9 +375,8 @@ async fn run(
         let file = File::open(path)
             .with_context(|| format!("Failed to open snapshot at {}", path.display()))?;
         Some(
-            serde_cbor::from_reader::<RuntimeSnapshot, _>(BufReader::new(file)).with_context(
-                || format!("Failed to deserialize snapshot at {}", path.display()),
-            )?,
+            serde_cbor::from_reader::<RuntimeSnapshot, _>(BufReader::new(file))
+                .with_context(|| format!("Failed to deserialize snapshot at {}", path.display()))?,
         )
     } else {
         None
@@ -420,14 +422,14 @@ async fn run(
             tools_dir.clone(),
             processes_dir.clone(),
             config_manager,
-        logger,
-        convert_level(log_level),
-        log_dir,
-        otel_logs_endpoint,
-        secrets_manager,
-        snapshot_data.as_ref(),
-    )
-    .await;
+            logger,
+            convert_level(log_level),
+            log_dir,
+            otel_logs_endpoint,
+            secrets_manager,
+            snapshot_data.as_ref(),
+        )
+        .await;
     if result.is_err() {
         error!(
             "Failed to bootstrap greentic runtime: {:#}",
@@ -528,9 +530,7 @@ async fn export_runtime(
                 Logger(Box::new(greentic::logger::OpenTelemetryLogger::new()))
             }
             Err(_) => {
-                println!(
-                    "Tracing initialization panicked; falling back to basic logger"
-                );
+                println!("Tracing initialization panicked; falling back to basic logger");
                 Logger(Box::new(greentic::logger::OpenTelemetryLogger::new()))
             }
         }
@@ -566,7 +566,10 @@ async fn export_runtime(
 
     let base_dir = export_dir.unwrap_or_else(|| root.join("imports"));
     fs::create_dir_all(&base_dir).with_context(|| {
-        format!("failed to create exports directory at {}", base_dir.display())
+        format!(
+            "failed to create exports directory at {}",
+            base_dir.display()
+        )
     })?;
 
     let file_name = export_name.unwrap_or_else(|| {
@@ -589,10 +592,7 @@ async fn export_runtime(
         let mut file = File::create(&destination)
             .with_context(|| format!("failed to create export file {}", destination.display()))?;
         serde_cbor::to_writer(&mut file, &snapshot).with_context(|| {
-            format!(
-                "failed to serialize snapshot to {}",
-                destination.display()
-            )
+            format!("failed to serialize snapshot to {}", destination.display())
         })?;
     }
 
@@ -616,11 +616,12 @@ fn convert_level(level: String) -> LogLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use greentic::secret::TestSecretsManager;
     use greentic::apps::App;
     use greentic::logger::Logger;
     use greentic::logger::OpenTelemetryLogger;
+    use greentic::secret::TestSecretsManager;
     use tempfile::TempDir;
+    use greentic::config::MapConfigManager;
 
     fn create_test_layout(root: &PathBuf) {
         let dirs = [

@@ -19,13 +19,16 @@ use tokio_tungstenite::{accept_async, tungstenite::Message as WsMsg};
 
 use channel_plugin::{
     message::{
-        make_session_key, CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult, HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult, MessageOutParams, MessageOutResult, NameResult, StateResult, StopResult, PLUGIN_VERSION
+        CapabilitiesResult, ChannelCapabilities, ChannelMessage, ChannelState, DrainResult,
+        HealthResult, InitResult, ListKeysResult, MessageContent, MessageInResult,
+        MessageOutParams, MessageOutResult, NameResult, PLUGIN_VERSION, StateResult, StopResult,
+        make_session_key,
     },
     plugin_helpers::{
         build_text_message, build_user_joined_event, build_user_left_event,
         get_user_joined_left_events,
     },
-    plugin_runtime::{run, HasStore, PluginHandler},
+    plugin_runtime::{HasStore, PluginHandler, run},
 };
 use tracing::{debug, error, info};
 

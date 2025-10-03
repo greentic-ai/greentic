@@ -27,8 +27,7 @@ pub trait PluginEventHandler: Send + Sync + 'static {
         name: &str,
         plugin: PluginHandle,
         path: Option<PathBuf>,
-    )
-    -> Result<(), Error>;
+    ) -> Result<(), Error>;
 
     /// A plugin named `name` has just been removed.
     async fn plugin_removed(&self, name: &str) -> Result<(), Error>;
@@ -113,12 +112,7 @@ impl PluginWatcher {
     }
 
     /// Notify all subscribers that `name` was added or reloaded.
-    async fn notify_add_or_reload(
-        &self,
-        name: &str,
-        plugin: &PluginHandle,
-        path: Option<PathBuf>,
-    ) {
+    async fn notify_add_or_reload(&self, name: &str, plugin: &PluginHandle, path: Option<PathBuf>) {
         let subs = self.subscribers.lock().unwrap().clone();
         for sub in subs {
             let result = sub

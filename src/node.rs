@@ -1,7 +1,16 @@
 use crate::{
-    agent::manager::BuiltInAgent, channel::manager::ChannelManager, executor::{
-        exports::wasix::mcp::router::{Content, ResourceContents}, Executor
-    }, flow::manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate}, mapper::Mapper, message::Message, process::manager::{BuiltInProcess, ProcessManager}, secret::SecretsManager, util::extension_from_mime
+    agent::manager::BuiltInAgent,
+    channel::manager::ChannelManager,
+    executor::{
+        Executor,
+        exports::wasix::mcp::router::{Content, ResourceContents},
+    },
+    flow::manager::{ChannelNodeConfig, ResolveError, TemplateContext, ValueOrTemplate},
+    mapper::Mapper,
+    message::Message,
+    process::manager::{BuiltInProcess, ProcessManager},
+    secret::SecretsManager,
+    util::extension_from_mime,
 };
 use crate::{
     channel::node::ChannelNode,
@@ -564,7 +573,6 @@ impl NodeContext {
             None => None,
         }
     }
-
 }
 
 /// A shared registry you build once at startup:
@@ -965,7 +973,7 @@ pub mod tests {
     use crate::flow::state::{InMemoryState, StateValue};
     use crate::logger::{LogConfig, Logger, OpenTelemetryLogger};
     use crate::message::Message;
-    use crate::secret::{TestSecretsManager, SecretsManager};
+    use crate::secret::{SecretsManager, TestSecretsManager};
     use serde_json::json;
     use std::path::Path;
     use tempfile::TempDir;

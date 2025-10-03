@@ -259,9 +259,10 @@ mod tests {
 
         //let handle = tokio::spawn(watch_dir(dir.clone(), Arc::new(watcher), &["txt"], false));
         let watcher_arc: Arc<dyn WatchedType> = Arc::new(watcher);
-        let dir_watcher = DirectoryWatcher::new(dir.clone(), watcher_arc.clone(), &["txt"], true, false)
-            .await
-            .unwrap();
+        let dir_watcher =
+            DirectoryWatcher::new(dir.clone(), watcher_arc.clone(), &["txt"], true, false)
+                .await
+                .unwrap();
 
         // Give time for watcher to process
         sleep(Duration::from_millis(300)).await;

@@ -6,7 +6,7 @@ use channel_plugin::{
     channel_client::ChannelClient,
     control_client::ControlClient,
     message::{ChannelMessage, ChannelState},
-    plugin_actor::{spawn_rpc_plugin, PluginHandle},
+    plugin_actor::{PluginHandle, spawn_rpc_plugin},
     plugin_helpers::PluginError,
 };
 use dashmap::DashMap;
@@ -169,7 +169,7 @@ impl ChannelManager {
         msg: ChannelMessage,
     ) -> Result<(), PluginError> {
         if let Some(mut wrapper) = self.channels.get_mut(name) {
-            wrapper.wrapper.send_message(msg).await            
+            wrapper.wrapper.send_message(msg).await
         } else {
             Err(PluginError::Other(format!("channel `{}` not loaded", name)))
         }
@@ -194,13 +194,8 @@ impl ChannelManager {
         let client = ChannelClient::new_pubsub(name.clone(), greentic_id.clone()).await?;
         let control = ControlClient::new_pubsub(name.clone(), greentic_id).await?;
         let plugin = PluginHandle::new(client, control).await;
-        let wrapper = PluginWrapper::new(
-            plugin,
-            self.session_store(),
-            self.log_config.clone(),
-            None,
-        )
-        .await;
+        let wrapper =
+            PluginWrapper::new(plugin, self.session_store(), self.log_config.clone(), None).await;
         let managed = ManagedChannel::new(wrapper, None, None);
         self.register_channel(name.clone(), managed).await?;
         self.start_channel(&name).await?;
@@ -242,11 +237,11 @@ impl ChannelManager {
     ) -> Result<DirectoryWatcher, Error> {
         // Load all the remote channels
         for channel in remote_channels {
-            if let Err(err) = self
-                .register_remote_snapshot_channel(channel.clone())
-                .await
-            {
-                error!("Cannot create remote channel `{}` because {:?}", channel, err);
+            if let Err(err) = self.register_remote_snapshot_channel(channel.clone()).await {
+                error!(
+                    "Cannot create remote channel `{}` because {:?}",
+                    channel, err
+                );
                 return Err(err);
             }
         }
@@ -325,13 +320,8 @@ impl PluginEventHandler for ChannelManager {
 
         // Wrap + configure:
 
-        let wrapper = PluginWrapper::new(
-            plugin,
-            self.store.clone(),
-            self.log_config.clone(),
-            path,
-        )
-        .await;
+        let wrapper =
+            PluginWrapper::new(plugin, self.store.clone(), self.log_config.clone(), path).await;
 
         // 3) Start it **on its own thread** with its own runtime
         let mut wrapper_cloned = wrapper.clone();
@@ -549,18 +539,18 @@ pub mod tests {
         let config = ConfigManager(MapConfigManager::new());
         let store = InMemorySessionStore::new(10);
 
-        let mgr = ChannelManager::new(config, secrets, "123".to_string(), store.clone(), LogConfig::default())
-            .await
-            .unwrap();
+        let mgr = ChannelManager::new(
+            config,
+            secrets,
+            "123".to_string(),
+            store.clone(),
+            LogConfig::default(),
+        )
+        .await
+        .unwrap();
 
         let (_mock, plugin_handle) = spawn_mock_handle().await;
-        let wrapper = PluginWrapper::new(
-            plugin_handle,
-            store,
-            LogConfig::default(),
-            None,
-        )
-        .await;
+        let wrapper = PluginWrapper::new(plugin_handle, store, LogConfig::default(), None).await;
         mgr.register_channel(
             "foo".into(),
             ManagedChannel {

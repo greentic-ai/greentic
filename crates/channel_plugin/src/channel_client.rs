@@ -8,11 +8,11 @@ use async_trait::async_trait;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 #[async_trait]
 pub trait ChannelClientType: Send + Sync {
@@ -40,7 +40,7 @@ impl ChannelClient {
         ChannelClient::Rpc(RpcChannelClient::new(tx, rx_src))
     }
 
-    pub async fn new_pubsub(router_id: String, greentic_id: String ) -> Result<Self> {
+    pub async fn new_pubsub(router_id: String, greentic_id: String) -> Result<Self> {
         let pubsub = PubSubPlugin::new(router_id, greentic_id);
         let client = PubSubChannelClient::new(pubsub);
         Ok(ChannelClient::PubSub(client))
@@ -66,7 +66,7 @@ impl ChannelClientType for ChannelClient {
         match self {
             ChannelClient::Rpc(client) => client.next_inbound().await,
             ChannelClient::PubSub(client) => client.next_inbound().await,
-            ChannelClient::WebSocket(client) => client.next_inbound().await, 
+            ChannelClient::WebSocket(client) => client.next_inbound().await,
         }
     }
 }
@@ -77,24 +77,22 @@ pub struct PubSubChannelClient {
 }
 
 impl PubSubChannelClient {
-    pub fn new(
-        plugin: PubSubPlugin,
-    ) -> Self {
-        Self {
-            plugin,
-        }
+    pub fn new(plugin: PubSubPlugin) -> Self {
+        Self { plugin }
     }
 }
 
 #[async_trait]
 impl ChannelClientType for PubSubChannelClient {
     async fn send(&mut self, msg: ChannelMessage) -> Result<()> {
-        let params = MessageOutParams{ message: msg };
+        let params = MessageOutParams { message: msg };
         let result = self.plugin.send_message(params).await;
         if result.success {
             Ok(())
         } else {
-            Err(anyhow::anyhow!(result.error.unwrap_or_else(|| "Unknown error sending message".to_string())))
+            Err(anyhow::anyhow!(result.error.unwrap_or_else(|| {
+                "Unknown error sending message".to_string()
+            })))
         }
     }
 
@@ -177,7 +175,6 @@ impl ChannelClientType for RpcChannelClient {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct WebSocketChannelClient {
     sender: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>>>,
@@ -218,9 +215,9 @@ impl ChannelClientType for WebSocketChannelClient {
                         Err(_) => continue, // skip malformed
                     }
                 }
-                Some(Ok(_)) => continue, // skip non-text
+                Some(Ok(_)) => continue,     // skip non-text
                 Some(Err(_)) => return None, // connection error
-                None => return None,        // closed
+                None => return None,         // closed
             }
         }
     }
@@ -234,7 +231,7 @@ mod tests {
 
     use super::*;
     use serde_json::json;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     /// Helper that builds a RpcChannelClient wired to in-memory channels
     fn make_client() -> (
@@ -293,10 +290,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_websocket_send_and_receive() {
-        use tokio_tungstenite::{accept_async, tungstenite::protocol::Message as WsMessage};
-        use tokio::net::TcpListener;
-        use std::net::SocketAddr;
         use futures_util::{SinkExt, StreamExt};
+        use std::net::SocketAddr;
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::{accept_async, tungstenite::protocol::Message as WsMessage};
 
         // Bind a TCP listener for a local test server
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -335,10 +332,11 @@ mod tests {
         client.send(test_message.clone()).await.unwrap();
 
         // Await echoed response
-        let response = tokio::time::timeout(std::time::Duration::from_secs(2), client.next_inbound())
-            .await
-            .expect("timed out")
-            .expect("stream closed");
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(2), client.next_inbound())
+                .await
+                .expect("timed out")
+                .expect("stream closed");
 
         assert_eq!(response, test_message);
     }
@@ -357,17 +355,21 @@ mod tests {
         sleep(Duration::from_secs(1));
         // Step 1: Dummy plugin that always returns success
         let mut plugin = PubSubPlugin::new("test_router".into(), "test_greentic".into());
-        let config = vec![("PUBSUB_NATS_URL".to_string(),"nats://localhost:4222".to_string())];
+        let config = vec![(
+            "PUBSUB_NATS_URL".to_string(),
+            "nats://localhost:4222".to_string(),
+        )];
         let secrets = vec![
-            ("GREENTIC_NATS_SEED".to_string(),"123".to_string()),
-            ("GREENTIC_SECRETS_DIR".to_string(),"./test".to_string())];
-        let p = InitParams{
+            ("GREENTIC_NATS_SEED".to_string(), "123".to_string()),
+            ("GREENTIC_SECRETS_DIR".to_string(), "./test".to_string()),
+        ];
+        let p = InitParams {
             version: "123".to_string(),
-            config, 
-            secrets, 
-            log_level: LogLevel::Info, 
-            log_dir: Some("./test".to_string()), 
-            otel_endpoint: None 
+            config,
+            secrets,
+            log_level: LogLevel::Info,
+            log_dir: Some("./test".to_string()),
+            otel_endpoint: None,
         };
         let result = plugin.start(p).await;
         assert!(result.success);
@@ -399,5 +401,4 @@ mod tests {
         let _ = plugin.stop().await;
         let _ = nats_process.kill();
     }
-
 }

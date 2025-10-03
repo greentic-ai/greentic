@@ -1,4 +1,6 @@
+use crate::watcher::{DirectoryWatcher, WatchedType};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use dotenvy::Error as DotenvError;
 use rand::{RngCore, rng};
 use serde::ser::SerializeStruct;
@@ -10,8 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{error, info};
-use dashmap::DashMap;
-use crate::watcher::{DirectoryWatcher, WatchedType};
 
 #[async_trait::async_trait]
 pub trait SecretsManagerType: Send + Sync {
@@ -57,7 +57,7 @@ impl SecretsManager {
         self.0.delete_secret(key).await
     }
 
-    pub async fn get_secret(&self, key: &str)  -> Result<Option<String>, SecretsError> {
+    pub async fn get_secret(&self, key: &str) -> Result<Option<String>, SecretsError> {
         let handle = self.0.get(key);
         match handle {
             Some(handle) => self.0.reveal(handle).await,
@@ -176,7 +176,8 @@ impl EnvSecretsManager {
                     mgr: Arc::clone(&mgr),
                 };
                 tokio::spawn(async move {
-                    if let Err(e) = DirectoryWatcher::new(path, Arc::new(handler), &[], true, false).await
+                    if let Err(e) =
+                        DirectoryWatcher::new(path, Arc::new(handler), &[], true, false).await
                     {
                         tracing::error!("dotenv watch_dir failed: {}", e);
                     }
@@ -373,7 +374,6 @@ impl Clone for TestSecretsManager {
         }
     }
 }
-    
 
 #[async_trait::async_trait]
 impl SecretsManagerType for TestSecretsManager {

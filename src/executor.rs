@@ -1,7 +1,7 @@
 use crate::executor::exports::wasix::mcp::router::{Annotations, Content, ResourceContents, Role};
 use crate::executor::wasix::mcp::secrets_store;
 use crate::logger::Logger;
-use crate::secret::{TestSecretsManager, SecretsManager};
+use crate::secret::{SecretsManager, TestSecretsManager};
 use crate::watcher::{DirectoryWatcher, WatchedType};
 use anyhow::{Context, Error, Result, bail};
 use async_trait::async_trait;
@@ -668,7 +668,7 @@ pub mod tests {
     use super::*;
     use crate::executor::exports::wasix::mcp::router::{self, Content, TextContent};
     use crate::logger::OpenTelemetryLogger;
-    use crate::secret::{TestSecretsManager, EnvSecretsManager};
+    use crate::secret::{EnvSecretsManager, TestSecretsManager};
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
