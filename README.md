@@ -291,6 +291,89 @@ greentic flow stop <flow-id>
 
 ---
 
+## ⚡ Fast-start Snapshots
+
+Snapshots capture the current runtime state (flows, tools, channels, processes, configs, secrets).
+
+### Create a snapshot
+
+```bash
+greentic snapshot export --file out.gtc
+```
+
+### Validate a snapshot locally
+
+```bash
+greentic snapshot validate --file out.gtc --json
+```
+
+### Take & validate the current workspace in one go
+
+```bash
+greentic snapshot validate --take --json
+```
+
+### ValidationPlan schema
+
+`greentic snapshot validate` returns a `ValidationPlan` JSON payload:
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | bool | All requirements satisfied |
+| `summary` | string | Human-readable summary |
+| `missing_tools` | Vec<Req> | Required tools missing |
+| `missing_channels` | Vec<Req> | Required channels missing |
+| `missing_processes` | Vec<Req> | Required processes missing |
+| `missing_agents` | Vec<Req> | Required agents missing |
+| `missing_configs` | Vec<ConfigReq> | Config entries to set |
+| `missing_secrets` | Vec<SecretReq> | Secrets to provide |
+| `suggested_commands` | SuggestedCommands | Helper commands (install/config/secret) |
+
+Each `Req` contains `{ id, version_req }`. `ConfigReq` and `SecretReq` include an `owner` (`kind` = tool/channel/process/agent) and optional `description`.
+
+### Example response with missing items
+
+```json
+{
+  "ok": false,
+  "summary": "2 items missing (1 tool, 1 secret)",
+  "missing_tools": [
+    { "id": "mcp.weather", "version_req": null }
+  ],
+  "missing_channels": [],
+  "missing_processes": [],
+  "missing_agents": [],
+  "missing_configs": [],
+  "missing_secrets": [
+    {
+      "key": "WEATHERAPI_KEY",
+      "owner": { "kind": "tool", "id": "weather_api" },
+      "description": "WeatherAPI.com API key for weather_api tool"
+    }
+  ],
+  "suggested_commands": {
+    "install": [
+      "greentic store install tool mcp.weather@latest"
+    ],
+    "config": [],
+    "secret": [
+      "greentic secrets add WEATHERAPI_KEY <VALUE>  # tool:weather_api"
+    ]
+  }
+}
+```
+
+### Exit codes
+
+* `0` – plan is OK
+* `2` – items missing (ideal for CI/CD)
+
+---
+
+## 🔭 Coming Soon
+
+---
+
 ## 🔭 Coming Soon
 
 - v0.3.0 oAuth MCP Tools - connect to any SaaS

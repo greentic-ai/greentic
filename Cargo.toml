@@ -32,6 +32,9 @@ exclude = [
   "crates/channel_msgraph/*",
 ]
 
+[features]
+default = []
+snapshot-http = ["axum"]
 [workspace]
 members = [
     "crates/channel_plugin", 
@@ -93,6 +96,7 @@ sha2 = "0.10.9"
 nkeys = "0.4.5"
 base64 = "0.22.1"
 serde_cbor = "0.11"
+axum = { version = "0.7", optional = true, features = ["json"] }
 
 [dev-dependencies]
 url = "2.5.4"

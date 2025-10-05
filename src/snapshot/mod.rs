@@ -443,9 +443,9 @@ fn dedup_requirements<T: Ord>(items: &mut Vec<T>) {
 }
 
 #[derive(Default, Clone)]
-struct ComponentRequirements {
-    configs: Vec<RequirementEntry>,
-    secrets: Vec<RequirementEntry>,
+pub(crate) struct ComponentRequirements {
+    pub(crate) configs: Vec<RequirementEntry>,
+    pub(crate) secrets: Vec<RequirementEntry>,
 }
 
 fn merge_agent_requirements(
@@ -1024,7 +1024,7 @@ fn parse_owner(raw: &str) -> Option<RequirementOwner> {
     Some(RequirementOwner::new(kind, id.to_string()))
 }
 
-fn tool_default_requirements(tool_id: &str) -> ComponentRequirements {
+pub(crate) fn tool_default_requirements(tool_id: &str) -> ComponentRequirements {
     match tool_id {
         "weather_api" => ComponentRequirements {
             configs: Vec::new(),

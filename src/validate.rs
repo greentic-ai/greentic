@@ -36,6 +36,7 @@ use crate::{
     flow::{manager::Flow, session::InMemorySessionStore},
     logger::{LogConfig, Logger, OpenTelemetryLogger},
     secret::SecretsManager,
+    snapshot::tool_default_requirements,
 };
 use anyhow::{Context, Result, anyhow};
 use channel_plugin::message::LogLevel;
@@ -268,6 +269,16 @@ pub async fn validate(
                     report
                         .missing_secrets
                         .push((secret.name, secret.description));
+                }
+            }
+        }
+
+        let defaults = tool_default_requirements(name);
+        for entry in defaults.secrets {
+            if entry.required && secrets_manager.0.get(&entry.key).is_none() {
+                let desc = entry.description.clone().unwrap_or_default();
+                if !report.missing_secrets.iter().any(|(k, _)| k == &entry.key) {
+                    report.missing_secrets.push((entry.key, desc));
                 }
             }
         }
