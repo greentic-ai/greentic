@@ -9,9 +9,13 @@ use greentic::{
     runtime_snapshot::RuntimeSnapshot,
     schema::write_schema,
     secret::{EnvSecretsManager, SecretsManager},
+    snapshot::{
+        EnvironmentState, GreenticSnapshot, load_snapshot, manifest_from_runtime, plan_from,
+    },
 };
 use std::panic::catch_unwind;
 use std::{env, fs, fs::File, io::BufReader, path::PathBuf, process};
+use tempfile::{TempDir, tempdir};
 use tokio::time::{Duration, sleep};
 use tracing::dispatcher;
 use tracing::{error, info};
@@ -49,6 +53,9 @@ enum Commands {
 
     /// Handle export
     Export(ExportArgs),
+
+    /// Validate snapshot requirements against the current environment
+    Snapshot(SnapshotArgs),
 }
 
 #[derive(Args, Debug)]
@@ -78,6 +85,47 @@ struct ExportArgs {
     /// Optional output directory (defaults to ./greentic/imports)
     #[arg(long)]
     dir: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct SnapshotArgs {
+    #[command(subcommand)]
+    command: SnapshotCommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum SnapshotCommands {
+    /// Validate a snapshot manifest against the local environment
+    Validate(SnapshotValidateArgs),
+
+    /// Print the manifest embedded in a snapshot file
+    Manifest(SnapshotManifestArgs),
+}
+
+#[derive(Args, Debug)]
+struct SnapshotValidateArgs {
+    /// Optional path to a .gtc snapshot; mutually exclusive with --take
+    #[arg(long)]
+    file: Option<PathBuf>,
+
+    /// Output machine-readable JSON only
+    #[arg(long)]
+    json: bool,
+
+    /// Export a fresh snapshot before validating
+    #[arg(long)]
+    take: bool,
+}
+
+#[derive(Args, Debug)]
+struct SnapshotManifestArgs {
+    /// Path to a .gtc snapshot file
+    #[arg(long)]
+    file: PathBuf,
+
+    /// Emit compact JSON (defaults to pretty JSON)
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -218,6 +266,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::Snapshot(args) => match args.command {
+            SnapshotCommands::Validate(validate_args) => {
+                handle_snapshot_validate(root, secrets_manager, config_manager, validate_args)
+                    .await?;
+                Ok(())
+            }
+            SnapshotCommands::Manifest(manifest_args) => {
+                handle_snapshot_manifest(manifest_args)?;
+                Ok(())
+            }
+        },
         Commands::Schema(args) => {
             let out_dir = root.join("schemas");
             let log_level = args.log_level;
@@ -588,10 +647,15 @@ async fn export_runtime(
         })?;
     }
 
+    let manifest = manifest_from_runtime(&snapshot);
+    let payload =
+        serde_cbor::to_vec(&snapshot).context("failed to serialize runtime snapshot payload")?;
+    let wrapped = GreenticSnapshot { manifest, payload };
+
     {
         let mut file = File::create(&destination)
             .with_context(|| format!("failed to create export file {}", destination.display()))?;
-        serde_cbor::to_writer(&mut file, &snapshot).with_context(|| {
+        serde_cbor::to_writer(&mut file, &wrapped).with_context(|| {
             format!("failed to serialize snapshot to {}", destination.display())
         })?;
     }
@@ -599,6 +663,77 @@ async fn export_runtime(
     app.shutdown().await;
 
     Ok(destination)
+}
+
+async fn handle_snapshot_validate(
+    root: PathBuf,
+    secrets_manager: SecretsManager,
+    config_manager: ConfigManager,
+    args: SnapshotValidateArgs,
+) -> anyhow::Result<()> {
+    let SnapshotValidateArgs { file, json, take } = args;
+
+    if file.is_some() && take {
+        bail!("--file and --take cannot be used together");
+    }
+
+    let mut temp_dir_holder: Option<TempDir> = None;
+
+    let snapshot_path = if let Some(path) = file {
+        path
+    } else if take {
+        let temp_dir =
+            tempdir().context("failed to create temporary directory for snapshot export")?;
+        let export_path = export_runtime(
+            root,
+            secrets_manager,
+            config_manager,
+            None,
+            Some(temp_dir.path().to_path_buf()),
+        )
+        .await
+        .context("failed to export runtime before validation")?;
+        temp_dir_holder = Some(temp_dir);
+        export_path
+    } else {
+        bail!("Provide --file <path> or use --take to export a fresh snapshot before validation");
+    };
+
+    let snapshot = load_snapshot(&snapshot_path)
+        .with_context(|| format!("Failed to load snapshot at {}", snapshot_path.display()))?;
+
+    let env_state = EnvironmentState::discover();
+    let plan = plan_from(&snapshot.manifest, &env_state);
+
+    let output = if json {
+        serde_json::to_string(&plan)?
+    } else {
+        serde_json::to_string_pretty(&plan)?
+    };
+
+    println!("{}", output);
+
+    drop(temp_dir_holder);
+
+    if plan.ok {
+        Ok(())
+    } else {
+        process::exit(2);
+    }
+}
+
+fn handle_snapshot_manifest(args: SnapshotManifestArgs) -> anyhow::Result<()> {
+    let snapshot = load_snapshot(&args.file)
+        .with_context(|| format!("Failed to load snapshot at {}", args.file.display()))?;
+
+    let output = if args.json {
+        serde_json::to_string(&snapshot.manifest)?
+    } else {
+        serde_json::to_string_pretty(&snapshot.manifest)?
+    };
+
+    println!("{}", output);
+    Ok(())
 }
 
 fn convert_level(level: String) -> LogLevel {
@@ -617,11 +752,12 @@ fn convert_level(level: String) -> LogLevel {
 mod tests {
     use super::*;
     use greentic::apps::App;
+    use greentic::config::MapConfigManager;
     use greentic::logger::Logger;
     use greentic::logger::OpenTelemetryLogger;
     use greentic::secret::TestSecretsManager;
+    use greentic::snapshot::GreenticSnapshot;
     use tempfile::TempDir;
-    use greentic::config::MapConfigManager;
 
     fn create_test_layout(root: &PathBuf) {
         let dirs = [
@@ -672,8 +808,10 @@ mod tests {
         assert!(export_path.exists());
 
         let file = File::open(export_path).unwrap();
-        let snapshot: RuntimeSnapshot =
+        let wrapper: GreenticSnapshot =
             serde_cbor::from_reader(BufReader::new(file)).expect("snapshot should deserialize");
+        let snapshot: RuntimeSnapshot =
+            serde_cbor::from_slice(&wrapper.payload).expect("payload should deserialize");
         assert_eq!(snapshot.version, RuntimeSnapshot::CURRENT_VERSION);
     }
 
@@ -697,8 +835,10 @@ mod tests {
         .expect("export should succeed");
 
         let file = File::open(snapshot_path).unwrap();
-        let snapshot: RuntimeSnapshot =
+        let wrapper: GreenticSnapshot =
             serde_cbor::from_reader(BufReader::new(file)).expect("snapshot should deserialize");
+        let snapshot: RuntimeSnapshot =
+            serde_cbor::from_slice(&wrapper.payload).expect("payload should deserialize");
 
         let flows_dir = root.join("flows/running");
         let channels_dir = root.join("plugins/channels/running");

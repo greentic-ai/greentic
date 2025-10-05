@@ -131,6 +131,14 @@ impl PluginWrapper {
         self.secret_keys.clone()
     }
 
+    pub fn config_keys_snapshot(&self) -> ListKeysResult {
+        self.config_keys.clone()
+    }
+
+    pub fn secret_keys_snapshot(&self) -> ListKeysResult {
+        self.secret_keys.clone()
+    }
+
     pub async fn state(&self) -> ChannelState {
         self.inner.state().await.expect("Could not get state")
     }

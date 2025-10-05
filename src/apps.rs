@@ -5,18 +5,20 @@ use crate::{
         node::ChannelsRegistry,
     },
     config::{ConfigManager, EnvConfigManager},
-    executor::Executor,
+    executor::{Executor, exports::wasix::mcp::secrets_list::SecretsDescription},
     flow::{manager::FlowManager, session::InMemorySessionStore},
     logger::{LogConfig, Logger},
     process::manager::ProcessManager,
-    runtime_snapshot::{ChannelSnapshot, ProcessSnapshot, RuntimeSnapshot, ToolSnapshot},
+    runtime_snapshot::{
+        ChannelSnapshot, ProcessSnapshot, RequirementEntry, RuntimeSnapshot, ToolSnapshot,
+    },
     secret::{EnvSecretsManager, SecretsManager},
     validate::validate,
     watcher::DirectoryWatcher,
 };
 use anyhow::{Context, Error, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use channel_plugin::message::LogLevel;
+use channel_plugin::message::{ListKeysResult, LogLevel};
 use data_encoding::BASE32_NOPAD;
 use nkeys::KeyPair;
 use reqwest::{
@@ -56,6 +58,38 @@ pub fn make_executable<P: AsRef<Path> + std::fmt::Debug>(path: P) -> std::io::Re
     }
 
     Ok(())
+}
+
+fn secret_requirement_from_description(desc: SecretsDescription) -> RequirementEntry {
+    let description = if desc.description.is_empty() {
+        None
+    } else {
+        Some(desc.description.clone())
+    };
+    RequirementEntry {
+        key: desc.name.clone(),
+        description,
+        required: desc.required,
+    }
+}
+
+fn list_keys_to_requirements(keys: ListKeysResult) -> Vec<RequirementEntry> {
+    let mut out = Vec::new();
+    for (key, description) in keys.required_keys {
+        out.push(RequirementEntry {
+            key,
+            description,
+            required: true,
+        });
+    }
+    for (key, description) in keys.optional_keys {
+        out.push(RequirementEntry {
+            key,
+            description,
+            required: false,
+        });
+    }
+    out
 }
 pub struct App {
     watcher: Option<DirectoryWatcher>,
@@ -263,8 +297,9 @@ impl App {
                     secrets: wrapper
                         .secrets()
                         .into_iter()
-                        .map(|desc| format!("{desc:?}"))
+                        .map(secret_requirement_from_description)
                         .collect(),
+                    configs: Vec::new(),
                     parameters_json: wrapper.parameters().to_string(),
                 }
             })
@@ -281,6 +316,8 @@ impl App {
                     name: wrapper.name(),
                     remote: wrapper.remote(),
                     plugin_path: wrapper.plugin_path(),
+                    configs: list_keys_to_requirements(wrapper.config_keys_snapshot()),
+                    secrets: list_keys_to_requirements(wrapper.secret_keys_snapshot()),
                 }
             })
             .collect();

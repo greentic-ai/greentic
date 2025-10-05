@@ -12,7 +12,7 @@ use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbeddingsRequest};
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::models::ModelOptions;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tracing::{error, info};
@@ -59,14 +59,11 @@ pub struct OllamaAgent {
 
 impl OllamaAgent {
     fn build_ollama_client(&self, context: &NodeContext) -> Ollama {
-        let chosen_url: Option<Url> = self
-        .ollama_url
-        .clone()
-        .or_else(|| {
+        let chosen_url: Option<Url> = self.ollama_url.clone().or_else(|| {
             // Works whether get_config returns Option<String> or Option<&str>
             context
                 .get_config("OLLAMA_URL")
-                .as_deref()                 // Option<&str>
+                .as_deref() // Option<&str>
                 .and_then(|s| Url::parse(s).ok())
         });
 
@@ -86,11 +83,15 @@ impl OllamaAgent {
                         Ollama::new(url, port)
                     } else {
                         let client = reqwest::Client::builder()
-                        .default_headers(headers)
-                        .timeout(std::time::Duration::from_secs(60))
-                        .build()
-                        .map_err(|e| NodeErr::fail(NodeError::ExecutionFailed(format!("reqwest client: {e}"))))
-                        .expect("Could not create client for ollama");
+                            .default_headers(headers)
+                            .timeout(std::time::Duration::from_secs(60))
+                            .build()
+                            .map_err(|e| {
+                                NodeErr::fail(NodeError::ExecutionFailed(format!(
+                                    "reqwest client: {e}"
+                                )))
+                            })
+                            .expect("Could not create client for ollama");
 
                         ollama_rs::Ollama::new_with_client(url, port, client)
                     }

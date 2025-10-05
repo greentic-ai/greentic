@@ -5,7 +5,9 @@
 //! concrete [`NodeType`] implementation.
 
 use crate::{
-    agent::openai::OpenAiAgent, message::Message, node::{NodeContext, NodeErr, NodeOut, NodeType}
+    agent::openai::OpenAiAgent,
+    message::Message,
+    node::{NodeContext, NodeErr, NodeOut, NodeType},
 };
 use async_trait::async_trait;
 use schemars::{JsonSchema, Schema, schema_for};

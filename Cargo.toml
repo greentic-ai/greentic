@@ -97,3 +97,5 @@ serde_cbor = "0.11"
 [dev-dependencies]
 url = "2.5.4"
 channel_plugin = { version="0.2.0", path = "crates/channel_plugin"}
+assert_cmd = "2.0"
+predicates = "3.1"

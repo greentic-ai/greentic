@@ -13,6 +13,7 @@ pub mod process;
 pub mod runtime_snapshot;
 pub mod schema;
 pub mod secret;
+pub mod snapshot;
 pub mod transformer;
 pub mod util;
 pub mod validate;

@@ -54,7 +54,9 @@ pub struct ToolSnapshot {
     pub wasm_path: PathBuf,
     pub description: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<String>,
+    pub secrets: Vec<RequirementEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configs: Vec<RequirementEntry>,
     pub parameters_json: String,
 }
 
@@ -64,6 +66,10 @@ pub struct ChannelSnapshot {
     pub remote: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configs: Vec<RequirementEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<RequirementEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +79,19 @@ pub struct ProcessSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wasm_path: Option<PathBuf>,
     pub parameters_json: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configs: Vec<RequirementEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<RequirementEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RequirementEntry {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
 }
 
 impl From<&ProcessWrapper> for ProcessSnapshot {
@@ -84,6 +103,8 @@ impl From<&ProcessWrapper> for ProcessSnapshot {
             wasm_path: Some(instance.wasm_path),
             parameters_json: serde_json::to_string(&wrapper.parameters())
                 .unwrap_or_else(|_| "{}".into()),
+            configs: Vec::new(),
+            secrets: Vec::new(),
         }
     }
 }
@@ -95,6 +116,8 @@ impl ProcessSnapshot {
             description,
             wasm_path: None,
             parameters_json: serde_json::to_string(&parameters).unwrap_or_else(|_| "{}".into()),
+            configs: Vec::new(),
+            secrets: Vec::new(),
         }
     }
 
