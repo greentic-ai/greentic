@@ -1,3 +1,4 @@
+IMPORTANT: The next-generation Greentic will soon launch. This repo is just a proof of concept. Go to [Geentic.ai](https://greentic.ai) and join the waiting list to get access to the open source digital worker platform that will scale to thousands of workers per employee...
 <table style="border: none;">
 <tr>
 <td><img src="assets/greentic-logo-very-small.png" alt="Greentic.AI Logo" width="150"></td>
